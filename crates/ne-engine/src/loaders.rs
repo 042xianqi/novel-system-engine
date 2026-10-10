@@ -204,12 +204,26 @@ pub const VOLUMES: [(&str, u32, u32, &str, &str); 9] = [
     ("卷10", 1621, 1800, "入局1621-1700（抵无始·U8前置）/高潮1701-1760（双轨坍缩·归一者浮现·陈玄冥传承兑现）/收束1761-1800（5章限期兑现=1796-1800）", "大高潮×1-2（S4全书级）+全部未兑现伏笔限期5章兑现（F3），残响归河"),
 ];
 
-/// 卷内三段段号（照抄 seg_no）：`ceil((ch - vol_start + 1) / 60)`，等价于 `(ch-vol_start)/60 + 1`。
-pub fn seg_no(vol_start: u32, ch: u32) -> u32 {
-    if ch < vol_start {
+/// 卷内每段章数的**默认值**（历史硬编码 60）。
+///
+/// ⚠ 实际值应由配置给出：`dynamics_config.json` 的 `volume_beat.chapters_per_segment`。
+/// 本常量仅作兜底。
+pub const DEFAULT_CHAPTERS_PER_SEGMENT: u32 = 60;
+
+/// 卷内三段段号：`ceil((ch - vol_start + 1) / per_seg)`，等价 `(ch-vol_start)/per_seg + 1`。
+///
+/// `per_seg` = 每段章数。**不再写死 60** —— 用户要求「按实际内容伸缩」，
+/// 不同卷可有不同段落划分。
+pub fn seg_no_with(vol_start: u32, ch: u32, per_seg: u32) -> u32 {
+    if ch < vol_start || per_seg == 0 {
         return 0;
     }
-    ((ch - vol_start) / 60) + 1
+    ((ch - vol_start) / per_seg) + 1
+}
+
+/// 兼容旧调用（默认每段 60 章）。
+pub fn seg_no(vol_start: u32, ch: u32) -> u32 {
+    seg_no_with(vol_start, ch, DEFAULT_CHAPTERS_PER_SEGMENT)
 }
 
 /// 跨卷线锚点（照抄 ANCHORS）。
@@ -275,6 +289,18 @@ pub struct VolumeLine {
 }
 
 /// 核验单卷细纲文本（照抄 verify_volumes 的判定口径）。
+/// 校验一卷细纲的章号范围与连续性。
+///
+/// ⚠ **不再断言 `heads.len() == 180`**（2026-10-10 修正）。
+/// 旧版写死 180，与用户要求「卷章数按实际内容伸缩」直接冲突，
+/// 且实际细纲每章概要字数从 230 到 1058 不等 —— 强行等长是「AI 味」的来源。
+///
+/// 现行判定：
+/// - 首章 = `c0`、末章 = `c1`
+/// - 章号**连续**（无跳号、无重复）
+/// - 有分段行
+///
+/// 章数本身**不做等长要求**，只要求与 `c0~c1` 自洽。
 pub fn verify_volume(vol: &str, c0: u32, c1: u32, text: &str) -> VolumeLine {
     let re_head = regex::Regex::new(r"(?m)^### 第(\d+)章").unwrap();
     let heads: Vec<u32> = re_head
@@ -285,7 +311,15 @@ pub fn verify_volume(vol: &str, c0: u32, c1: u32, text: &str) -> VolumeLine {
     let has_seg = re_seg.is_match(text);
     let first = heads.first().copied();
     let last = heads.last().copied();
-    let h_ok = first == Some(c0) && last == Some(c1) && heads.len() == 180;
+
+    // 连续性检查（替代旧的 == 180）
+    let contiguous = heads
+        .windows(2)
+        .all(|w| w[1] == w[0] + 1);
+    let expect_count = (c1.saturating_sub(c0) + 1) as usize;
+    let count_ok = heads.len() == expect_count; // 由 c0~c1 推出的应有余数，而非写死 180
+
+    let h_ok = first == Some(c0) && last == Some(c1) && count_ok && contiguous;
     VolumeLine {
         vol: vol.to_string(),
         expect: format!("ch{c0}~{c1}"),
@@ -379,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_volume_needs_180_heads_and_seg_line() {
+    fn verify_volume_range_and_continuity() {
         let good: String = (181..=360)
             .map(|i| format!("### 第{i}章 标题\n内容\n"))
             .collect::<String>()
@@ -390,5 +424,43 @@ mod tests {
         // 缺三段行 → 不 ok
         let bad: String = (181..=360).map(|i| format!("### 第{i}章 x\n")).collect();
         assert!(!verify_volume("卷02", 181, 360, &bad).ok);
+    }
+
+    /// F3 回归：**不同卷可以有不同章数**（不再强制 180 / 60）。
+    #[test]
+    fn verify_volume_accepts_variable_length() {
+        // 130 章一卷 —— 旧版会因为 != 180 直接失败
+        let mk = |c0: u32, c1: u32| -> String {
+            let bodies: String = (c0..=c1).map(|i| format!("### 第{i}章 标题\n内容\n")).collect();
+            format!("{bodies}> 段：{c0}-{}\n", c0 + 40)
+        };
+        for (c0, c1, want) in [(1u32, 130u32, 130usize), (131, 260, 130), (261, 500, 240)] {
+            let l = verify_volume("卷X", c0, c1, &mk(c0, c1));
+            assert!(l.ok, "章数 {want}（非 180）应通过：{l:?}");
+            assert_eq!(l.chap_count, want);
+        }
+    }
+
+    /// 跳号/重复应判失败（连续性替代旧的长度断言）。
+    #[test]
+    fn verify_volume_rejects_gaps_and_dupes() {
+        let gap = "### 第1章 a\n### 第2章 b\n### 第4章 c\n> 段：1-4\n";
+        assert!(!verify_volume("卷X", 1, 4, gap).ok, "跳号应失败");
+        let dup = "### 第1章 a\n### 第1章 b\n### 第2章 c\n> 段：1-2\n";
+        assert!(!verify_volume("卷X", 1, 2, dup).ok, "重复应失败");
+    }
+
+    #[test]
+    fn seg_no_is_configurable() {
+        // 旧默认 60
+        assert_eq!(seg_no(1, 1), 1);
+        assert_eq!(seg_no(1, 60), 1);
+        assert_eq!(seg_no(1, 61), 2);
+        // 可配置：每段 45 章
+        assert_eq!(seg_no_with(1, 45, 45), 1);
+        assert_eq!(seg_no_with(1, 46, 45), 2);
+        // 边界
+        assert_eq!(seg_no_with(100, 99, 60), 0, "早于卷首应返 0");
+        assert_eq!(seg_no_with(1, 1, 0), 0, "除数 0 不应 panic");
     }
 }

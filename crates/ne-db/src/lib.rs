@@ -1,15 +1,37 @@
-//! ne-db：SQLite 6-state 回填（2026-10-08 口径）。
+//! ne-db：SQLite 状态回填。
 //!
-//! 6-state = 伏笔(foreshadow) / 角色(char_state) / 事件(events) /
-//! 物品(items) / 时间线(timeline) / 进度(chapters)。
-//! 一章生成后 `tick_chapter` 以显式事务一次性推进（失败整体回滚），
-//! 同时回填 card_usage（确定性选卡的数据源：被引次数 / 章距 / 伏笔待收）。
-//! 9-30 审计实锤这 5 表 0 行 → M3 灌满。
+//! # ⚠️ 双 schema（2026-10-10 修正）
+//!
+//! 历史上本 crate 自带一份**简化 schema**（`foreshadow(fs_id, plant_chapter)` 等），
+//! 但**真实资料库另有一套**（`foreshadow(id, planted_volume, planted_chapter,
+//! deadline_volume, deadline_chapter, posterior, lik_ratio)` …）。
+//! 实测二者对不上：
+//!
+//! ```text
+//! SELECT fs_id FROM foreshadow  →  no such column: fs_id
+//! INSERT INTO chapters(chapter) →  no such column: chapter
+//! ```
+//!
+//! **后果**：本 crate 的所有写入路径在真库上直接失败；查询也只能绕开。
+//!
+//! # 现行策略：运行时探测列名，双向适配
+//!
+//! - 启动时读 `PRAGMA table_info`，判断该表是「真库版」还是「自建简化版」
+//! - 写路径按探测结果选列名（真库优先）
+//! - `SCHEMA_SELFHOSTED` 仅在**表不存在**时用于新建（不再覆盖已有真库表）
+//!
+//! 6-state = 伏笔 / 角色 / 事件 / 物品 / 时间线 / 进度。
+//! 一章生成后 [`tick_chapter`] 以显式事务一次推进（失败整体回滚）。
 
 use ne_core::{InjectionPacket, MaterialRef, UsageStat};
 use rusqlite::{params, Connection};
 
-/// 6-state 业务表 + chapters 的 schema（幂等，CREATE IF NOT EXISTS）。
+/// **自建简化版** schema（仅在表不存在时创建，不回改已有真库表）。
+///
+/// ⚠️ 真库另有更完整的 schema（见模块文档）。生产环境应**优先适配真库**，
+/// 本常量只在「空目录新建库」时用。
+///
+/// 保留原名 `SCHEMA` 以避免破坏既有调用方。
 pub const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS chapters (
   volume TEXT, chapter INTEGER, title TEXT, status TEXT,
@@ -39,11 +61,69 @@ CREATE TABLE IF NOT EXISTS card_usage (
 );
 "#;
 
-/// 连接（或新建）novel.db，建表。
+/// 连接（或新建）novel.db。
+///
+/// 注意：**只在表不存在时**建自建 schema。
+/// 若库已存在（真库），`CREATE TABLE IF NOT EXISTS` 不会改动其结构，
+/// 后续写路径会自动探测列名适配。
 pub fn connect(db_path: &str) -> Result<Connection, anyhow::Error> {
     let con = Connection::open(db_path)?;
     con.execute_batch(SCHEMA)?;
     Ok(con)
+}
+
+// ────────────────────────────────────────────────────────────
+// schema 探测：真库版 vs 自建版
+// ────────────────────────────────────────────────────────────
+
+/// 取某表的所有列名（表不存在时返回空）。
+pub fn columns_of(con: &Connection, table: &str) -> Vec<String> {
+    let mut st = match con.prepare(&format!("PRAGMA table_info(\"{table}\")")) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    st.query_map([], |r| r.get::<_, String>(1))
+        .map(|rows| rows.flatten().collect())
+        .unwrap_or_default()
+}
+
+/// 本库的 schema 方言。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dialect {
+    /// 真实资料库（`foreshadow.id` / `chapters.chapter_no` / `char_state` 带 id 主键…）
+    Real,
+    /// 本 crate 早期自建的简化版（`foreshadow.fs_id` / `chapters.chapter`…）
+    SelfHosted,
+    /// 表都不在（空库）
+    Unknown,
+}
+
+impl Dialect {
+    /// 依据 `foreshadow` 的主键列名判定。
+    ///
+    /// 真库：`id` + `planted_chapter`；自建：`fs_id` + `plant_chapter`。
+    pub fn detect(con: &Connection) -> Dialect {
+        let cols = columns_of(con, "foreshadow");
+        if cols.is_empty() {
+            // foreshadow 不在，看 chapters
+            let cc = columns_of(con, "chapters");
+            if cc.is_empty() {
+                return Dialect::Unknown;
+            }
+            return if cc.iter().any(|c| c == "chapter_no") {
+                Dialect::Real
+            } else {
+                Dialect::SelfHosted
+            };
+        }
+        if cols.iter().any(|c| c == "fs_id") {
+            Dialect::SelfHosted
+        } else if cols.iter().any(|c| c == "planted_chapter") {
+            Dialect::Real
+        } else {
+            Dialect::Unknown
+        }
+    }
 }
 
 /// 章级回填：把一章的 chars / events / 伏笔 / 用量 写进 6-state。
@@ -62,13 +142,29 @@ pub fn tick_chapter(
         .unwrap_or(0);
 
     let tx = con.unchecked_transaction()?;
+    let dialect = Dialect::detect(con);
 
     // chapters 主表（进度 state）
-    tx.execute(
-        "INSERT OR REPLACE INTO chapters(volume, chapter, title, status, words, created_at)
-         VALUES(?1, ?2, ?3, 'generated', ?4, ?5)",
-        params![volume, chapter as i64, title, words as i64, ts],
-    )?;
+    // 真库：chapter_no + content_path/outline/…；自建：chapter
+    match dialect {
+        Dialect::Real => {
+            tx.execute(
+                "INSERT INTO chapters(volume, chapter_no, title, status, words, updated_at)
+                 VALUES(?1, ?2, ?3, 'generated', ?4, datetime('now'))
+                 ON CONFLICT(volume, chapter_no) DO UPDATE SET
+                   title=excluded.title, status=excluded.status,
+                   words=excluded.words, updated_at=datetime('now')",
+                params![volume, chapter as i64, title, words as i64],
+            )?;
+        }
+        _ => {
+            tx.execute(
+                "INSERT OR REPLACE INTO chapters(volume, chapter, title, status, words, created_at)
+                 VALUES(?1, ?2, ?3, 'generated', ?4, ?5)",
+                params![volume, chapter as i64, title, words as i64, ts],
+            )?;
+        }
+    }
 
     // char_state：出场角色（角色 state）
     for c in &packet.chars {
@@ -88,12 +184,26 @@ pub fn tick_chapter(
     }
 
     // events：细纲引用到的 EVT-*（事件 state）
+    // 真库列：id / name / status / trigger_chapter / resolve_chapter / notes
+    // 自建列：event_id / name / status / last_chapter
     for e in &packet.events {
-        tx.execute(
-            "INSERT OR REPLACE INTO events(event_id, name, status, last_chapter)
-             VALUES(?1,?2,?3,?4)",
-            params![e.id, e.name, e.status, chapter as i64],
-        )?;
+        match dialect {
+            Dialect::Real => {
+                tx.execute(
+                    "INSERT INTO events(id, name, status, trigger_chapter, notes)
+                     VALUES(?1,?2,?3,?4,'ne-db tick')
+                     ON CONFLICT(id) DO UPDATE SET name=excluded.name, status=excluded.status",
+                    params![e.id, e.name, e.status, chapter as i64],
+                )?;
+            }
+            _ => {
+                tx.execute(
+                    "INSERT OR REPLACE INTO events(event_id, name, status, last_chapter)
+                     VALUES(?1,?2,?3,?4)",
+                    params![e.id, e.name, e.status, chapter as i64],
+                )?;
+            }
+        }
     }
 
     // timeline：本章时刻点（时间线 state，civ_state 占位，M3 填公式）
@@ -103,18 +213,46 @@ pub fn tick_chapter(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    tx.execute(
-        "INSERT INTO timeline(volume, chapter, moment, civ_state) VALUES(?1,?2,?3,?4)",
-        params![volume, chapter as i64, "chapter_tick", civ],
-    )?;
+    // 真库列：id/volume/chapter/world_time/event_summary（UNIQUE(volume,chapter)）
+    // 自建列：volume/chapter/moment/civ_state
+    match dialect {
+        Dialect::Real => {
+            tx.execute(
+                "INSERT INTO timeline(volume, chapter, world_time, event_summary)
+                 VALUES(?1,?2,?3,?4)
+                 ON CONFLICT(volume, chapter) DO UPDATE SET event_summary=excluded.event_summary",
+                params![volume, chapter as i64, "chapter_tick", civ],
+            )?;
+        }
+        _ => {
+            tx.execute(
+                "INSERT INTO timeline(volume, chapter, moment, civ_state) VALUES(?1,?2,?3,?4)",
+                params![volume, chapter as i64, "chapter_tick", civ],
+            )?;
+        }
+    }
 
-    // foreshadow：due 的伏笔落库为 open（伏笔 state；items state 走 ITM 前缀扫描接缝）
+    // foreshadow：due 的伏笔落库
+    // 真库列：id / content(NOT NULL) / planted_volume / planted_chapter /
+    //         deadline_volume / deadline_chapter / status('pending'|'resolved'|'hollow')
+    // 自建列：fs_id / content / plant_chapter / deadline_chapter / status('open')
     for fs in &packet.foreshadow_due {
-        tx.execute(
-            "INSERT OR IGNORE INTO foreshadow(fs_id, content, plant_chapter, deadline_chapter, status)
-             VALUES(?1, '', ?2, 0, 'open')",
-            params![fs, chapter as i64],
-        )?;
+        match dialect {
+            Dialect::Real => {
+                tx.execute(
+                    "INSERT OR IGNORE INTO foreshadow(id, content, planted_volume, planted_chapter, status)
+                     VALUES(?1, ?2, ?3, ?4, 'pending')",
+                    params![fs, "(待补：由 ne-db tick 自动登记，请人工补 content)", volume, chapter as i64],
+                )?;
+            }
+            _ => {
+                tx.execute(
+                    "INSERT OR IGNORE INTO foreshadow(fs_id, content, plant_chapter, deadline_chapter, status)
+                     VALUES(?1, '', ?2, 0, 'open')",
+                    params![fs, chapter as i64],
+                )?;
+            }
+        }
     }
 
     // card_usage：出场角色 + 资料卡都算被引用（确定性选卡第 1 层的数据源）
@@ -159,8 +297,16 @@ pub fn usage_stats(con: &Connection) -> Result<Vec<UsageStat>, anyhow::Error> {
         })?
         .flatten()
         .collect();
+    // 方言适配：真库用 id/planted_chapter/status='pending'；自建用 fs_id/plant_chapter/'open'
+    let dialect = Dialect::detect(con);
+    let open_sql = match dialect {
+        Dialect::Real => {
+            "SELECT id, COALESCE(planted_chapter, 0) FROM foreshadow WHERE status = 'pending'"
+        }
+        _ => "SELECT fs_id, plant_chapter FROM foreshadow WHERE status = 'open'",
+    };
     let open: Vec<(String, i64)> = {
-        let mut st = con.prepare("SELECT fs_id, plant_chapter FROM foreshadow WHERE status = 'open'")?;
+        let mut st = con.prepare(open_sql)?;
         let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
         rows.flatten().collect()
     };
@@ -249,6 +395,112 @@ pub fn backfill_card_usage_from_legacy(con: &Connection) -> Result<(usize, usize
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── 2026-10-10 F1 修复的回归测试 ──────────────────────────
+
+    /// 真库 schema 的模拟 DDL（列名取自实测 PRAGMA table_info）。
+    const REAL_DDL: &str = "
+        CREATE TABLE chapters(id INTEGER PRIMARY KEY AUTOINCREMENT, volume TEXT NOT NULL,
+          chapter_no INTEGER NOT NULL, title TEXT, outline TEXT, scene_type TEXT,
+          status TEXT DEFAULT 'pending', words INTEGER DEFAULT 0, content_path TEXT,
+          quality_result TEXT, techniques_used TEXT, created_at TEXT, updated_at TEXT,
+          UNIQUE(volume, chapter_no));
+        CREATE TABLE char_state(id INTEGER PRIMARY KEY AUTOINCREMENT, char_code TEXT NOT NULL,
+          char_name TEXT NOT NULL, volume TEXT, chapter INTEGER, realm TEXT, location TEXT,
+          status TEXT, notes TEXT, UNIQUE(char_code, volume, chapter));
+        CREATE TABLE events(id TEXT PRIMARY KEY, name TEXT NOT NULL,
+          status TEXT DEFAULT 'pending', trigger_chapter INTEGER, resolve_chapter INTEGER,
+          dependencies TEXT, notes TEXT);
+        CREATE TABLE timeline(id INTEGER PRIMARY KEY AUTOINCREMENT, volume TEXT, chapter INTEGER,
+          world_time TEXT, event_summary TEXT, UNIQUE(volume, chapter));
+        CREATE TABLE foreshadow(id TEXT PRIMARY KEY, content TEXT NOT NULL, planted_volume TEXT,
+          planted_chapter INTEGER, deadline_volume TEXT, deadline_chapter INTEGER,
+          status TEXT DEFAULT 'pending', resolved_chapter INTEGER, evidence TEXT,
+          posterior REAL DEFAULT 0.5, lik_ratio REAL DEFAULT 2.0);
+        CREATE TABLE card_usage(code TEXT PRIMARY KEY, category TEXT, name TEXT,
+          ref_count INTEGER, last_chapter INTEGER);
+    ";
+
+    #[test]
+    fn detect_selfhosted() {
+        let c = connect(":memory:").unwrap();
+        assert_eq!(Dialect::detect(&c), Dialect::SelfHosted);
+    }
+
+    #[test]
+    fn detect_real() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(REAL_DDL).unwrap();
+        assert_eq!(Dialect::detect(&c), Dialect::Real);
+    }
+
+    #[test]
+    fn detect_unknown_on_empty() {
+        let c = Connection::open_in_memory().unwrap();
+        assert_eq!(Dialect::detect(&c), Dialect::Unknown);
+    }
+
+    #[test]
+    fn columns_of_works() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE t(a TEXT, b INTEGER);").unwrap();
+        assert_eq!(columns_of(&c, "t"), vec!["a".to_string(), "b".to_string()]);
+        assert!(columns_of(&c, "nope").is_empty());
+    }
+
+    /// 核心回归：真库 schema 下 tick 不再报 "no column named"。
+    #[test]
+    fn tick_on_real_schema_succeeds() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(REAL_DDL).unwrap();
+        assert_eq!(Dialect::detect(&c), Dialect::Real);
+        let pkt = ne_core::InjectionPacket::default();
+        tick_chapter(&c, "卷01", 1, "测试章", 2000, &pkt)
+            .expect("F1：真库 schema 下 tick 必须成功");
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM chapters WHERE chapter_no=1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+        // 幂等：再 tick 同章不应重复
+        tick_chapter(&c, "卷01", 1, "测试章", 2100, &pkt).unwrap();
+        let n2: i64 = c
+            .query_row("SELECT COUNT(*) FROM chapters WHERE chapter_no=1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n2, 1, "同章重复 tick 应 UPSERT 而非插入");
+    }
+
+    #[test]
+    fn tick_on_selfhosted_still_works() {
+        let c = connect(":memory:").unwrap();
+        assert_eq!(Dialect::detect(&c), Dialect::SelfHosted);
+        let pkt = ne_core::InjectionPacket::default();
+        tick_chapter(&c, "卷01", 1, "测试章", 2000, &pkt)
+            .expect("自建 schema 下 tick 仍须成功（向后兼容）");
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM chapters WHERE chapter=1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn usage_stats_reads_real_foreshadow() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(REAL_DDL).unwrap();
+        c.execute("INSERT INTO card_usage(code,category,name,ref_count,last_chapter) VALUES('CHAR-1','角色','甲',3,5)", []).unwrap();
+        c.execute("INSERT INTO foreshadow(id,content,planted_chapter,status) VALUES('F-1','x',2,'pending')", []).unwrap();
+        let st = usage_stats(&c).unwrap();
+        assert!(st.iter().any(|u| u.code == "F-1" && u.foreshadow_due), "真库 pending 伏笔应被识别：{st:?}");
+        assert!(st.iter().any(|u| u.code == "CHAR-1" && u.ref_count == 3));
+    }
+
+    #[test]
+    fn usage_stats_reads_selfhosted_foreshadow() {
+        let c = connect(":memory:").unwrap();
+        c.execute("INSERT INTO card_usage(code,category,name,ref_count,last_chapter) VALUES('CHAR-9','角色','乙',2,4)", []).unwrap();
+        c.execute("INSERT INTO foreshadow(fs_id,content,plant_chapter,deadline_chapter,status) VALUES('FS-9','y',1,0,'open')", []).unwrap();
+        let st = usage_stats(&c).unwrap();
+        assert!(st.iter().any(|u| u.code == "FS-9" && u.foreshadow_due), "{st:?}");
+    }
 
     #[test]
     fn tick_chapter_fills_tables() {

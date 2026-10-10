@@ -1,0 +1,24 @@
+[package]
+name = "ne-engine"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "《残响之河》L0-L5 引擎（Rust 全量实现）：门禁/LLM/预算/灌库"
+
+[[bin]]
+name = "ne-engine"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+anyhow = "1"
+regex = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+ne-funnel = { path = "../ne-funnel" }
+# ── 零 tokio / 零 reqwest：HTTPS 用 rustls + std::net 阻塞实现 ──
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
+rustls-pki-types = "1"

@@ -1,0 +1,23 @@
+{
+  "_说明": "情绪动力引擎 P0 · 角色标定映射表（k1 产物，纯数据，引擎复用）。文学性格词/描述 → 数值映射。emotion_base 为 10 维情绪初值（0-100）：[愤怒, 恐惧, 悲伤, 快乐, 焦虑, 厌恶, 惊讶, 信任, 期待, 悲伤2] —— 维度定名见 dims 字段。personality 为 情绪→P 倍率（引擎公式1 ΔE=I×P）。suppress 压抑系数 0-1（引擎公式7 E_show=E_inner×Suppress）。lambda 记忆衰减档（0.95 重大长忆 / 0.9 强 / 0.85 普通 / 0.7 琐碎，对应 E_t=E0·e^(-λt) 分档）。",
+  "dims": ["anger", "fear", "sadness", "joy", "anxiety", "disgust", "surprise", "trust", "anticipation", "calm"],
+  "default_base": { "anger": 30, "fear": 30, "sadness": 30, "joy": 30, "anxiety": 30, "disgust": 30, "surprise": 30, "trust": 50, "anticipation": 50, "calm": 40 },
+  "rules": [
+    { "id": 1, "词": "喜怒不露", "effect": { "suppress": 0.8 }, "note": "情绪不外显，压抑系数高" },
+    { "id": 2, "词": "冷峻|冷硬|冰冷|冷漠", "effect": { "base": { "joy": 20, "anger": 40, "calm": 60 }, "suppress": 0.7 }, "note": "低快乐高冷，情绪输出受抑" },
+    { "id": 3, "词": "温婉|温柔|温和", "effect": { "base": { "fear": 45, "anger": 15, "joy": 60, "trust": 60 } }, "note": "温婉→恐惧基线偏高、愤怒低、信任高" },
+    { "id": 4, "词": "冲动|热血|暴躁|暴烈", "effect": { "base": { "anger": 70, "fear": 15 }, "personality": { "anger": 1.5, "fear": 0.8 } }, "note": "愤怒主导且 P 放大" },
+    { "id": 5, "词": "隐忍|坚韧|克制|坚定|沉默寡言|寡言", "effect": { "suppress": 0.6, "base": { "sadness": 50, "anger": 45, "calm": 55 } }, "note": "压抑系数高，内里积压" },
+    { "id": 6, "词": "狡黠|多变|难捉摸|多疑|疑心", "effect": { "base": { "anxiety": 55, "trust": 25 }, "personality": { "fear": 1.3, "anger": 1.2 } }, "note": "信任低、疑心放大恐惧" },
+    { "id": 7, "词": "玩世不恭|轻佻|嬉皮笑脸|吊儿郎当", "effect": { "base": { "joy": 65, "anxiety": 15, "calm": 50 } }, "note": "表面松弛，快乐基线高" },
+    { "id": 8, "词": "精明|理智|冷静|理性|深思", "effect": { "base": { "anxiety": 20, "anger": 25, "calm": 70 }, "suppress": 0.5, "personality": { "anger": 0.6 } }, "note": "情绪反应钝化，愤怒 P 低于 1" },
+    { "id": 9, "词": "残忍|狠辣|冷酷无情|视人命如草芥", "effect": { "base": { "anger": 65, "disgust": 40, "trust": 15 }, "personality": { "anger": 1.4 } }, "note": "愤怒高位且放大" },
+    { "id": 10, "词": "执念|无悔|孤绝|偏执", "effect": { "suppress": 0.9, "base": { "sadness": 65, "anger": 55 }, "personality": { "sadness": 1.3, "anger": 1.2 } }, "note": "压抑极高，情绪积压不外露" },
+    { "id": 11, "词": "共情|悲悯|怜悯|感性", "effect": { "base": { "sadness": 55, "trust": 65, "fear": 35 } }, "note": "悲伤/信任高" },
+    { "id": 12, "词": "腹黑|阴柔|诡谲", "effect": { "base": { "anger": 50, "trust": 20, "anxiety": 40 }, "suppress": 0.75, "personality": { "anger": 1.3, "fear": 1.1 } }, "note": "压抑极高，情绪积压不外露" }
+  ],
+  "lambda_tiers": { "0.95": "重大长忆（核心创伤/誓约/生死事件）", "0.9": "强记忆（主线事件）", "0.85": "普通记忆", "0.7": "琐碎记忆" },
+  "default_lambda": "0.85",
+  "default_suppress": null,
+  "note": "未命中任何规则的角色 → emotion_base=default_base、personality={}、suppress=null（待标定）、lambda=default。命中多规则：base 按维度取后命中覆盖前者；suppress 取最大（压抑叠加）；personality 键合并（键级后者优先）。"
+}

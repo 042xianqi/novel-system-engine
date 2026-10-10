@@ -1,0 +1,25 @@
+[package]
+name = "ne-mcp"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "残响之河 novel-engine 的 MCP stdio 服务（太墟外挂）"
+
+[[bin]]
+name = "ne-mcp"
+path = "src/main.rs"
+
+[dependencies]
+ne-core = { path = "../ne-core" }
+ne-injection = { path = "../ne-injection" }
+ne-qc = { path = "../ne-qc" }
+ne-db = { path = "../ne-db" }
+# ne-cardgen 故意不依赖：它只为一行 lane_key 就拉入 omp-rs-7k(tokio full + reqwest)，
+# 属于重量级网络依赖，与 MCP stdio 服务无关。ne-mcp 自实现等价的抽卡逻辑。
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+regex = "1"
+# 与 ne-db 同版本，保证类型贯通（Column/value 转换）
+rusqlite = { version = "0.31", features = ["bundled"] }

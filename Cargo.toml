@@ -8,6 +8,7 @@ members = [
     "crates/ne-engine",
     "crates/ne-qc",
     "crates/ne-cardgen",
+    "crates/ne-import",
     "crates/ne-mcp",
 ]
 

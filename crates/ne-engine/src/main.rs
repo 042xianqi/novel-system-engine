@@ -5,10 +5,11 @@
 //!   ne-engine check-file <章节md> [--chapter N] [--volume 卷01] [--root DIR]
 //!   ne-engine gates                     # 门禁清单
 //!   ne-engine selftest --root DIR       # 自检（重放性 + 门禁数）
-//!   ne-engine llm-probe [--root DIR]    # 只用配置探测 LLM 端点连通性（不发正文）
+//!   ne-engine llm-probe [--root DIR]    # 读 LLM 配置（不烧额度）
+//!   ne-engine ai-probe  [--root DIR] [--model M] [--prompt P]  # 真发一次请求
 
 use anyhow::{Context, Result};
-use ne_engine::{config, gates, llm, RepoCtx};
+use ne_engine::{config, gates, llm, providers, RepoCtx};
 use std::path::{Path, PathBuf};
 
 fn arg(args: &[String], key: &str) -> Option<String> {
@@ -130,19 +131,72 @@ fn main() -> Result<()> {
         }
         "llm-probe" => {
             let root = resolve_root(&args)?;
-            let p = llm::LlmParams {
-                model: arg(&args, "--model").unwrap_or_else(|| "deepseek-chat".into()),
-                ..Default::default()
-            };
-            println!("端点 = {}/chat/completions", p.base_url.trim_end_matches('/'));
-            println!("key 数 = {}（未配置则不可调用）", p.keys.len());
-            println!("注：本命令只做配置展示，不发起真实请求（避免误烧额度）。");
-            let _ = root;
+            let d = providers::resolve_llm_dir(Some(&root));
+            println!("配置目录 = {}", d.display());
+            let (provs, roles) = providers::load_from_dir(&d)?;
+            for (k, v) in &provs.map {
+                println!(
+                    "  [{k}] baseUrl={} keys={} models={:?}",
+                    if v.base_url.is_empty() { "(未设)" } else { &v.base_url },
+                    v.keys.len(),
+                    v.models
+                );
+            }
+            println!("  modelRoles.default = {:?}", roles.get("default"));
+            let p = providers::build_params(&provs, &roles, None);
+            println!("→ 选用 baseUrl = {}", p.base_url);
+            println!("→ 选用 model   = {}", if p.model.is_empty() { "(未定)" } else { &p.model });
+            println!("→ 可用 key 数  = {}", p.keys.len());
+            if p.keys.is_empty() {
+                println!("⚠ 没有可用 key：请在 {} 配置 providers.<name>.task.keyPool", d.display());
+            }
+            println!("注：本命令只读配置不烧额度；要真发请求请用 `ai-probe`。");
+            Ok(())
+        }
+        "ai-probe" => {
+            // 真发一次最小请求，验证 LLM 链路端到端可用。
+            let root = resolve_root(&args)?;
+            let d = providers::resolve_llm_dir(Some(&root));
+            let (provs, roles) = providers::load_from_dir(&d)?;
+            let mut p = providers::build_params(&provs, &roles, None);
+            if let Some(m) = arg(&args, "--model") {
+                p.model = m;
+            }
+            if p.keys.is_empty() {
+                anyhow::bail!("没有可用 key（配置目录 {}）", d.display());
+            }
+            if p.model.is_empty() {
+                anyhow::bail!("未指定模型（config.yml 的 modelRoles.default 或 --model）");
+            }
+            let prompt = arg(&args, "--prompt")
+                .unwrap_or_else(|| "只回四个字：接通成功".to_string());
+            println!("→ 端点 = {}/chat/completions", p.base_url.trim_end_matches('/'));
+            println!("→ 模型 = {}", p.model);
+            println!("→ key  = {} 把（不打印内容）", p.keys.len());
+            let msgs = vec![llm::Message {
+                role: "user".into(),
+                content: prompt.clone(),
+            }];
+            let t0 = std::time::Instant::now();
+            match llm::call(&p, &msgs) {
+                Ok(o) => {
+                    println!("✅ 调用成功（{} ms）", t0.elapsed().as_millis());
+                    println!("   prompt = {prompt}");
+                    println!("   回复   = {}", o.content.trim());
+                    if !o.reasoning.trim().is_empty() {
+                        println!("   推理   = {}…", o.reasoning.chars().take(120).collect::<String>());
+                    }
+                }
+                Err(e) => {
+                    println!("❌ 调用失败（{} ms）：{e}", t0.elapsed().as_millis());
+                    std::process::exit(1);
+                }
+            }
             Ok(())
         }
         other => {
             eprintln!("未知子命令：{other}");
-            eprintln!("可用：check | check-file | gates | selftest | llm-probe");
+            eprintln!("可用：check | check-file | gates | selftest | llm-probe | ai-probe");
             std::process::exit(2);
         }
     }

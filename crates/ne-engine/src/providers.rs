@@ -1,7 +1,14 @@
-//! LLM provider 配置读取 —— 移植并**增强** `l5.py::_omp_parse_yaml_blocks`。
+//! LLM provider 配置读取 —— 自包含实现（不依赖 OMP）。
 //!
-//! 事实源：`$OMP_AGENT_DIR/models.yml`（默认 `/root/.omp/agent/models.yml`）
-//!        `$OMP_AGENT_DIR/config.yml`（modelRoles → provider/model）
+//! 配置查找顺序（**库根优先**，最后一档仅为兼容旧环境）：
+//!   1. `$TAIXU_LLM_DIR`（显式指定目录）
+//!   2. `<库根>/05_管线框架/data/`（小说系统自有的配置位置）
+//!   3. `<库根>/_config/`
+//!   4. `$TAIXU_LLM_MODELS_YML` / `$TAIXU_LLM_CONFIG_YML`（直接给文件）
+//!   5. `$OMP_AGENT_DIR` 或 `/root/.omp/agent`（⚠ 旧环境兼容，Deprecated）
+//!
+//! 事实源文件名：`models.yml`（provider → baseUrl/keyPool/models）
+//!               `config.yml`（modelRoles → provider/model）
 //!
 //! ⚠ 实测发现（2026-10-10）：Python 版解析器**在当前 models.yml 上取到 0 把 key**，
 //! 因为文件结构已从 `apiKeys:`（缩进4/6）演进为 `task.keyPool:`（缩进8/10），
@@ -21,6 +28,8 @@ pub struct Provider {
     pub keys: Vec<String>,
     /// notes: 该 provider 的 key 来自哪种结构（便于诊断）
     pub key_source: String,
+    /// 该 provider 声明的模型 id 列表
+    pub models: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -35,11 +44,49 @@ impl Providers {
     }
 }
 
-/// agent 目录（OMP_AGENT_DIR，默认 /root/.omp/agent）
-pub fn agent_dir() -> PathBuf {
+/// 旧环境兼容目录（**Deprecated**，仅在前几档都没找到时才用）。
+fn legacy_agent_dir() -> PathBuf {
     std::env::var("OMP_AGENT_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/root/.omp/agent"))
+}
+
+/// 解析 LLM 配置所在目录。
+///
+/// 查找顺序见模块文档。`root` 为资料库根（可传 None 表示无库上下文）。
+/// 返回第一个含 `models.yml` 的目录；都没找到时返回库根下的首选位置
+/// （以便报错信息指向用户该创建文件的地方）。
+pub fn resolve_llm_dir(root: Option<&Path>) -> PathBuf {
+    // 1. 显式环境变量
+    if let Ok(d) = std::env::var("TAIXU_LLM_DIR") {
+        let p = PathBuf::from(d);
+        if p.is_dir() {
+            return p;
+        }
+    }
+    // 2/3. 库根下的候选
+    if let Some(r) = root {
+        for sub in ["05_管线框架/data", "_config", ".", "00_系统配置"] {
+            let p = if sub == "." { r.to_path_buf() } else { r.join(sub) };
+            if p.join("models.yml").is_file() {
+                return p;
+            }
+        }
+    }
+    // 4. 直接指定文件
+    if let Ok(f) = std::env::var("TAIXU_LLM_MODELS_YML") {
+        let p = PathBuf::from(f);
+        if let Some(par) = p.parent() {
+            return par.to_path_buf();
+        }
+    }
+    // 5. 旧环境兼容
+    legacy_agent_dir()
+}
+
+/// 兼容旧调用（无库上下文时）。新代码请用 `resolve_llm_dir(Some(root))`。
+pub fn agent_dir() -> PathBuf {
+    resolve_llm_dir(None)
 }
 
 /// 判断一个列表项是否像 API key（而非模型名等其它列表项）。
@@ -129,6 +176,18 @@ pub fn parse_models_yml(text: &str) -> Providers {
         }
         let Some(cname) = cur.clone() else { continue };
 
+        // `- id: <model>`（models 列表项，缩进与 keyPool 同级或更深）
+        if let Some(rest) = t.strip_prefix("- id:") {
+            let m = unquote(rest.trim());
+            if !m.is_empty() {
+                if let Some(p) = out.get_mut(&cname) {
+                    p.models.push(m);
+                }
+            }
+            in_keys = false;
+            continue;
+        }
+
         match n {
             4 => {
                 if let Some(v) = t.strip_prefix("baseUrl:") {
@@ -200,6 +259,17 @@ pub fn parse_models_yml(text: &str) -> Providers {
                 }
             }
             _ => {
+                // `- id: <model>`（models 列表项）
+                if let Some(rest) = t.strip_prefix("- id:") {
+                    let m = unquote(rest.trim());
+                    if !m.is_empty() {
+                        if let Some(p) = out.get_mut(&cname) {
+                            p.models.push(m);
+                        }
+                    }
+                    in_keys = false;
+                    continue;
+                }
                 // 缩进 >=10：keyPool 项的续行，或更深的子块
                 if in_keys {
                     if let Some(k) = key_item(t) {
@@ -258,30 +328,70 @@ pub fn load_from_dir(dir: &Path) -> Result<(Providers, BTreeMap<String, String>)
 }
 
 /// 组装一次调用的 LLM 参数（对齐 l5.py::load_config 的键池平铺口径）。
+/// 组装一次调用的 LLM 参数。
+///
+/// key 收集顺序：
+///   1. `config.yml` 的 `modelRoles.default` 所指 provider（如 `workbuddy/glm-5.3-flash`）
+///   2. `prefer` 显式指定的 provider
+///   3. 其余所有 provider（按名字序，作兜底）
+///
+/// ⚠ 旧版硬编码 `["agens","gcmod"]` —— 用户自定义 provider 名会被完全忽略。
 pub fn build_params(
     provs: &Providers,
     roles: &BTreeMap<String, String>,
     prefer: Option<&[&str]>,
 ) -> crate::llm::LlmParams {
-    let order: Vec<&str> = prefer.map(|v| v.to_vec()).unwrap_or_else(|| vec!["agens", "gcmod"]);
+    // config.yml 的 default 形如 `workbuddy/glm-5.3-flash`
+    let role_default = roles.get("default");
+    let (role_prov, role_model) = match role_default {
+        Some(v) => match v.split_once('/') {
+            Some((p, m)) => (Some(p.to_string()), m.to_string()),
+            None => (None, v.clone()),
+        },
+        None => (None, String::new()),
+    };
+
+    let mut order: Vec<String> = Vec::new();
+    if let Some(p) = &role_prov {
+        order.push(p.clone());
+    }
+    if let Some(pf) = prefer {
+        for p in pf {
+            if !order.iter().any(|x| x == p) {
+                order.push((*p).to_string());
+            }
+        }
+    }
+    // 兜底：其余 provider
+    for name in provs.map.keys() {
+        if !order.iter().any(|x| x == name) {
+            order.push(name.clone());
+        }
+    }
+
     let mut keys = Vec::new();
+    let mut base_url = String::new();
     for name in &order {
-        if let Some(p) = provs.map.get(*name) {
+        if let Some(p) = provs.map.get(name) {
+            if base_url.is_empty() && !p.base_url.is_empty() {
+                base_url = p.base_url.clone();
+            }
             keys.extend(p.keys.iter().cloned());
         }
     }
-    let role_default = roles
-        .get("default")
-        .cloned()
-        .unwrap_or_else(|| "agens/agnes-3.0-flash".to_string());
-    let (prov, model) = match role_default.split_once('/') {
-        Some((p, m)) => (p.to_string(), m.to_string()),
-        None => ("agens".to_string(), role_default.clone()),
+
+    // 模型名：config.yml 指定优先；否则取第一个有 key 的 provider 的第一个模型
+    let model = if !role_model.is_empty() {
+        role_model
+    } else {
+        provs
+            .map
+            .values()
+            .find(|p| !p.keys.is_empty())
+            .and_then(|p| p.models.first().cloned())
+            .unwrap_or_default()
     };
-    let base_url = provs
-        .base_url(&prov)
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "https://api.agnes-ai.cn/v1".to_string());
+
     crate::llm::LlmParams {
         base_url,
         model,

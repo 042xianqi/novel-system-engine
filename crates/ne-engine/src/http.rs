@@ -31,49 +31,41 @@ impl Response {
     }
 }
 
-/// 从 `https://host[:port]/path` 解析出 (host, port, path)。
-fn parse_url(url: &str) -> Result<(String, u16, String)> {
-    let rest = url
-        .strip_prefix("https://")
-        .ok_or_else(|| anyhow!("只支持 https:// 端点（收到 {url}）"))?;
+/// 从 URL 解析出 (scheme, host, port, path)。
+///
+/// 支持 `https://`（默认 443）与 `http://`（默认 80）。
+/// http 仅应用于**本机回环**（127.0.0.1/localhost）等可信端点——
+/// 小说系统的 GLM 代理常以本地明文网关暴露；对公网地址请坚持用 https。
+fn parse_url(url: &str) -> Result<(String, String, u16, String)> {
+    let (scheme, rest, dport) = if let Some(r) = url.strip_prefix("https://") {
+        ("https", r, 443u16)
+    } else if let Some(r) = url.strip_prefix("http://") {
+        ("http", r, 80u16)
+    } else {
+        return Err(anyhow!("端点必须以 http:// 或 https:// 开头（收到 {url}）"));
+    };
     let (authority, path) = match rest.find('/') {
         Some(i) => (&rest[..i], &rest[i..]),
         None => (rest, "/"),
     };
     let (host, port) = match authority.rsplit_once(':') {
         Some((h, p)) => (h.to_string(), p.parse::<u16>().context("非法端口")?),
-        None => (authority.to_string(), 443),
+        None => (authority.to_string(), dport),
     };
-    Ok((host, port, path.to_string()))
+    Ok((scheme.to_string(), host, port, path.to_string()))
 }
 
 /// 用 rustls 建立 TLS 连接并发一条 POST（application/json）。
 pub fn post_json(url: &str, headers: &[(String, String)], body: &[u8], timeout: Duration) -> Result<Response> {
-    let (host, port, path) = parse_url(url)?;
-
-    // 1) TLS 配置（webpki-roots 内置根证书，无需系统 CA）
-    let mut roots = rustls::RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let cfg = rustls::ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    let server_name = rustls_pki_types::ServerName::try_from(host.clone())
-        .map_err(|e| anyhow!("非法主机名 {host}: {e}"))?;
+    let (scheme, host, port, path) = parse_url(url)?;
 
     // 2) TCP 连接（带超时）
     let addr = format!("{host}:{port}");
+    let tcp = TcpStream::connect(&addr).with_context(|| format!("TCP 连接失败：{addr}"))?;
+    tcp.set_read_timeout(Some(timeout))?;
+    tcp.set_write_timeout(Some(timeout))?;
 
-    // 3) TLS 握手（StreamOwned 需持有连接的所有权）
-    let conn = rustls::ClientConnection::new(Arc::new(cfg), server_name)
-        .context("TLS 会话创建失败")?;
-    let tcp_owned = TcpStream::connect(&addr).with_context(|| format!("TCP 连接失败：{addr}"))?;
-    tcp_owned.set_read_timeout(Some(timeout))?;
-    tcp_owned.set_write_timeout(Some(timeout))?;
-    let mut tls = rustls::StreamOwned::new(conn, tcp_owned);
-
-    // 4) 组装并发送 HTTP/1.1 请求
+    // 3) 组装 HTTP/1.1 请求
     let mut req = String::new();
     req.push_str(&format!("POST {path} HTTP/1.1\r\n"));
     req.push_str(&format!("Host: {host}\r\n"));
@@ -85,13 +77,34 @@ pub fn post_json(url: &str, headers: &[(String, String)], body: &[u8], timeout: 
     }
     req.push_str(&format!("Content-Length: {}\r\n", body.len()));
     req.push_str("\r\n");
-    tls.write_all(req.as_bytes())?;
-    tls.write_all(body)?;
-    tls.flush()?;
 
-    // 5) 读全量响应
+    // 4) 按 scheme 选择传输层
     let mut raw = Vec::new();
-    tls.read_to_end(&mut raw).context("读取响应失败")?;
+    if scheme == "https" {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let cfg = rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()?
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let server_name = rustls_pki_types::ServerName::try_from(host.clone())
+            .map_err(|e| anyhow!("非法主机名 {host}: {e}"))?;
+        let conn = rustls::ClientConnection::new(Arc::new(cfg), server_name)
+            .context("TLS 会话创建失败")?;
+        let mut tls = rustls::StreamOwned::new(conn, tcp);
+        tls.write_all(req.as_bytes())?;
+        tls.write_all(body)?;
+        tls.flush()?;
+        tls.read_to_end(&mut raw).context("读取响应失败")?;
+    } else {
+        // http：明文（仅供本机回环等可信端点）
+        let mut s = tcp;
+        s.write_all(req.as_bytes())?;
+        s.write_all(body)?;
+        s.flush()?;
+        s.read_to_end(&mut raw).context("读取响应失败")?;
+    }
     parse_response(&raw)
 }
 

@@ -9,7 +9,7 @@
 //!   ne-engine ai-probe  [--root DIR] [--model M] [--prompt P]  # 真发一次请求
 
 use anyhow::{Context, Result};
-use ne_engine::{config, gates, llm, providers, RepoCtx};
+use ne_engine::{audit, config, gates, llm, providers, RepoCtx};
 use std::path::{Path, PathBuf};
 
 fn arg(args: &[String], key: &str) -> Option<String> {
@@ -153,6 +153,51 @@ fn main() -> Result<()> {
             println!("注：本命令只读配置不烧额度；要真发请求请用 `ai-probe`。");
             Ok(())
         }
+        "audit" => {
+            // 用 20 类模板审计存量库，输出覆盖率与缺陷清单。
+            let root = resolve_root(&args)?;
+            let lib = root.join("02_资料库");
+            let rep = audit::audit_library(&lib)?;
+            if args.iter().any(|a| a == "--json") {
+                println!("{}", serde_json::to_string_pretty(&rep)?);
+            } else {
+                println!("审计根 = {}", rep.lib_root);
+                println!("卡片总数 = {}  完全合规 = {}", rep.total_cards, rep.ok_cards);
+                println!();
+                println!("{:<12} {:>5} {:>5}   字段覆盖率", "类别", "总数", "合规");
+                for c in &rep.categories {
+                    let cov: Vec<String> = c
+                        .field_hits
+                        .iter()
+                        .map(|(k, v)| format!("{}={}%", k, v * 100 / c.total.max(1)))
+                        .collect();
+                    println!(
+                        "{:<12} {:>5} {:>5}   {}",
+                        c.category, c.total, c.ok,
+                        cov.join(" ")
+                    );
+                }
+                // 缺陷汇总
+                let mut issue_cnt: std::collections::BTreeMap<&str, usize> =
+                    std::collections::BTreeMap::new();
+                for card in &rep.cards {
+                    for i in &card.issues {
+                        let key = i.split([':', '=']).next().unwrap_or(i);
+                        *issue_cnt.entry(key).or_insert(0) += 1;
+                    }
+                }
+                if !issue_cnt.is_empty() {
+                    println!();
+                    println!("结构缺陷汇总：");
+                    let mut v: Vec<_> = issue_cnt.into_iter().collect();
+                    v.sort_by(|a, b| b.1.cmp(&a.1));
+                    for (k, n) in v {
+                        println!("  {:<20} {n}", k);
+                    }
+                }
+            }
+            Ok(())
+        }
         "ai-probe" => {
             // 真发一次最小请求，验证 LLM 链路端到端可用。
             let root = resolve_root(&args)?;
@@ -196,7 +241,7 @@ fn main() -> Result<()> {
         }
         other => {
             eprintln!("未知子命令：{other}");
-            eprintln!("可用：check | check-file | gates | selftest | llm-probe | ai-probe");
+            eprintln!("可用：check | check-file | gates | selftest | llm-probe | ai-probe | audit");
             std::process::exit(2);
         }
     }

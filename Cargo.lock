@@ -226,6 +226,7 @@ name = "ne-engine"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ne-core",
  "ne-funnel",
  "regex",
  "rusqlite",

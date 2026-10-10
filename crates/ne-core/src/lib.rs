@@ -5,6 +5,8 @@
 //! 让 ne-injection / ne-cardgen / ne-qc / ne-db 都有共同语言。
 
 use serde::{Deserialize, Serialize};
+
+pub mod templates;
 use std::path::PathBuf;
 
 /// 漏斗层（对应 funnel.yaml 的 L0~L5）。

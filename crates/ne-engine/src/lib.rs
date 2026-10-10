@@ -10,6 +10,7 @@
 //! 依赖纪律：**零 tokio、零 reqwest**。HTTPS 走 rustls + std::net 阻塞实现。
 //! 数据纪律：DB 一律只读打开，绝不因质检改写用户资料库。
 
+pub mod audit;
 pub mod budget;
 pub mod calib;
 pub mod chapter;

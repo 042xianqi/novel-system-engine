@@ -212,20 +212,54 @@ fn load_usage_stats(cfg: &Cfg) -> Result<Vec<ne_core::UsageStat>> {
 }
 
 // ─────────────────────────────────────────── 工具 4：ne_check
-/// 对正文跑确定性质检（AI 味词 / 禁词 / 字数）→ verdict + findings + 路由。
-pub fn check(text: &str, chapter: u32) -> Result<serde_json::Value> {
+/// 对正文跑 **16 道门禁**（`ne_engine::gates::run_all`，唯一权威实现）。
+///
+/// ⚠ 历史问题：本函数此前走 `ne_qc::validate_six` + `ne_qc::gate14`，
+/// 与 `ne-engine check-file` 是**两条独立代码路径**，且 ne-qc 那套更宽松
+/// （实测同一章：CLI 判 `fix`（2 处 P1），MCP 判 `Pass`）。
+/// 现统一委托 ne-engine，保证 MCP 与 CLI 结果一致。
+///
+/// 附带保留六维 AI 味质检（`validate_six`）作为**附加维度**输出，
+/// 不作为 verdict 依据 —— verdict 只认 16 门禁。
+pub fn check(cfg: &Cfg, text: &str, chapter: u32, volume: &str) -> Result<serde_json::Value> {
+    let conf = ne_engine::config::load(&cfg.root)?;
+    let ctx = ne_engine::ctx::RepoCtx::open(&cfg.root)?;
+    let r = ne_engine::gates::run_all(text, chapter, volume, &conf, &ctx);
+
+    // 附加：六维 AI 味（仅提示，不影响 verdict）
     let banned: Vec<String> = ne_qc::BANNED_WORDS.iter().map(|s| s.to_string()).collect();
-    let r = ne_qc::validate_six(text, None, &banned);
-    let route = ne_qc::route_on_verdict(&r);
+    let six = ne_qc::validate_six(text, None, &banned);
+
+    let gates: serde_json::Map<String, serde_json::Value> = r
+        .gates
+        .iter()
+        .map(|(k, g)| {
+            (
+                k.clone(),
+                serde_json::json!({"pass": g.pass, "detail": g.detail}),
+            )
+        })
+        .collect();
+
     Ok(serde_json::json!({
-        "verdict": format!("{:?}", r.verdict),
-        "route": route,
-        "stats": r.stats,
-        "word_range": [ne_qc::MIN_WORDS, ne_qc::MAX_WORDS],
-        "findings": r.findings.iter().map(|f| serde_json::json!({
-            "dim": f.dim, "issue": f.issue, "severity": format!("{:?}", f.severity),
+        "verdict": r.verdict,
+        "chapter": chapter,
+        "volume": volume,
+        "stats": {"words": r.stats.words, "gates_run": r.stats.gates_run},
+        "gates": gates,
+        "p0": r.p0.iter().map(|f| serde_json::json!({
+            "gate": f.gate, "issue": f.issue, "action": f.action,
         })).collect::<Vec<_>>(),
-        "gate14": ne_qc::gate14(text, chapter, ""),
+        "p1": r.p1.iter().map(|f| serde_json::json!({
+            "gate": f.gate, "issue": f.issue, "action": f.action,
+        })).collect::<Vec<_>>(),
+        // 附加维度（不参与 verdict）
+        "six_dim_ai_tone": {
+            "verdict": format!("{:?}", six.verdict),
+            "findings": six.findings.iter().map(|f| serde_json::json!({
+                "dim": f.dim, "issue": f.issue, "severity": format!("{:?}", f.severity),
+            })).collect::<Vec<_>>(),
+        },
     }))
 }
 

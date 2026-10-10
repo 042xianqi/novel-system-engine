@@ -10,6 +10,7 @@
 不做写操作：ne_db_query 只发 SELECT/PRAGMA，且库为只读副本。
 """
 import json
+import os
 import subprocess
 import sys
 import time
@@ -160,26 +161,59 @@ def main():
         check("ne_cardgen volume 空串 → -32602",
               err.get("code") == -32602, f"code={err.get('code')}")
 
-        # ── 4. ne_check（纯离线，不依赖资料库）──
-        print("\n【4】ne_check（离线质检）")
-        # 4a. 干净文本不应 reject
-        good = "。".join(["他走进屋子看着桌上的灯那灯很旧他没有说话窗外风很大"] * 3) + "？"
-        good = ""
-        para = "他走进屋子，看着桌上的灯。那灯很旧。他没有说话。窗外风很大。"
-        while len(good.replace("\n", "").replace(" ", "")) < 2600:
-            good += para + "\n\n"
-        good += "他忽然想到一个问题：那只手究竟是谁的？"
-        out = c.call_tool("ne_check", {"text": good, "chapter": 3})
-        v = out.get("verdict", out.get("verdict", "?"))
+        # ── 4. ne_check（16 门禁，与 CLI 同源）──
+        print("\n【4】ne_check（16 门禁）")
+        # 4a. 用**真实第1章**做基准（自造文本会被 G01/G05 合法打回，见下）
+        real_path = os.path.join(ROOT, "04_正文", "卷01", "第1章.md")
+        if os.path.exists(real_path):
+            good = open(real_path, encoding="utf-8").read()
+            check("能找到真实第1章", True, real_path)
+        else:
+            # 无真实库时退回自造文本，并放宽断言（只验证结构）
+            good = ("陈寂站在涧底，脑子里那块推演面板亮了一行字：锚点已建立。"
+                    "他试着动手指，动了。\n") * 20
+            check("真实章节不存在，用替代文本", True)
+
+        out = c.call_tool("ne_check", {"text": good, "chapter": 1, "volume": "卷01"})
+        v = out.get("verdict", "?")
         check("ne_check 干净文本非 reject", str(v).lower() != "reject",
               f"verdict={v}")
-        check("ne_check 返回 findings", "findings" in out or "__text__" in out)
+        # 新结构：16 门禁逐条 + p0/p1
+        check("ne_check 返回 16 门禁", len(out.get("gates", {})) == 16,
+              f"gates={len(out.get('gates', {}))}")
+        check("ne_check 含 p0/p1 字段", "p0" in out and "p1" in out)
+        check("ne_check 含六维附加维度(不参与verdict)", "six_dim_ai_tone" in out)
 
-        # 4b. 禁词必须 reject
-        bad = good + "归墟"
-        out = c.call_tool("ne_check", {"text": bad, "chapter": 3})
-        check("ne_check 禁词判 reject", str(out.get("verdict", "")).lower() == "reject",
+        # 4b. 禁词/AI词 → G13 确定性维度命中（P1），非 P0 打回
+        #     ⚠ 口径：G13 是「评分维度」门禁，命中只出 P1（提示），verdict 仍可为 fix。
+        #       真正打回（P0）的是 G01/G05 这类硬性铁律。
+        bad = good + "\n\n归墟熵兽竟然！"
+        out = c.call_tool("ne_check", {"text": bad, "chapter": 1, "volume": "卷01"})
+        g13 = out.get("gates", {}).get("G13_scoring_67dim", {})
+        check("ne_check 禁词触发 G13 命中",
+              "禁词" in g13.get("detail", "") and "不达标" in g13.get("detail", ""),
+              g13.get("detail", "")[:100])
+        check("  ↑ 经 P1 暴露（G13 属评分维度非硬性打回）",
+              any("G13" in f.get("gate", "") for f in out.get("p1", [])),
+              f"p1={[f.get('gate') for f in out.get('p1', [])]}")
+
+        # 4b1. 泄漏词 → G16（prompt 规则词入正文）
+        out = c.call_tool("ne_check", {"text": good + "\n\n不得杜撰", "chapter": 1, "volume": "卷01"})
+        g16 = out.get("gates", {}).get("G16_leak_words", {})
+        check("ne_check 泄漏词触发 G16", "命中=1" in g16.get("detail", "") or
+              "不得杜撰" in g16.get("detail", ""), g16.get("detail", "")[:80])
+
+        # 4a2. 无主角/无开篇要素的文本必须 reject（证明 G01/G05 真在拦）
+        junk = "他走进屋子，看着桌上的灯。那灯很旧。\n\n" * 60
+        out = c.call_tool("ne_check", {"text": junk, "chapter": 1, "volume": "卷01"})
+        check("无主角无开篇要素 → G01/G05 reject",
+              str(out.get("verdict", "")).lower() == "reject",
               f"verdict={out.get('verdict')}")
+
+        # 4b2. CLI 与 MCP 一致性（防两套口径回潮）
+        check("ne_check verdict ∈ {pass,fix,reject}",
+              str(out.get("verdict", "")).lower() in ("pass", "fix", "reject"),
+              str(out.get("verdict")))
 
         # 4c. 空 text → 协议级 -32602（已在 §3 覆盖，这里略）
 

@@ -14,6 +14,7 @@ path = "src/main.rs"
 ne-core = { path = "../ne-core" }
 ne-injection = { path = "../ne-injection" }
 ne-qc = { path = "../ne-qc" }
+ne-engine = { path = "../ne-engine" }
 ne-db = { path = "../ne-db" }
 # ne-cardgen 故意不依赖：它只为一行 lane_key 就拉入 omp-rs-7k(tokio full + reqwest)，
 # 属于重量级网络依赖，与 MCP stdio 服务无关。ne-mcp 自实现等价的抽卡逻辑。

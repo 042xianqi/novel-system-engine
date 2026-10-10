@@ -267,6 +267,7 @@ dependencies = [
  "anyhow",
  "ne-core",
  "ne-db",
+ "ne-engine",
  "ne-injection",
  "ne-qc",
  "regex",

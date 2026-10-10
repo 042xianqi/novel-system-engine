@@ -42,10 +42,11 @@ fn tool_specs() -> serde_json::Value {
         },
         {
             "name": "ne_check",
-            "description": "对正文跑确定性质检（AI 味词/禁词/字数）→ verdict(pass/fix/reject) + findings + 路由。",
+            "description": "对正文跑 16 道门禁（G01-G16，与 ne-engine CLI 同一实现）→ verdict(pass/fix/reject) + 逐门禁结论 + P0/P1 清单；附带六维 AI 味维度（不参与 verdict）。",
             "inputSchema": {"type":"object","properties":{
                 "text": {"type":"string","description":"待质检正文"},
-                "chapter": {"type":"integer","description":"章号，默认 0"}},
+                "chapter": {"type":"integer","description":"章号，默认 0"},
+                "volume": {"type":"string","description":"卷名，默认「卷01」，影响 G03/G11 等跨章门禁"}},
                 "required":["text"]}
         },
         {
@@ -156,7 +157,15 @@ fn tool_call(cfg: &Cfg, name: &str, args: &serde_json::Value) -> serde_json::Val
         "funnel" => tools::funnel(cfg),
         "ne_cardgen" => tools::cardgen(cfg, &s("volume")),
         "ne_inject" => tools::inject(cfg, &s("volume"), i("chapter"), b("allow_missing")),
-        "ne_check" => tools::check(&s("text"), i("chapter")),
+        "ne_check" => {
+            let vol = args
+                .get("volume")
+                .and_then(|v| v.as_str())
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or("卷01")
+                .to_string();
+            tools::check(cfg, &s("text"), i("chapter"), &vol)
+        }
         "ne_db" => tools::db_status(cfg),
         "ne_db_query" => {
             let lim = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize;

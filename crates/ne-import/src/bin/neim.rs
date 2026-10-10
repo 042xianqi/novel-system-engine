@@ -4,6 +4,7 @@
 //!   neim scan   --root <资料库根>          # 只扫描统计，不落库
 //!   neim import --root <资料库根>          # 全量导入全文 → materials
 //!   neim map    --root <资料库根>          # 生成重编号映射（不应用）
+//!   neim map-rebuild --backup <备份卡片目录> # 从冷备份重建历史映射
 //!   neim verify --root <资料库根>          # 对账：磁盘 vs DB
 //!
 //! ⚠ 默认**只读**；写库需显式给 `--write`。
@@ -11,7 +12,7 @@
 use anyhow::Result;
 use rusqlite::params;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn arg(args: &[String], k: &str) -> Option<String> {
     args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned()
@@ -138,6 +139,27 @@ fn main() -> Result<()> {
                 n += 1;
             }
             println!("目录节点 = {n}");
+            // 卡片节点：materials 中有全文的卡 → catalog_index 补建（幂等）
+            let mut st3 = con.prepare(
+                "SELECT file_path, category, code, name, COALESCE(content_chars,0), COALESCE(content_sha,'')
+                 FROM materials WHERE content_chars IS NOT NULL")?;
+            let mut cn = 0i64;
+            for r in st3.query_map([], |r| {
+                Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,Option<String>>(2)?,
+                    r.get::<_,Option<String>>(3)?, r.get::<_,i64>(4)?, r.get::<_,Option<String>>(5)?))
+            })?.flatten() {
+                let (path, cat, code, name, chars, sha) = r;
+                con.execute(
+                    "INSERT INTO catalog_index(node_path,node_type,category,code,title,char_count,sha,src_kind)
+                     VALUES(?1,'file',?2,?3,?4,?5,?6,'card')
+                     ON CONFLICT(node_path) DO UPDATE SET
+                       code=excluded.code, title=excluded.title, char_count=excluded.char_count,
+                       sha=excluded.sha, src_kind='card'",
+                    params![format!("02_资料库/{path}"), cat, code, name, chars, sha],
+                )?;
+                cn += 1;
+            }
+            println!("卡片节点 = {cn}");
             let (files, dirs_n): (i64, i64) = con.query_row(
                 "SELECT COALESCE(SUM(CASE WHEN node_type='file' THEN 1 ELSE 0 END),0), COALESCE(SUM(CASE WHEN node_type='dir' THEN 1 ELSE 0 END),0) FROM catalog_index", [], |r| Ok((r.get(0)?, r.get(1)?)))?;
             println!("索引: {files} 文件 / {dirs_n} 目录");
@@ -158,6 +180,18 @@ fn main() -> Result<()> {
                 std::fs::write(&out, buf)?;
                 println!("✅ 已导出 {}", out.display());
             }
+        }
+        "map-rebuild" => {
+            // 从重编号前冷备份重建丢失的「旧→新」映射（内容归一哈希匹配）
+            let bk = arg(&args, "--backup").unwrap_or_else(|| {
+                root.join("09_冷备份/pre_renumber_20261010_1505/02_资料库").to_string_lossy().into()
+            });
+            let con = ne_db::connect(&root.join("novel.db").to_string_lossy())?;
+            let (n, amb) = ne_import::renumber::map_rebuild(&con, Path::new(&bk), &lib)?;
+            println!("✅ 历史映射重建 {n} 条（哈希组数量不一致 {amb} 组）");
+            let changed: i64 = con.query_row(
+                "SELECT COUNT(*) FROM renumber_map WHERE rule LIKE '%历史重建%'", [], |r| r.get(0))?;
+            println!("库内历史重建总计 = {changed}");
         }
         "ensure-h1" => {
             let (f, n, skip) = ne_import::renumber::ensure_h1_code(&lib, !write)?;

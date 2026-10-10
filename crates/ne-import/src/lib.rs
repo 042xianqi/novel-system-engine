@@ -17,8 +17,7 @@
 use anyhow::{Context, Result};
 use regex::Regex;
 use rusqlite::{params, Connection};
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use walkdir::WalkDir;
 
 pub mod renumber;

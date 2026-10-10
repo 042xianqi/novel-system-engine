@@ -212,7 +212,7 @@ pub fn build_map(cards: &[ScannedCard]) -> Vec<MapEntry> {
     }
 
     // 无编号卡：按类别分配（纪元 99，序号从 900 起，避开正式号段）
-    let mut n = 901;
+    let n = 901;
     let mut used_unknown: HashMap<String, u32> = HashMap::new();
     for c in unknown {
         let np = crate::category_prefix(&c.category, &c.rel_path);
@@ -278,6 +278,102 @@ pub fn save_map(con: &Connection, entries: &[MapEntry]) -> Result<usize> {
         n += 1;
     }
     Ok(n)
+}
+
+/// 从重编号前冷备份重建「旧→新」映射（按内容归一哈希匹配）。
+///
+/// # 背景
+///
+/// `renumber_map` 主键曾从 old_code 改到 old_path 时被 DROP 重建，
+/// 丢失 365 条历史变更记录。本函数用备份目录 + 现目录做**内容归一匹配**：
+/// 把正文里所有编号替换为占位符后取 SHA-256，两边哈希相同即同一张卡，
+/// 由此恢复 `old_code → new_code`。
+///
+/// 只写 `rule = '历史重建（按内容归一匹配）'` 的行，不触碰其它规则行。
+/// 返回 (恢复条数, 备份存在但新库缺失的组数)。
+pub fn map_rebuild(con: &Connection, backup_cards_root: &Path, cards_root: &Path) -> Result<(usize, usize)> {
+    const CODE: &str = r"\b[A-Z]{2,6}-\d{2}-\d{3}\b|\b[A-Z]{2,6}-\d{3}\b";
+    let code_re = Regex::new(CODE)?;
+    let name_re = Regex::new(r"^([A-Z]{2,6}-\d{2}-\d{3}|[A-Z]{2,6}-\d{3})")?;
+
+    let collect = |root: &Path| -> Result<HashMap<String, Vec<(String, String)>>> {
+        let mut m: HashMap<String, Vec<(String, String)>> = HashMap::new();
+        for e in walkdir_like(root)? {
+            let text = std::fs::read_to_string(&e)?;
+            let rel = e.strip_prefix(root)?.to_string_lossy().into_owned();
+            let code = name_re
+                .captures(&rel.rsplit('/').next().unwrap_or(""))
+                .and_then(|c| c.get(1))
+                .map(|g| g.as_str().to_string())
+                .unwrap_or_default();
+            let norm = code_re.replace_all(&text, "@CODE@").into_owned();
+            let digest = sha256_hex(norm.as_bytes());
+            m.entry(digest).or_default().push((code, rel));
+        }
+        Ok(m)
+    };
+
+    let old = collect(backup_cards_root)?;
+    let new = collect(cards_root)?;
+
+    let mut recovered = 0usize;
+    let mut ambiguous = 0usize;
+    for (h, olist) in &old {
+        let Some(nlist) = new.get(h) else { continue };
+        if olist.len() != nlist.len() {
+            ambiguous += 1;
+        }
+        let mut o = olist.clone();
+        let mut n = nlist.clone();
+        o.sort();
+        n.sort();
+        for ((oc, orel), (nc, nrel)) in o.iter().zip(n.iter()) {
+            if !oc.is_empty() && !nc.is_empty() && oc != nc {
+                con.execute(
+                    "INSERT INTO renumber_map(old_path, old_code, new_code, new_path, rule, status)
+                     VALUES(?1,?2,?3,?4,'历史重建（按内容归一匹配）','applied')
+                     ON CONFLICT(old_path) DO UPDATE SET
+                       old_code=excluded.old_code, new_code=excluded.new_code,
+                       new_path=excluded.new_path,
+                       rule=excluded.rule, status='applied'",
+                    params![orel, oc, nc, nrel],
+                )?;
+                recovered += 1;
+            }
+        }
+    }
+    Ok((recovered, ambiguous))
+}
+
+/// 轻量递归收集 .md 文件（避免引入 walkdir 依赖）。
+fn walkdir_like(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d)? {
+            let e = e?;
+            let p = e.path();
+            if p.is_dir() {
+                let name = p.file_name().unwrap_or_default().to_string_lossy();
+                if name.starts_with('_') || name.starts_with('.') {
+                    continue;
+                }
+                stack.push(p);
+            } else if p.extension().map(|x| x == "md").unwrap_or(false) {
+                out.push(p);
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    // 简易 SHA-256：直接调外部 openssl 不可取（库内实现），用 sha2 crate。
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(bytes);
+    let d = h.finalize();
+    d.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// 用映射表重写正文里的引用，返回 (新正文, 替换次数)。

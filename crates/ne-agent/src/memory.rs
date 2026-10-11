@@ -154,8 +154,9 @@ impl MemoryStore {
 
     /// pinned 记忆：**注入 system prompt 稳定前缀**。
     ///
-    /// ⚠ 排序必须**内容确定**（scope 权威序 → createdAt → id）。
-    /// 见模块头注释：按 updatedAt 会让"重复保存同一 pinned"击穿 prefix cache。
+    /// ⚠ 排序必须**内容确定**（scope 权威序 → createdAt → rowid）。tiebreaker 用 rowid 而非
+    /// id：id 是 FNV `short_hash`，与插入序无关，同毫秒并列时顺序随机（曾 1/5 flaky）；
+    /// rowid 反映插入序且 UPDATE 不改它，重复保存不重排（护 prefix cache）。
     pub fn pinned(&self, project: &str, session: &str) -> Result<Vec<Memory>> {
         let mut st = self.con.prepare(
             "SELECT id,scope,owner_id,kind,key,value,pinned,expires_at,created_at,updated_at
@@ -165,13 +166,16 @@ impl MemoryStore {
                 OR (?1 != '' AND scope='project' AND owner_id=?1)
                 OR (?2 != '' AND scope='session' AND owner_id=?2))
              ORDER BY CASE scope WHEN 'global' THEN 0 WHEN 'project' THEN 1 ELSE 2 END,
-                      created_at ASC, id ASC",
+                      created_at ASC, rowid ASC",
         )?;
         let rows = st.query_map(params![project, session], row_to_memory)?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
     /// 召回候选：未过期、**非 pinned**（pinned 已常驻，不重复进召回）。
+    ///
+    /// tiebreaker 与 `pinned()` 同理用 `rowid`：`updated_at` 同毫秒并列时，`id`（FNV 哈希）
+    /// 会给出与插入顺序无关的随机序，导致召回列表跨运行抖动；`rowid` 反映插入顺序、稳定。
     pub fn candidates(&self, project: &str, session: &str, limit: usize) -> Result<Vec<Memory>> {
         let now = now_ms();
         let mut st = self.con.prepare(
@@ -182,7 +186,7 @@ impl MemoryStore {
                AND ((scope='global' AND owner_id='')
                 OR (?1 != '' AND scope='project' AND owner_id=?1)
                 OR (?2 != '' AND scope='session' AND owner_id=?2))
-             ORDER BY updated_at DESC, id ASC
+             ORDER BY updated_at DESC, rowid ASC
              LIMIT ?4",
         )?;
         let rows = st.query_map(params![project, session, now, limit as i64], row_to_memory)?;
@@ -507,6 +511,24 @@ mod tests {
             created_at: 0,
             updated_at: 0,
         }
+    }
+
+    #[test]
+    fn pinned_order_is_stable_when_same_millisecond() {
+        // 修复前 tiebreaker 是 id（FNV 哈希，与插入序无关）→ 同毫秒并列时顺序随机（1/5 flaky）；
+        // 改用 rowid（插入序，UPDATE 不改）后必须 == 插入顺序。用 UPDATE 对齐时间戳确定性制造并列。
+        let (s, p) = store("pinned-same-ms");
+        let keys: Vec<String> = (0..10).map(|i| format!("k{i}")).collect();
+        for k in &keys {
+            s.save(&mem(SCOPE_GLOBAL, "", k, "v", true)).unwrap();
+        }
+        s.con.execute("UPDATE agent_memories SET created_at=1700000000000", []).unwrap();
+        assert_eq!(s.all().unwrap().iter().map(|m| m.created_at).collect::<std::collections::HashSet<_>>().len(), 1);
+        let got: Vec<String> = s.pinned("", "").unwrap().iter().map(|m| m.key.clone()).collect();
+        assert_eq!(got, keys, "同毫秒 pinned 必须按插入顺序稳定");
+        let again: Vec<String> = s.pinned("", "").unwrap().iter().map(|m| m.key.clone()).collect();
+        assert_eq!(again, keys, "重复查询不得漂移");
+        let _ = std::fs::remove_file(&p);
     }
 
     #[test]

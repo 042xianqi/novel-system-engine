@@ -100,7 +100,15 @@ def main():
         print("没有可清理的行，退出。")
         return
 
-    # ── 3. 归档 ──────────────────────────────────────────────
+    # ── 3. 归档（dry-run 也要能看到将归档什么，但**不落盘**）──
+    if args.dry_run:
+        print("\n[dry-run] 不写任何文件。将执行：")
+        print(f"   归档 {len(old_ch)} 行 chapters + {len(old_fs)} 行 foreshadow -> old_chapter_dump/")
+        print(f"   备份 {DB} -> novel.db.before-chapter-purge-<ts>")
+        print(f"   DELETE chapters WHERE chapter_no IN {tuple(old_nos)}")
+        print(f"   DELETE foreshadow WHERE id IN {tuple(f.get('id') for f in old_fs)}")
+        return
+
     os.makedirs(DUMP, exist_ok=True)
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     json.dump(old_ch, open(f"{DUMP}/chapters_removed_{stamp}.json", "w"),
@@ -114,16 +122,10 @@ def main():
         print(f"  已归档磁盘正文副本 -> old_chapter_dump/第1章.md.bak")
     print(f"📦 归档完成: {DUMP}")
 
-    if args.dry_run:
-        print("\n[dry-run] 未做任何删除。将执行：")
-        print(f"   DELETE chapters WHERE chapter_no IN {tuple(old_nos)}")
-        print(f"   DELETE foreshadow WHERE id IN {tuple(f.get('id') for f in old_fs)}")
-        return
-
-    # ── 4. 备份 DB ───────────────────────────────────────────
-    bak = f"{DB}.before-chapter-purge-{stamp}"
+    # ── 4. 备份 DB（放冷备份目录，不污染 live 根）──
+    bak = os.path.join(BK, f"novel.db.before-chapter-purge-{stamp}")
     shutil.copy2(DB, bak)
-    print(f"💾 已备份 DB -> {os.path.basename(bak)}")
+    print(f"💾 已备份 DB -> 09_冷备份/pre_s10_20261011_0148/{os.path.basename(bak)}")
 
     # ── 5. 删除 ──────────────────────────────────────────────
     cur = con.cursor()

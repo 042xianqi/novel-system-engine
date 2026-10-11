@@ -94,6 +94,30 @@ enum Cmd {
         #[arg(long)]
         prompt_only: bool,
     },
+    /// 管理外部 MCP 服务
+    Mcp {
+        #[command(subcommand)]
+        cmd: McpCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum McpCmd {
+    /// 列出已配置的服务
+    List,
+    /// 连接服务并枚举其工具（会真的启动服务）
+    Tools {
+        /// 只查某个服务
+        name: Option<String>,
+    },
+    /// 直接调用一个工具（调试用）：mcp call <服务> <工具> '{"k":"v"}'
+    Call {
+        server: String,
+        tool: String,
+        /// JSON 参数对象（默认 {}）
+        #[arg(default_value = "{}")]
+        args_json: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -193,6 +217,7 @@ fn run() -> Result<()> {
         Cmd::Novel { chap_id, volume, lib, dry_run, prompt_only } => {
             run_novel(&vault, *chap_id, volume, lib.as_deref(), *dry_run, *prompt_only, cli.json)
         }
+        Cmd::Mcp { cmd } => run_mcp(&vault, cmd, cli.json),
         Cmd::Tools => {
             for t in ne_agent::tool::Tool::all() {
                 if cli.json {
@@ -585,6 +610,97 @@ fn truncate(s: &str, n: usize) -> String {
         format!("{}…", one_line.chars().take(n).collect::<String>())
     } else {
         one_line.to_string()
+    }
+}
+
+/// 管理外部 MCP 服务。
+fn run_mcp(vault: &Vault, cmd: &McpCmd, json: bool) -> Result<()> {
+    vault.init()?;
+    let cfg = RuntimeConfig::load(vault.root())?;
+    match cmd {
+        McpCmd::List => {
+            if cfg.mcp.servers.is_empty() {
+                if json {
+                    println!("[]");
+                } else {
+                    println!("（未配置 MCP 服务；在 runtime.yaml 的 mcp.servers 里添加）");
+                }
+                return Ok(());
+            }
+            if json {
+                let v: Vec<serde_json::Value> = cfg
+                    .mcp
+                    .servers
+                    .iter()
+                    .map(|s| serde_json::json!({
+                        "name": s.name, "command": s.command, "args": s.args, "enabled": s.enabled,
+                    }))
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            } else {
+                for s in &cfg.mcp.servers {
+                    println!(
+                        "  {:<14} {} {}  {}",
+                        s.name,
+                        s.command,
+                        s.args.join(" "),
+                        if s.enabled { "" } else { "（已禁用）" }
+                    );
+                }
+            }
+            Ok(())
+        }
+        McpCmd::Tools { name } => {
+            let specs: Vec<ne_agent::config::McpServerCfg> = cfg
+                .mcp
+                .servers
+                .iter()
+                .filter(|s| s.enabled && name.as_ref().map(|n| &s.name == n).unwrap_or(true))
+                .cloned()
+                .collect();
+            if specs.is_empty() {
+                anyhow::bail!("没有匹配的（已启用）MCP 服务");
+            }
+            let mut reg = ne_agent::mcp::McpRegistry::new(specs);
+            let tools = reg.discover_all();
+            if json {
+                let v: Vec<serde_json::Value> = tools
+                    .iter()
+                    .map(|(srv, t)| serde_json::json!({
+                        "qualified": format!("mcp__{srv}__{}", t.name),
+                        "server": srv, "name": t.name,
+                        "description": t.description, "inputSchema": t.input_schema,
+                    }))
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            } else if tools.is_empty() {
+                println!("（服务未提供任何工具，或全部连接失败）");
+            } else {
+                for (srv, t) in tools {
+                    println!("  mcp__{srv}__{}  {}", t.name, t.description);
+                }
+            }
+            Ok(())
+        }
+        McpCmd::Call { server, tool, args_json } => {
+            let spec = cfg
+                .mcp
+                .servers
+                .iter()
+                .find(|s| s.name == *server && s.enabled)
+                .ok_or_else(|| anyhow::anyhow!("未配置（或已禁用）的 MCP 服务：{server}"))?
+                .clone();
+            let args: serde_json::Value = serde_json::from_str(args_json)
+                .map_err(|e| anyhow::anyhow!("args_json 不是合法 JSON：{e}"))?;
+            let mut reg = ne_agent::mcp::McpRegistry::new(vec![spec]);
+            let out = reg.call(server, tool, args)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({"result": out}))?);
+            } else {
+                println!("{out}");
+            }
+            Ok(())
+        }
     }
 }
 

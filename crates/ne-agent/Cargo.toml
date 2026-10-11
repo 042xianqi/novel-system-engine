@@ -25,3 +25,9 @@ serde_yaml = "0.9"
 anyhow = "1"
 regex = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
+# ── web_fetch/web_search 用：与 ne-engine 同版本，零 tokio/零 reqwest ──
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
+rustls-pki-types = "1"
+# 中文搜索页常是 GBK；用成熟库解码，不手搓字符表
+encoding_rs = "0.8"

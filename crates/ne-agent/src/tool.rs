@@ -64,6 +64,12 @@ pub enum Tool {
     Ls,
     /// 执行 shell 命令（危险）
     Base,
+    /// 抓取网页 → 纯文本
+    WebFetch,
+    /// 联网搜索
+    WebSearch,
+    /// 调用外部 MCP 服务（名字形如 `mcp__<server>__<tool>`）
+    Mcp,
 }
 
 impl Tool {
@@ -74,6 +80,9 @@ impl Tool {
             Tool::Edit => "edit",
             Tool::Ls => "ls",
             Tool::Base => "base",
+            Tool::WebFetch => "web_fetch",
+            Tool::WebSearch => "web_search",
+            Tool::Mcp => "mcp",
         }
     }
 
@@ -82,6 +91,9 @@ impl Tool {
             Tool::Read | Tool::Ls => Tier::Read,
             Tool::Write | Tool::Edit => Tier::Write,
             Tool::Base => Tier::Exec,
+            Tool::WebFetch | Tool::WebSearch => Tier::Read,
+            // MCP 外部服务能力未知 → 按"有副作用"算，保守
+            Tool::Mcp => Tier::Exec,
         }
     }
 
@@ -92,22 +104,39 @@ impl Tool {
             Tool::Edit => "在文件中做精确文本替换；old 必须唯一匹配",
             Tool::Ls => "列出目录内容",
             Tool::Base => "在工作区内执行 shell 命令",
+            Tool::WebFetch => "抓取网页并转为纯文本（http/https；自动跟随重定向）",
+            Tool::WebSearch => "联网搜索（返回标题/摘要/链接）",
+            Tool::Mcp => "调用外部 MCP 服务（工具名形如 mcp__<服务>__<工具>）",
         }
     }
 
     pub fn from_name(s: &str) -> Option<Tool> {
+        // MCP 工具名是动态的（mcp__<server>__<tool>）→ 前缀识别
+        if s.starts_with("mcp__") {
+            return Some(Tool::Mcp);
+        }
         Some(match s {
             "read" => Tool::Read,
             "write" => Tool::Write,
             "edit" => Tool::Edit,
             "ls" => Tool::Ls,
             "base" => Tool::Base,
+            "web_fetch" => Tool::WebFetch,
+            "web_search" => Tool::WebSearch,
             _ => return None,
         })
     }
 
     pub fn all() -> &'static [Tool] {
-        &[Tool::Read, Tool::Write, Tool::Edit, Tool::Ls, Tool::Base]
+        &[
+            Tool::Read,
+            Tool::Write,
+            Tool::Edit,
+            Tool::Ls,
+            Tool::Base,
+            Tool::WebFetch,
+            Tool::WebSearch,
+        ]
     }
 
     /// 参数中本工具需要的键名（用于参数校验与提示）。
@@ -118,18 +147,41 @@ impl Tool {
             Tool::Edit => &["path", "old", "new"],
             Tool::Ls => &["path"],
             Tool::Base => &["command"],
+            Tool::WebFetch => &["url", "max_chars"],
+            Tool::WebSearch => &["query", "engine", "limit"],
+            Tool::Mcp => &["（由具体 MCP 工具定义）"],
         }
     }
+
+    /// 是否走网络（需要联网工具开关；M6 审批会用）。
+    pub fn is_network(&self) -> bool {
+        matches!(self, Tool::WebFetch | Tool::WebSearch | Tool::Mcp)
+    }
 }
+
+/// MCP 调用参数的内部键：由 harness 把原始限定名塞进来供路由。
+pub const MCP_TOOL_KEY: &str = "__mcp_tool";
 
 /// 执行上下文：工具只能在工作区内活动。
 pub struct ToolCtx {
     pub root: PathBuf,
+    /// 外部 MCP 服务注册表（惰性连接；None = 未配置）。
+    ///
+    /// 用 `RefCell` 做**内部可变性**：工具执行签名是 `&ToolCtx`（多轮循环里
+    /// 不与会话状态纠缠），而 MCP 连接是有状态、需惰性建立的。
+    /// ne-agent 是单线程（std 阻塞 IO，无 tokio），RefCell 无并发风险。
+    pub mcp: Option<std::cell::RefCell<crate::mcp::McpRegistry>>,
 }
 
 impl ToolCtx {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        ToolCtx { root: root.into() }
+        ToolCtx { root: root.into(), mcp: None }
+    }
+
+    /// 附加 MCP 注册表。
+    pub fn with_mcp(mut self, reg: crate::mcp::McpRegistry) -> Self {
+        self.mcp = Some(std::cell::RefCell::new(reg));
+        self
     }
 
     fn root_canon(&self) -> Result<PathBuf> {
@@ -196,7 +248,80 @@ pub fn execute(ctx: &ToolCtx, tool: Tool, args: &ToolArgs) -> Result<ToolResult>
         Tool::Edit => edit(ctx, args),
         Tool::Ls => ls(ctx, args),
         Tool::Base => base(ctx, args),
+        Tool::WebFetch => web_fetch(args),
+        Tool::WebSearch => web_search(args),
+        Tool::Mcp => mcp_call(ctx, args),
     })
+}
+
+/// `mcp__<server>__<tool>`：路由到外部 MCP 服务。
+///
+/// 限定名由 harness 放在 [`MCP_TOOL_KEY`] 里传入；其余键即该工具的 arguments。
+fn mcp_call(ctx: &ToolCtx, a: &ToolArgs) -> ToolResult {
+    let Some(reg) = ctx.mcp.as_ref() else {
+        return ToolResult::err("未配置任何 MCP 服务（runtime.yaml 的 mcp.servers）");
+    };
+    let Some(qualified) = a.get(MCP_TOOL_KEY) else {
+        return ToolResult::err("内部错误：缺少 MCP 限定工具名");
+    };
+    let Some((server, tool)) = crate::mcp::split_qualified(qualified) else {
+        return ToolResult::err(format!(
+            "MCP 工具名格式错误：`{qualified}`；应为 `mcp__<服务>__<工具>`"
+        ));
+    };
+    // 除内部键外，其余都是该工具的实参
+    let arguments = a.to_json_except(MCP_TOOL_KEY);
+    match reg.borrow_mut().call(&server, &tool, arguments) {
+        Ok(out) => ToolResult::ok(out),
+        Err(e) => ToolResult::err(format!("MCP 调用失败（{server}/{tool}）：{e}")),
+    }
+}
+
+/// `web_fetch`：抓网页 → 纯文本。
+fn web_fetch(a: &ToolArgs) -> ToolResult {
+    let url = match a.need("url") {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let max_chars = a
+        .get("max_chars")
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(8000)
+        .clamp(200, 60_000);
+    match crate::web::fetch_text(url, max_chars) {
+        Ok(t) => ToolResult::ok(t),
+        Err(e) => ToolResult::err(format!("抓取失败：{e}")),
+    }
+}
+
+/// `web_search`：多引擎搜索（失败自动回退）。
+fn web_search(a: &ToolArgs) -> ToolResult {
+    let query = match a.need("query") {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let engine = a.get("engine").unwrap_or("baidu");
+    let limit = a
+        .get("limit")
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(5)
+        .clamp(1, 15);
+    match crate::web::search(query, engine, limit) {
+        Ok(hits) if hits.is_empty() => {
+            ToolResult::err(format!("「{query}」无搜索结果"))
+        }
+        Ok(hits) => {
+            let mut s = format!("搜索「{query}」（引擎 {engine}，{} 条）\n", hits.len());
+            for (i, h) in hits.iter().enumerate() {
+                s.push_str(&format!("\n{}. {}\n   {}", i + 1, h.title, h.url));
+                if !h.snippet.is_empty() {
+                    s.push_str(&format!("\n   {}", h.snippet));
+                }
+            }
+            ToolResult::ok(s)
+        }
+        Err(e) => ToolResult::err(format!("搜索失败：{e}")),
+    }
 }
 
 /// 轻量参数袋（避免工具签名依赖具体 JSON 库）。
@@ -215,6 +340,22 @@ impl ToolArgs {
     }
     pub fn get(&self, k: &str) -> Option<&str> {
         self.map.get(k).map(|s| s.as_str())
+    }
+    /// 除某键外，其余转成 JSON 对象（MCP 透传实参用）。
+    ///
+    /// 值尝试按 JSON 解析（数字/布尔/数组/对象原样），失败则当字符串——
+    /// 这样 MCP 工具能收到正确的类型，而不是全被当成字符串。
+    pub fn to_json_except(&self, exclude: &str) -> serde_json::Value {
+        let mut obj = serde_json::Map::new();
+        for (k, v) in &self.map {
+            if k == exclude {
+                continue;
+            }
+            let val = serde_json::from_str::<serde_json::Value>(v)
+                .unwrap_or_else(|_| serde_json::Value::String(v.clone()));
+            obj.insert(k.clone(), val);
+        }
+        serde_json::Value::Object(obj)
     }
     fn need(&self, k: &str) -> Result<&str, ToolResult> {
         self.get(k).filter(|s| !s.is_empty()).ok_or_else(|| {
@@ -459,8 +600,31 @@ mod tests {
     #[test]
     fn registry_names_are_stable() {
         assert_eq!(Tool::from_name("read"), Some(Tool::Read));
+        assert_eq!(Tool::from_name("web_fetch"), Some(Tool::WebFetch));
         assert_eq!(Tool::from_name("nope"), None);
         let names: Vec<&str> = Tool::all().iter().map(|t| t.name()).collect();
-        assert_eq!(names, vec!["read", "write", "edit", "ls", "base"]);
+        assert_eq!(
+            names,
+            vec!["read", "write", "edit", "ls", "base", "web_fetch", "web_search"]
+        );
+    }
+
+    #[test]
+    fn network_tools_are_read_tier_and_flagged() {
+        // 网络工具是只读 tier，但被 is_network 标记（M6 审批用）
+        assert_eq!(Tool::WebFetch.tier(), Tier::Read);
+        assert_eq!(Tool::WebSearch.tier(), Tier::Read);
+        assert!(Tool::WebFetch.is_network());
+        assert!(Tool::WebSearch.is_network());
+        assert!(!Tool::Read.is_network());
+        assert!(!Tool::Base.is_network());
+    }
+
+    #[test]
+    fn web_search_reports_missing_query() {
+        let (c, _d) = ctx("ws");
+        let r = execute(&c, Tool::WebSearch, &ToolArgs::new()).unwrap();
+        assert!(!r.ok);
+        assert!(r.output.contains("query"), "{}", r.output);
     }
 }

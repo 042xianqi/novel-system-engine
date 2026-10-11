@@ -19,6 +19,36 @@ pub struct RuntimeConfig {
     pub context: ContextSection,
     pub tools: ToolsSection,
     pub memory: MemorySection,
+    pub mcp: McpSection,
+}
+
+/// MCP 外部服务清单（太墟命名法：工具暴露为 `mcp__<name>__<tool>`）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct McpSection {
+    pub servers: Vec<McpServerCfg>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpServerCfg {
+    /// 服务名（用于 `mcp__<name>__<tool>` 前缀）
+    pub name: String,
+    /// 可执行文件
+    pub command: String,
+    /// 参数
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// 工作目录（可选）
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// 是否启用（默认 true）
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +89,7 @@ impl Default for RuntimeConfig {
             context: ContextSection::default(),
             tools: ToolsSection::default(),
             memory: MemorySection::default(),
+            mcp: McpSection::default(),
         }
     }
 }

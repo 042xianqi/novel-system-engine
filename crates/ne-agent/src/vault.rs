@@ -164,12 +164,25 @@ context:
 
 tools:
   # 内置工具开关（名字见 `ne-agent tools`）
+  # 网络工具（web_fetch/web_search）默认**关闭**，需显式打开（M6 会接审批策略）
+  # 启用 MCP 服务后，其工具以 `mcp__<服务>__<工具>` 暴露给模型
   enabled: [read, write, edit, ls, base]
 
 memory:
   # 记忆策略（M2 落地）
   recall_limit: 5
   recall_min_score: 0.0
+
+# 外部 MCP 服务（stdio + newline-delimited JSON-RPC 2.0）。
+# 工具名走太墟命名法 `mcp__<服务>__<工具>`，模型直接可调。
+# 例：
+# mcp:
+#   servers:
+#     - name: websearch
+#       command: python3
+#       args: ["/opt/taixu/scripts/websearch_mcp_server.py"]
+mcp:
+  servers: []
 "#;
 
 /// 空 models.yml（结构注释，实际内容由用户填或导入全局配置）。

@@ -174,16 +174,43 @@ NovelCtx::open → chapter::build_prompt → llm::call → chapter::write_chapte
 
 ---
 
-## M4 · 外部世界
+## M4 · 外部世界 — ✅ 已完成（2026-10-11）
 
 **做什么**
-- `tool::web_search` / `tool::web_fetch`：收编已装的 `mcp_websearch`
-- `mcp` 模块：把现有 `ne-mcp` 的 6 工具收编为**内置工具**（不再是外部进程）
-- 工具按需加载的雏形（长工具说明不常驻）
+- `web::fetch_text` / `web::search`：网页抓取 + 多引擎搜索
+- `mcp` 模块：通用 MCP 客户端（`mcp__<服务>__<工具>` 命名法）
+
+### ✅ 交付
+
+**`crates/ne-agent/src/web.rs`（19 单测）** —— 自写 HTTPS 客户端（零 tokio / 零 reqwest）
+- `get()`：跟随重定向（上限 5，每跳重校 scheme）+ 响应体硬上限（2 MiB）+ 超时必设
+- `fetch_text()`：抓取 → 去 script/style/注释 → 剥标签 → 解 HTML 实体 → 压空白
+- `search()`：**照太墟 `/opt/taixu/scripts/websearch_mcp_server.py`** —— 免 API Key，
+  直接取 Baidu/Bing/DDG 结果页正则解析；**首选引擎失败或零结果时自动回退其余引擎**
+
+**`crates/ne-agent/src/mcp.rs`（11 单测 + 5 e2e 测试）** —— MCP 客户端
+- 协议：stdio + **newline-delimited JSON-RPC 2.0**（与 ne-mcp 同构）
+- **太墟命名法**：工具暴露为 `mcp__<服务>__<工具>`（`HarnessMessage.kt:24` +
+  `HarnessToolRoundRunner.kt:351`）——模型直接可调，无需先"选服务"
+- `McpRegistry`：**惰性连接**（首次调用才 spawn 子进程）+ 按名缓存；`Drop` 时 kill
+
+**关于「收编 ne-mcp」的判断**：ne-mcp 的 6 个工具（funnel/cardgen/inject/check/db/db_query）
+全是**本地小说库操作**，而 M3 的 `novel` 任务已在**进程内直接调用**同样能力。
+绕道 MCP 子进程是纯开销 → 不搬。MCP 通道留给**真正的外部服务**（如太墟的 mcp_websearch）。
+
+**关键修正（真机揪出）**：初版 `TcpStream::connect(&str)` 在主机只解析到
+**不可达 IPv6** 时挂死 40s+（实测百度/DDG）。改为 `connect_timeout` 逐个尝试
+解析出的地址，每个设限，任一成功即用。
+
+**参数透传**：`ToolArgs::to_json_except` —— 值按 JSON 解析（数字/布尔/数组原样），
+失败才当字符串，让 MCP 工具收到正确类型而非全字符串。
+
+**CLI**：`mcp list | tools [服务] | call <服务> <工具> '<json>'`
 
 **验收**
-- chat 中能"搜资料 → 引用 → 补充进上下文"
-- `ne-agent tool <name>` 可单独调试任一工具
+- `web_fetch` 抓真实网页 → 200，HTML→文本正确
+- MCP e2e：真实 stdio 子进程握手 + 列工具 + 调用 + 工具层路由，5 测试全过
+- 全 workspace **277 测试 0 失败**
 
 **产出**：它能主动获取外部信息。
 

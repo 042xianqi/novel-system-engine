@@ -15,4 +15,5 @@
 
 | 版本 | 日期 | 里程碑 | 内容 |
 |---|---|---|---|
+| 0.0.2 | 2026-10-11 | M4 | 外部世界：`web.rs`（自写 HTTPS GET + HTML→文本 + 多引擎搜索，多引擎失败自动回退）、`mcp.rs`（stdio MCP 客户端 + `mcp__<服务>__<工具>` 路由 + 惰性连接）、`mcp` CLI。真机揪出并修：`TcpStream::connect` 遇不可达 IPv6 挂死 → 改 `connect_timeout` 逐地址尝试；中文页 GBK 未解码 → 加 `encoding_rs` + charset 探测。 |
 | 0.0.1 | 2026-10-11 | M0–M3 | 引入版本管理；整理既有成果为可迭代基线（vault/config/CLI、会话树+prompt+工具+主循环+chat、pinned+BM25 记忆、novel 任务补齐全仓缺失的 BudgetCtx/ChapterCtx） |

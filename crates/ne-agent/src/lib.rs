@@ -14,6 +14,7 @@
 
 pub mod config;
 pub mod harness;
+pub mod mcp;
 pub mod memory;
 pub mod novel_ctx;
 pub mod prompt;
@@ -21,6 +22,7 @@ pub mod session;
 pub mod task;
 pub mod tool;
 pub mod vault;
+pub mod web;
 
 pub use config::RuntimeConfig;
 pub use vault::Vault;
@@ -38,9 +40,11 @@ pub fn resolve_enabled_tools(cfg: &RuntimeConfig) -> anyhow::Result<Vec<tool::To
     let mut out = Vec::new();
     for name in &cfg.tools.enabled {
         match tool::Tool::from_name(name) {
-            Some(t) => out.push(t),
+            // 去重（`mcp`/`mcp__x__y` 都归 Tool::Mcp，避免重复）
+            Some(t) if !out.contains(&t) => out.push(t),
+            Some(_) => {}
             None => anyhow::bail!(
-                "runtime.yaml 的 tools.enabled 里有未知工具 `{name}`；可用：{}",
+                "runtime.yaml 的 tools.enabled 里有未知工具 `{name}`；可用：{}（另有 mcp__<服务>__<工具>）",
                 tool::Tool::all()
                     .iter()
                     .map(|t| t.name())

@@ -104,6 +104,8 @@ pub struct HarnessCtx<'a> {
     /// 在 ctx 构造时**取一次快照**；会话进行中记忆库变化不影响本次运行——
     /// 这是 prefix cache 稳定性的要求（见 memory.rs 模块头）。
     pub pinned_section: String,
+    /// 外部 MCP 服务清单（None = 未配置；有则惰性连接）。
+    pub mcp_servers: Option<Vec<crate::config::McpServerCfg>>,
 }
 
 impl<'a> HarnessCtx<'a> {
@@ -127,6 +129,7 @@ pub fn system_prompt_text(h: &HarnessCtx) -> Result<String> {
         .enabled
         .iter()
         .map(|t| format!("- `{}`：{}", t.name(), t.description()))
+        .chain(mcp_tool_lines(h))
         .collect::<Vec<_>>()
         .join("\n");
     let vars = agent_vars(&tools_desc, &h.work_root);
@@ -136,6 +139,23 @@ pub fn system_prompt_text(h: &HarnessCtx) -> Result<String> {
         s.push_str(&h.pinned_section);
     }
     Ok(s)
+}
+
+/// MCP 工具清单行（供 prompt 告知模型）。**已连接的**才列出（避免启动全部服务）。
+///
+/// ⚠ 这里不主动 `discover_all()`（那会 spawn 所有服务）；只列出**显式启用的服务名**，
+/// 让模型知道"存在这些服务，工具名形如 mcp__<服务>__<工具>"。具体工具清单
+/// 在服务首次被调用时由模型按需发现（或由 `ne-agent mcp list` 主动枚举）。
+fn mcp_tool_lines(h: &HarnessCtx) -> Vec<String> {
+    let Some(specs) = &h.mcp_servers else { return Vec::new() };
+    let mut out = Vec::new();
+    for s in specs.iter().filter(|s| s.enabled) {
+        out.push(format!(
+            "- `mcp__{}__*`：外部 MCP 服务 `{}` 提供的工具（工具名形如 `mcp__服务__工具`）",
+            s.name, s.name
+        ));
+    }
+    out
 }
 
 fn agent_vars<'v>(tools_desc: &'v str, work_root: &'v std::path::Path) -> BTreeMap<&'v str, String> {
@@ -287,7 +307,10 @@ fn run_calls(h: &HarnessCtx, ctx: &ToolCtx, calls: &[Call]) -> Vec<tool::ToolRes
 ///
 /// 前置：最新 user 消息**已在会话库**（调用 [`persist_user`]）。
 pub fn run_session(h: &HarnessCtx, turn_prefix: &TurnPrefix) -> Result<RunOutcome> {
-    let ctx = ToolCtx::new(&h.work_root);
+    let mut ctx = ToolCtx::new(&h.work_root);
+    if let Some(specs) = &h.mcp_servers {
+        ctx = ctx.with_mcp(crate::mcp::McpRegistry::new(specs.clone()));
+    }
     let mut all_results = Vec::new();
     let mut consecutive_failures = 0usize;
     let mut last_text = String::new();

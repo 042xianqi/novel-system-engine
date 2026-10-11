@@ -166,7 +166,41 @@ compress ask_user render_surface
 
 ---
 
-## 7. 一个必须做的决策
+## 8. M5 上下文预算契约（`ContextWindowPolicy.kt` 1074 行，抄契约不抄体量）
+
+**常量（太墟原值）**
+```
+RESERVED_OUTPUT_TOKENS   = 8192      预留输出
+TOOL_SCHEMA_RESERVE_TOKENS = 7200    tools 数组不在这批 messages 里，必须显式预留
+MAX_SYSTEM_PROMPT_FRACTION = 0.60    system 最多占窗口 60%
+MIN_SYSTEM_PROMPT_TOKENS = 512
+KEEP_RECENT_TOOL_RESULTS = 4         折叠时保护最近 N 条工具结果
+DEFAULT_FOLDING_RATIO_PERCENT = 100  折叠线 = (窗口 - 预留输出 - 工具schema预留) * 比例
+```
+
+**token 估算（关键：CJK 单独分桶）**
+```kotlin
+cjk/1.8 + ascii/2.5 + punctuation/2.8，下限 1
+// 全角区 0x2E80..0x9FFF、韩文 0xAC00..0xD7AF、全角标点 0xFF00..0xFFEF 全按 CJK 价
+// 理由：中文标点实际 ~1 token/字，按 ASCII 标点 /2.8 会系统性低估中文上下文
+```
+
+**老轮次工具结果截断（`truncateStaleToolResults`）—— 预算线之前就生效**
+- **受保护**：最后一条 user 消息之后的全部结果（当前工作轮）∪ 最近 4 条结果
+- 其余超过工具类型阈值的，按 `compactToolOutput` 压缩 + 附 `history_read(message_id=...)` 指针
+- **不改消息条数/顺序**（NATIVE 协议下丢消息会产生非法 transcript），只替换正文
+- 理由：一轮 2.7KB 快照随对话累积，既烧 token 又稀释注意力
+- `projectForUsage`：面板估算必须与实际发送同口径（实测未截断时虚高 3 倍）
+
+**给 ne-agent 的落地**（`ContextWindowPolicy` 同类，放 `ne-agent/src/context.rs`）：
+- `estimate_tokens(text) -> usize`（CJK 三桶）
+- `folding_limit(window, reserve_output, tool_schema_reserve) -> usize`
+- `truncate_stale_tool_results(msgs, keep_recent=4) -> Vec<Msg>`
+- 与 `runtime.yaml` 的 `context.max_prompt_tokens / reserve_tokens` 对齐
+
+---
+
+## 9. 一个必须做的决策
 
 太墟的 harness 复杂度很高（47535 行 Kotlin，含 dual agent / speculation / checkpoint / rewind / workflow / browser CDP）。**建议分两期**：
 

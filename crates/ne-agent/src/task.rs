@@ -39,6 +39,11 @@ fn make_ctx<'a>(
         max_rounds: 0,
         max_consecutive_failures: 0,
         pinned_section,
+        mcp_servers: if cfg.mcp.servers.is_empty() {
+            None
+        } else {
+            Some(cfg.mcp.servers.clone())
+        },
     }
 }
 

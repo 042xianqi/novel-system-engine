@@ -1,6 +1,6 @@
 # ne-agent 开发进度（跨段续跑用）
 
-> 最后更新：2026-10-11（**M0–M10 全部完成，v0.0.8**）
+> 最后更新：2026-10-11（**M0–M10.1 全部完成，v0.0.9**）
 > 仓库：github.com/042xianqi/novel-system　本地：/workspace/小说系统
 > 路线图：docs/ROADMAP-ne-agent.md　参考笔记：docs/ref_taixu_harness_notes.md、docs/ref_omp_notes.md
 > 太墟源码：/workspace/taixu-ref（Kotlin，47535 行，**主参考**）
@@ -360,3 +360,50 @@ tests/m8_tools_e2e.rs / tests/dual_agent_e2e.rs。工具数 10→14。
 - 真机验证（真实端点 glm-5.3-flash）头号缺陷：工具调用完全不工作 → 已修（原生 tools 通道 + 文本回退）。
 - 全量：`cargo test --workspace` 414 通过 0 失败；arch_check 通过；新代码（protocol.rs/llm.rs）零 clippy 警告。
 - ROADMAP 头部铁律修订 + M10 段；版本 0.0.7 → 0.0.8；提交推送。
+
+### M10.1 · 全路径真机验证（续跑 6）—— 揪出 dual_agent 两个真 bug
+
+**动机**：M10 的教训是"假 LLM 服务端漏过全部协议类 bug"。真机只验了 chat，其余四条走
+`llm::call` 的路径从未真机跑过。逐条真机验证。
+
+**路径盘点（谁在用 llm::call）**
+| 路径 | 真机结果 |
+|---|---|
+| chat / Executor | ✅ M10 已验 |
+| compaction LlmSummarizer（`compress`） | ✅ 通过（折叠 26 条→结构化摘要，准确保留目标/决定/产物/未决） |
+| **dual_agent Planner/Executor** | ❌ **两个真 bug，已修** |
+| novel_chapter（`novel`，真实资料库 卷01） | ✅ 通过（2574 字，verdict=fix，P0=0） |
+| ne-engine CLI `call` | ✅ tools 恒空（`build_params(.., None)`），无此风险 |
+
+**真 bug #1：非工具角色误携 tools（与 M10 同类）**
+- 现象：`dual_agent` 跑满 10 步，Planner assistant 消息**全空**，计划退化成"执行任务/空指令"，Executor 空转。
+- 根因：`LlmParams.tools` 是**全局单一字段**（main.rs 注入 17 个内建 schema）。
+  Planner 代码写着 `enabled: Vec::new() // Planner 无工具`，但请求仍带 `tools` →
+  **真实模型优先返回 `tool_calls`（content 为空）** → `parse_planner_decision("")` 兜底空指令。
+- 铁证（curl 探针）：Planner prompt + 带 tools → `finish_reason=tool_calls, content=''`。
+- 修法（对齐太墟）：`ne-engine::llm::LlmParams::pure_chat()`（清空 tools + 置 Disabled），
+  Planner 与 compaction 摘要器改用派生副本。太墟对应 `copy(pureChatMode=true, toolCallMode=DISABLED)`。
+
+**真 bug #2：Planner 不守 JSON 协议 → 死循环（漏抄太墟的完成信号识别）**
+- 现象：修完 #1 后，Planner 输出正常（"我没有工具"），但**仍跑满 max_steps**。
+- 根因：真实模型**不遵守**提示词里的 JSON 协议，回散文（连"最终报告（FINISH）"这种）。
+  我们的 `parse_planner_decision` 只有 JSON 解析 + "兜底重置 step_1"，**没有太墟的自然语言完成信号识别**
+  → JSON 失败即重置 → 每轮追加/重置 → 永不终止。
+  对比太墟 `PlannerProtocolParser`：**完成信号命中即 FINISH**；兜底用 `ExecuteStep`（累积不重置）；
+  兜底 id `nextFallbackStepId` 避撞车。
+- 修法：按太墟重写解析器 —— ①`looks_completed` 识别中文（已完成/全部完成/…）+ 英文词边界
+  （completed/finished/**finish**）；②兜底改 `ExecuteStep` 累积；③`next_fallback_step_id` 防撞。
+  安全性：协调器对"步骤未完成时的 FINISH"会打回（`不得提前 FINISH`），故识别 FINISH 不会静默收工。
+- 效果：Planner 消息 21→4（轮次 10→2），耗时 190s→48s，产物正确。
+
+**改动**
+- `ne-engine/src/llm.rs`：新增 `LlmParams::pure_chat()`。
+- `dual_agent.rs`：Planner 用 `pure_chat()`；`parse_planner_decision(text, current_steps)` 重写；
+  解析段拆到 `dual_agent_parse.rs`（避免 700 行门禁）。
+- `compaction.rs`：摘要器用 `pure_chat()`。
+- `dual_agent_tests.rs`：新增 3 项（兜底累积/完成信号/词边界）。
+
+**验证**：`cargo test --workspace` **416 通过 0 失败**；arch_check 通过；真机 dual_agent 2 轮收敛。
+
+**未完成（下一步）**
+- [ ] ROADMAP 追加 M10.1；版本 0.0.8 → 0.0.9；提交推送。

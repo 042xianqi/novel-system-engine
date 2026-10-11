@@ -49,6 +49,22 @@ impl Default for LlmParams {
     }
 }
 
+impl LlmParams {
+    /// 派生「纯聊天」副本：清空工具并把模式置为 `Disabled`。
+    ///
+    /// 供**非工具角色**（Planner、上下文摘要器等）使用：它们只用文本 I/O，
+    /// 一旦请求里带了 `tools`，真实模型会优先返回 `tool_calls`（正文为空），
+    /// 导致文本解析失败。对齐太墟
+    /// `plannerModel.copy(pureChatMode = true, toolCallMode = DISABLED)`。
+    pub fn pure_chat(&self) -> LlmParams {
+        LlmParams {
+            tools: Vec::new(),
+            tool_call_mode: ToolCallMode::Disabled,
+            ..self.clone()
+        }
+    }
+}
+
 /// 一次结构化工具调用。
 ///
 /// **线格式对齐 OpenAI / 太墟 `ApiToolCall`**：`{"id","type":"function","function":{"name","arguments"}}`。

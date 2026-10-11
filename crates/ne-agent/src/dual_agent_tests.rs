@@ -31,7 +31,7 @@ fn parse_init_plan() {
     let text = r#"```json
 {"thought":"拆解","action":"INIT_PLAN","plan":[{"id":"s1","title":"A","instruction":"做A","expectedOutcome":"A好","dependencies":[]},{"id":"s2","title":"B","instruction":"做B","dependencies":["s1"]}]}
 ```"#;
-    match parse_planner_decision(text) {
+    match parse_planner_decision(text, &[]) {
         PlannerDecision::InitializePlan { plan, .. } => {
             assert_eq!(plan.len(), 2);
             assert_eq!(plan[1].dependencies, vec!["s1".to_string()]);
@@ -43,21 +43,50 @@ fn parse_init_plan() {
 #[test]
 fn parse_finish() {
     let text = r#"{"action":"FINISH","finalReport":"全部搞定","plan":[]}"#;
-    match parse_planner_decision(text) {
+    match parse_planner_decision(text, &[]) {
         PlannerDecision::Finish { final_report, .. } => assert_eq!(final_report, "全部搞定"),
         other => panic!("应是 FINISH：{other:?}"),
     }
 }
 
 #[test]
-fn parse_fallback_single_step() {
-    let d = parse_planner_decision("完全没有 JSON 的自由文本");
+fn parse_fallback_is_execute_step_not_reset() {
+    // 真实模型回自然语言（无 JSON、无完成信号）时，必须**累积**新步骤而非重置计划，
+    // 否则每轮重置 step_1 → 永不终止（真机 bug 复现）。
+    let existing = vec![step("step_1", &[])];
+    let mut existing = existing;
+    existing[0].status = StepStatus::Completed;
+    let d = parse_planner_decision("完全没有 JSON 的自由文本", &existing);
     match d {
-        PlannerDecision::InitializePlan { plan, .. } => {
-            assert_eq!(plan.len(), 1);
-            assert!(plan[0].instruction.contains("自由文本"));
+        PlannerDecision::ExecuteStep { step, updated_plan } => {
+            assert_eq!(updated_plan.len(), 2, "应保留既有步骤并追加");
+            assert_eq!(updated_plan[0].status, StepStatus::Completed, "既有完成态不丢");
+            assert_ne!(step.id, "step_1", "兜底 id 必须避开已存在 id");
+            assert!(step.instruction.contains("自由文本"));
         }
-        other => panic!("应兜底为 INIT_PLAN：{other:?}"),
+        other => panic!("应兜底为 ExecuteStep：{other:?}"),
+    }
+}
+
+#[test]
+fn natural_language_completion_detected() {
+    // 模型不守 JSON 协议、直接用中文宣告完成 → 必须识别为 FINISH（否则死循环）。
+    match parse_planner_decision("所有计划工序已全部完成！", &[]) {
+        PlannerDecision::Finish { .. } => {}
+        other => panic!("中文完成信号应判 FINISH：{other:?}"),
+    }
+    match parse_planner_decision("All tasks are completed. Done.", &[]) {
+        PlannerDecision::Finish { .. } => {}
+        other => panic!("英文完成信号应判 FINISH：{other:?}"),
+    }
+}
+
+#[test]
+fn word_boundary_avoids_false_completion() {
+    // "uncompleted"/"unfinished" 不得误命中 → 应走兜底 ExecStep。
+    match parse_planner_decision("the task is unfinished, keep going", &[]) {
+        PlannerDecision::ExecuteStep { .. } => {}
+        other => panic!("未完成措辞不应判 FINISH：{other:?}"),
     }
 }
 

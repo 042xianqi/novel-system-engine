@@ -167,7 +167,7 @@ pub fn run(p: &DualAgentParams) -> Result<DualAgentOutcome> {
 
     for round in 1..=p.max_steps {
         // Planner 决策（每轮都读最新会话历史）
-        let decision = planner_decide(p, &store, &planner_sid)?;
+        let decision = planner_decide(p, &store, &planner_sid, &steps)?;
         match decision {
             PlannerDecision::Finish { final_report, completed_steps } => {
                 let all_done = !steps.is_empty()
@@ -230,12 +230,18 @@ fn planner_decide(
     p: &DualAgentParams,
     store: &crate::session::SessionStore,
     planner_sid: &str,
+    current_steps: &[PlanStep],
 ) -> Result<PlannerDecision> {
+    // Planner 是**纯规划**角色：它只用文本输出 JSON 决策，没有任何工具。
+    // 必须派生「不带工具」的 llm 副本，否则请求会注入 tools 数组 → 真实模型
+    // 会优先返回 tool_calls（content 为空）→ 决策解析失败 → 退化成空指令空转。
+    // 对齐太墟 `DualAgentCoordinator`：`copy(pureChatMode=true, toolCallMode=DISABLED)`。
+    let planner_llm = p.llm.pure_chat();
     let h = HarnessCtx {
         store,
         session: planner_sid.to_string(),
         cfg: &p.cfg,
-        llm: p.llm.clone(),
+        llm: planner_llm.clone(),
         work_root: p.workspace.clone(),
         prompt_dir: p.prompt_dir.clone(),
         enabled: Vec::new(), // Planner 无工具
@@ -252,9 +258,9 @@ fn planner_decide(
         asker: None,
     };
     let msgs = harness::build_messages(&h, &TurnPrefix::default())?;
-    let out = ne_engine::llm::call(&p.llm, &msgs)
+    let out = ne_engine::llm::call(&planner_llm, &msgs)
         .map_err(|e| anyhow::anyhow!("Planner 模型调用失败：{e}"))?;
-    let decision = parse_planner_decision(&out.content);
+    let decision = parse_planner_decision(&out.content, current_steps);
     // 落 Planner 原文（含 JSON），供后续轮次参考
     let head = store.head(planner_sid)?;
     store.append(planner_sid, head, "assistant", &out.content)?;
@@ -479,125 +485,12 @@ fn feed_batch(
     feed_planner(store, sid, &text)
 }
 
+
 // ─────────────────────────────── 解析（对齐太墟 PlannerProtocolParser）
-
-/// 从 Planner 输出里解析 JSON 决策；解析不出来时**宽松降级**为 INIT_PLAN（若含 plan 数组）。
-pub fn parse_planner_decision(text: &str) -> PlannerDecision {
-    let json = extract_json_block(text);
-    if let Some(v) = json.as_ref().and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()) {
-        let thought = v.get("thought").and_then(|x| x.as_str()).unwrap_or("").to_string();
-        let action = v.get("action").and_then(|x| x.as_str()).unwrap_or("").to_uppercase();
-        let plan = v.get("plan").and_then(|x| x.as_array()).map(|a| parse_steps(a)).unwrap_or_default();
-        let step = v.get("step").and_then(parse_step);
-        let final_report =
-            v.get("finalReport").and_then(|x| x.as_str()).unwrap_or("").to_string();
-        match action.as_str() {
-            "FINISH" => {
-                return PlannerDecision::Finish { final_report, completed_steps: plan };
-            }
-            "REPLAN" => {
-                return PlannerDecision::Replan { reason: thought, new_steps: plan };
-            }
-            "EXECUTE_STEP" => {
-                if let Some(s) = step {
-                    return PlannerDecision::ExecuteStep { step: s, updated_plan: plan };
-                }
-            }
-            // INIT_PLAN 与未知 action 都走末尾的 plan 兜底
-            _ => {}
-        }
-        if !plan.is_empty() {
-            return PlannerDecision::InitializePlan { thought, plan };
-        }
-    }
-    // 兜底：把整段当作一个单步（不空转，让 Executor 至少有活干）
-    PlannerDecision::InitializePlan {
-        thought: String::new(),
-        plan: vec![PlanStep {
-            id: "step_1".into(),
-            title: "执行任务".into(),
-            instruction: text.trim().to_string(),
-            expected_outcome: String::new(),
-            dependencies: Vec::new(),
-            status: StepStatus::Pending,
-            result_summary: None,
-        }],
-    }
-}
-
-fn parse_steps(arr: &[serde_json::Value]) -> Vec<PlanStep> {
-    arr.iter().enumerate().filter_map(|(i, v)| parse_step_impl(v, i)).collect()
-}
-
-fn parse_step(v: &serde_json::Value) -> Option<PlanStep> {
-    parse_step_impl(v, 0)
-}
-
-fn parse_step_impl(v: &serde_json::Value, idx: usize) -> Option<PlanStep> {
-    let obj = v.as_object()?;
-    let id = obj
-        .get("id")
-        .and_then(|x| x.as_str())
-        .map(String::from)
-        .unwrap_or_else(|| format!("step_{}", idx + 1));
-    let title = obj.get("title").and_then(|x| x.as_str()).unwrap_or("").to_string();
-    let instruction = obj
-        .get("instruction")
-        .or_else(|| obj.get("prompt"))
-        .and_then(|x| x.as_str())
-        .unwrap_or("")
-        .to_string();
-    if instruction.trim().is_empty() && title.trim().is_empty() {
-        return None;
-    }
-    let expected_outcome = obj
-        .get("expectedOutcome")
-        .and_then(|x| x.as_str())
-        .unwrap_or("")
-        .to_string();
-    let dependencies = obj
-        .get("dependencies")
-        .and_then(|x| x.as_array())
-        .map(|a| a.iter().filter_map(|d| d.as_str().map(String::from)).collect())
-        .unwrap_or_default();
-    Some(PlanStep {
-        id,
-        title,
-        instruction,
-        expected_outcome,
-        dependencies,
-        status: StepStatus::Pending,
-        result_summary: None,
-    })
-}
-
-/// 抽取 ```json ... ``` 块；无围栏则尝试 `{...}` 首尾配对。
-fn extract_json_block(text: &str) -> Option<String> {
-    if let Some(s) = text.find("```json") {
-        let rest = &text[s + 7..];
-        if let Some(e) = rest.find("```") {
-            return Some(rest[..e].trim().to_string());
-        }
-    }
-    if let Some(s) = text.find("```") {
-        let rest = &text[s + 3..];
-        if let Some(e) = rest.find("```") {
-            let inner = rest[..e].trim();
-            if inner.starts_with('{') {
-                return Some(inner.to_string());
-            }
-        }
-    }
-    // 裸 JSON：取首个 { 到最后一个 }
-    let start = text.find('{')?;
-    let end = text.rfind('}')?;
-    if end > start {
-        Some(text[start..=end].to_string())
-    } else {
-        None
-    }
-}
-
+// 解析器等长逻辑拆到同目录子模块，避免本文件超架构门禁（700 行）。
+#[path = "dual_agent_parse.rs"]
+mod parse;
+pub use parse::parse_planner_decision;
 /// 截断摘要（Executor 只回传真精炼结果，防原生日志灌爆 Planner）。
 fn truncate_summary(text: &str) -> String {
     const MAX: usize = 800;

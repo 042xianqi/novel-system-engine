@@ -205,6 +205,9 @@ pub struct LlmSummarizer {
 
 impl Summarizer for LlmSummarizer {
     fn summarize(&self, input: &SummarizeInput) -> Result<String> {
+        // 摘要器只用文本 I/O，不该带工具：否则真实模型可能返回 tool_calls（正文为空）
+        // 导致摘要失败。对齐 Planner 的纯聊天派生。
+        let llm = self.llm.pure_chat();
         let mut transcript = String::new();
         for m in input.folded {
             let tag = match m.role.as_str() {
@@ -229,7 +232,7 @@ impl Summarizer for LlmSummarizer {
             ne_engine::llm::Message::system(sys),
             ne_engine::llm::Message::user(user),
         ];
-        let out = ne_engine::llm::call(&self.llm, &msgs)?;
+        let out = ne_engine::llm::call(&llm, &msgs)?;
         let mut text = out.content.trim().to_string();
         if text.is_empty() {
             bail!("摘要模型返回空文本");

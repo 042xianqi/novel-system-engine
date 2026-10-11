@@ -491,6 +491,38 @@ NovelCtx::open → chapter::build_prompt → llm::call → chapter::write_chapte
 
 ---
 
+## M10.1 · 全路径真机验证（dual_agent 两个真 bug）— ✅ 已完成（2026-10-11）
+
+**动机**：M10 的教训是"假 LLM 服务端漏过全部协议类 bug"。真机只验了 chat，
+其余四条走 `llm::call` 的路径从未真机跑过。逐条验证。
+
+| 路径 | 真机结果 |
+|---|---|
+| chat / Executor | ✅ M10 已验 |
+| compaction 摘要器（`compress`） | ✅ 通过 |
+| **dual_agent Planner/Executor** | ❌ **两个真 bug，已修** |
+| novel_chapter（`novel`，真实资料库 卷01） | ✅ 通过（2574 字，verdict=fix，P0=0） |
+| ne-engine CLI | ✅ tools 恒空，无风险 |
+
+**bug #1：非工具角色误携 tools（与 M10 同类）**
+`LlmParams.tools` 是全局单一字段；Planner 声明"无工具"，却仍带 `tools` → 真实模型
+优先返回 `tool_calls`（正文空）→ 决策解析失败 → 空指令空转。
+修法：新增 `LlmParams::pure_chat()`，Planner/摘要器用派生副本。
+对齐太墟 `copy(pureChatMode=true, toolCallMode=DISABLED)`。
+
+**bug #2：Planner 不守 JSON 协议 → 死循环（漏抄太墟完成信号识别）**
+真实模型回散文（"最终报告（FINISH）"），而我们的解析器缺"自然语言完成信号识别"
+→ 每轮兜底重置 → 跑满 max_steps。按太墟 `PlannerProtocolParser` 补：完成信号识别、
+兜底累积（ExecuteStep 非重置）、兜底 id 防撞。
+效果：Planner 消息 21→4，耗时 190s→48s。
+
+**验证**：`cargo test --workspace` 416 通过 0 失败；arch_check 通过；真机 dual_agent 2 轮收敛。
+新增 `dual_agent_parse.rs`（解析器拆出，避免 700 行门禁）。
+
+**产出**：v0.0.9。
+
+---
+
 ## 阶段依赖与"不要跳"清单
 
 ```

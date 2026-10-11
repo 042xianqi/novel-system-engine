@@ -76,7 +76,33 @@
 3. `ContextSection` 已有 `max_prompt_tokens`/`reserve_tokens` → 接入 `folding_limit`
 4. 后台跑 `cargo test --workspace`，提交推送（v0.0.3）
 
-## 进行中：M7 完善
+## 进行中：收尾
+
+### 已完成（本次会话，未提交）
+
+- `crates/ne-agent/README.md`（85 行）：单二进制总说明（是什么 / 快速开始 / 设计立场 / 里程碑表 / 门禁）
+- `.github/workflows/ci.yml`：编译前先跑 `python3 scripts/arch_check.py`
+- `scripts/verify-portable.sh`：单二进制"拎包走"验证（拷到干净目录，仅凭 yaml 跑通全流程）
+- 版本修正：workspace 0.0.5 + `STAGE = "M7 完善"`（之前提交信息写了 0.0.5 但 Cargo.toml 没改）
+- 修 `crates/ne-engine/examples/gate14_parity.rs` 的 unused import 警告（1 行）
+
+### 真机验证（verify-portable.sh 结果）
+
+release 二进制拷到 `/tmp` 干净目录，**仅带 yaml**：
+- `--version` → `ne-agent 0.0.5（M7 完善）`
+- `vault init` → 自建 6 项；`vault show` → 自检
+- `chat -m` 真跑一轮（假 LLM）
+- `estimate` → 15 字 / 8 token
+- `task new`/`task list` → queued 任务
+- `session list`/`session rewind --last-turn` → 分支 2→0，库中保留
+- `ldd` → **3 个动态库，仅 libc/libm/libgcc**（无脚本、无额外依赖）
+
+### 待办
+
+1. 等 portable2 验证 + examples 编译无警告
+2. 提交推送（v0.0.5 收尾）
+
+## M7 完善 —— 已推送 4d2f412
 
 ### 已完成（未验证编译/未提交）
 

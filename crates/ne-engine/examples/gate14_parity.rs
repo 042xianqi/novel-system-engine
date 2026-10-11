@@ -1,6 +1,6 @@
 //! gate14 对拍：读合成 lab 环境，跑 Rust 16 门禁，输出 JSON 供与 Python 比对。
 use ne_engine::gate14::{self, DueForeshadow, GateCfg, GateCtx};
-use ne_engine::budget::{self, BudgetCtx};
+use ne_engine::budget;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 

@@ -27,6 +27,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: 架构门禁（crate 边界 + import 黑名单 + 行数棘轮）
+        run: python3 scripts/arch_check.py
+
       - name: 编译（全 workspace）
         run: cargo build --workspace --all-targets
 

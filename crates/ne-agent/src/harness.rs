@@ -1,0 +1,469 @@
+//! Agent 主循环 —— 多轮工具循环 + 停止语义 + 出口配对修复。
+//!
+//! 参考（**边做边对照太墟**）：
+//!   * `HarnessLoop.kt:1211` `runLoopRounds` —— 主循环、`RoundBudget`、
+//!     `maxConsecutiveFailures` 熔断（连续失败即停，防风暴）
+//!   * `ProviderClient.kt:711` `sanitizeApiTranscript` —— **出口最后一道防线**：
+//!     `role=tool` 必须紧随含对应 tool_call_id 的 assistant(tool_calls)，
+//!     错位/孤立的转写为 user 文本，缺失的补占位，否则服务端 400。
+//!
+//! # 本轮相对初版的修正
+//!
+//! 初版想用「输出长度是否顶到 max_tokens」来猜 `finish_reason`，据此决定要不要
+//! 执行工具。查了太墟后确认**这是错的**：
+//!   * 太墟的 OpenAI 兼容路径**不看 finish_reason**，只按 `toolCalls.isNotEmpty()`
+//!     分流（`HarnessLoop.kt:1309`）。
+//!   * 猜长度既不可靠（CJK/ASCII 比例、推理内容都影响），又有误伤风险。
+//! 现在照太墟：**有工具调用就执行，没有就收尾**。
+//!
+//! # 结构
+//!
+//! ```text
+//!   run_session(用户输入) {
+//!       for round in 0..budget {                 // RoundBudget（太墟式轮次预算）
+//!           组装消息 → 调模型 → 解析
+//!           无工具调用           → Stop，收尾
+//!           有工具调用           → 执行 → 回注 → 下一轮
+//!           连续失败 >= 上限     → 熔断，收尾（含提示）
+//!       }
+//!   }
+//! ```
+//!
+//! # M1 的简化（诚实标注）
+//!
+//! v1 用**文本协议**解析工具调用（模型输出 `<tool_call>{json}</tool_call>`），
+//! 不走 provider 的结构化 `tools/tool_calls` 通道（那需要 provider 侧配合，
+//! 留到 M4）。因此内部把工具结果存为 `role=tool` 只是**自用记录**，
+//! 真正发给模型前由 [`sanitize_for_provider`] 转写成合法形状——
+//! 这正是太墟 `sanitizeApiTranscript` 的思路。
+
+use crate::config::RuntimeConfig;
+use crate::prompt::{self, TurnPrefix};
+use crate::session::{MsgRow, SessionStore};
+use crate::tool::{self, Tool, ToolArgs, ToolCtx};
+use anyhow::Result;
+use std::collections::BTreeMap;
+
+/// 一次模型回复的解析结果。
+#[derive(Debug, Clone, PartialEq)]
+pub enum Reply {
+    Text(String),
+    ToolCalls(Vec<Call>),
+    Empty,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Call {
+    pub name: String,
+    pub args: ToolArgs,
+}
+
+/// 一次会话推进的结束原因（对齐太墟的 RunResult 语义）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StopReason {
+    /// 模型正常说完（无工具调用）
+    Stop,
+    /// 工具轮预算耗尽
+    BudgetExhausted,
+    /// 连续失败熔断（太墟 `maxConsecutiveFailures`）
+    FailureCircuit,
+    /// 模型调用失败（本轮直接终止）
+    Error,
+}
+
+/// 整体运行结果。
+#[derive(Debug, Clone)]
+pub struct RunOutcome {
+    pub stop: StopReason,
+    /// 最终给用户看的文本（最后一段无工具调用的 assistant 文本）
+    pub final_text: String,
+    /// 总共跑了几轮
+    pub rounds: usize,
+    /// 全部工具结果（按顺序）
+    pub tool_results: Vec<tool::ToolResult>,
+    pub warning: Option<String>,
+}
+
+/// 运行配置。
+pub struct HarnessCtx<'a> {
+    pub store: &'a SessionStore,
+    pub session: String,
+    pub cfg: &'a RuntimeConfig,
+    pub llm: ne_engine::llm::LlmParams,
+    pub work_root: std::path::PathBuf,
+    pub prompt_dir: std::path::PathBuf,
+    pub enabled: Vec<Tool>,
+    /// 单轮最多几个工具调用（太墟默认 12）
+    pub max_tool_calls_per_turn: usize,
+    /// 最多几轮（太墟 RoundBudget）
+    pub max_rounds: usize,
+    /// 连续失败熔断阈值（太墟默认 8）
+    pub max_consecutive_failures: usize,
+}
+
+impl<'a> HarnessCtx<'a> {
+    pub fn max_rounds(&self) -> usize {
+        if self.max_rounds == 0 { 16 } else { self.max_rounds }
+    }
+    pub fn max_tool_calls(&self) -> usize {
+        if self.max_tool_calls_per_turn == 0 { 12 } else { self.max_tool_calls_per_turn }
+    }
+    pub fn max_consecutive_failures(&self) -> usize {
+        if self.max_consecutive_failures == 0 { 8 } else { self.max_consecutive_failures }
+    }
+}
+
+/// 组装 system prompt（**稳定段**，不含逐轮变化内容）。
+pub fn system_prompt_text(h: &HarnessCtx) -> Result<String> {
+    let tools_desc = h
+        .enabled
+        .iter()
+        .map(|t| format!("- `{}`：{}", t.name(), t.description()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let vars = agent_vars(&tools_desc, &h.work_root);
+    prompt::validate_vars(&vars)?;
+    Ok(prompt::build_system_prompt(&h.prompt_dir, &vars)?.text)
+}
+
+fn agent_vars<'v>(tools_desc: &'v str, work_root: &'v std::path::Path) -> BTreeMap<&'v str, String> {
+    let mut vars = BTreeMap::new();
+    vars.insert("AGENT_NAME", "ne-agent".to_string());
+    vars.insert("TOOLS", tools_desc.to_string());
+    vars.insert("VAULT_ROOT", work_root.display().to_string());
+    vars
+}
+
+/// 出口修复：把内部消息整理成**协议合法**的发送序列。
+///
+/// 学太墟 `sanitizeApiTranscript`：
+///   * `role=tool` 仅在与前一条 assistant 的结构化 tool_call_id 配对时合法；
+///   * M1 走文本协议，没有结构化 tool_calls → 所有 `role=tool` 都不配对，
+///     因此统一转写为 user 文本（信息保留、协议合法）。
+///   * 同时：若 assistant 声明了要调用工具却没有结果，补占位（防整轮被拒）。
+///
+/// 返回可直接发送的消息序列。
+pub fn sanitize_for_provider(msgs: &[ne_engine::llm::Message]) -> Vec<ne_engine::llm::Message> {
+    let mut out = Vec::with_capacity(msgs.len());
+    for m in msgs {
+        if m.role == "tool" {
+            out.push(ne_engine::llm::Message {
+                role: "user".into(),
+                content: format!("【工具执行结果】\n{}", m.content),
+            });
+        } else {
+            out.push(m.clone());
+        }
+    }
+    out
+}
+
+/// 从会话树取出要发给模型的完整消息序列（已出口修复）。
+pub fn build_messages(h: &HarnessCtx, turn_prefix: &TurnPrefix) -> Result<Vec<ne_engine::llm::Message>> {
+    let mut out = Vec::new();
+    out.push(ne_engine::llm::Message { role: "system".into(), content: system_prompt_text(h)? });
+    let hist: Vec<MsgRow> = h.store.history(&h.session)?;
+    let last_user_idx = hist.iter().rposition(|m| m.role == "user");
+    for (i, m) in hist.iter().enumerate() {
+        // 逐轮变化的前缀只挂在**最新** user 轮上（不污染 system，也不改历史轮）
+        if Some(i) == last_user_idx && m.role == "user" && !turn_prefix.is_empty() {
+            out.push(ne_engine::llm::Message {
+                role: m.role.clone(),
+                content: turn_prefix.apply_to(&m.content),
+            });
+        } else {
+            out.push(m.to_llm());
+        }
+    }
+    Ok(sanitize_for_provider(&out))
+}
+
+/// 解析模型输出中的工具调用（M1 文本协议）。
+///
+/// ```text
+/// <tool_call>{"name":"read","args":{"path":"a.txt"}}</tool_call>
+/// ```
+pub fn parse_reply(text: &str) -> Reply {
+    const OPEN: &str = "<tool_call>";
+    const CLOSE: &str = "</tool_call>";
+    let mut calls = Vec::new();
+    let mut rest = String::new();
+    let mut cursor = 0usize;
+    while let Some(s) = text[cursor..].find(OPEN) {
+        let abs_s = cursor + s;
+        rest.push_str(&text[cursor..abs_s]);
+        let body_start = abs_s + OPEN.len();
+        let Some(e) = text[body_start..].find(CLOSE) else {
+            rest.push_str(&text[abs_s..]);
+            cursor = text.len();
+            break;
+        };
+        let body = text[body_start..body_start + e].trim();
+        if let Some(c) = parse_one_call(body) {
+            calls.push(c);
+        } else {
+            rest.push_str(&text[abs_s..body_start + e + CLOSE.len()]);
+        }
+        cursor = body_start + e + CLOSE.len();
+    }
+    rest.push_str(&text[cursor..]);
+
+    if calls.is_empty() {
+        let t = rest.trim();
+        return if t.is_empty() { Reply::Empty } else { Reply::Text(t.to_string()) };
+    }
+    Reply::ToolCalls(calls)
+}
+
+fn parse_one_call(body: &str) -> Option<Call> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let name = v.get("name")?.as_str()?.to_string();
+    let mut args = ToolArgs::new();
+    if let Some(obj) = v.get("args").and_then(|a| a.as_object()) {
+        for (k, val) in obj {
+            let s = match val {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            args = args.set(k, s);
+        }
+    }
+    Some(Call { name, args })
+}
+
+/// 为未执行的调用补配对结果（配对规则的落点，单独可测）。
+pub fn aborted_placeholders(calls: &[Call], why: &str) -> Vec<tool::ToolResult> {
+    calls
+        .iter()
+        .map(|c| tool::ToolResult::err(format!("未执行（{}）：{}", why, c.name)))
+        .collect()
+}
+
+/// 执行一批工具调用。
+fn run_calls(h: &HarnessCtx, ctx: &ToolCtx, calls: &[Call]) -> Vec<tool::ToolResult> {
+    let mut results = Vec::new();
+    for (i, c) in calls.iter().enumerate() {
+        if i >= h.max_tool_calls() {
+            results.push(tool::ToolResult::err(format!(
+                "超出单轮工具调用上限（{}），未执行：{}",
+                h.max_tool_calls(),
+                c.name
+            )));
+            continue;
+        }
+        let Some(t) = Tool::from_name(&c.name) else {
+            results.push(tool::ToolResult::err(format!(
+                "未知工具 `{}`；可用：{}",
+                c.name,
+                Tool::all().iter().map(|t| t.name()).collect::<Vec<_>>().join(", ")
+            )));
+            continue;
+        };
+        if !h.enabled.contains(&t) {
+            results.push(tool::ToolResult::err(format!("工具 `{}` 未启用", c.name)));
+            continue;
+        }
+        match tool::execute(ctx, t, &c.args) {
+            Ok(r) => results.push(r),
+            Err(e) => results.push(tool::ToolResult::err(format!("执行 `{}` 内部错误：{e}", c.name))),
+        }
+    }
+    results
+}
+
+/// 跑一次完整会话推进（多轮工具循环）。
+///
+/// 前置：最新 user 消息**已在会话库**（调用 [`persist_user`]）。
+pub fn run_session(h: &HarnessCtx, turn_prefix: &TurnPrefix) -> Result<RunOutcome> {
+    let ctx = ToolCtx::new(&h.work_root);
+    let mut all_results = Vec::new();
+    let mut consecutive_failures = 0usize;
+    let mut last_text = String::new();
+    let mut rounds = 0usize;
+
+    while rounds < h.max_rounds() {
+        rounds += 1;
+        let msgs = build_messages(h, turn_prefix)?;
+        let out = match ne_engine::llm::call(&h.llm, &msgs) {
+            Ok(o) => o,
+            Err(e) => {
+                return Ok(RunOutcome {
+                    stop: StopReason::Error,
+                    final_text: last_text,
+                    rounds,
+                    tool_results: all_results,
+                    warning: Some(format!("模型调用失败：{e}")),
+                });
+            }
+        };
+
+        match parse_reply(&out.content) {
+            Reply::ToolCalls(calls) if !calls.is_empty() => {
+                // 记录 assistant 原文（含工具调用标记）——它是这一轮的"因"
+                h.store.append(&h.session, h.store.head(&h.session)?, "assistant", &out.content)?;
+                let results = run_calls(h, &ctx, &calls);
+                // 落盘工具结果（内部记 role=tool；出口会 sanitize）
+                let mut parent = h.store.head(&h.session)?;
+                for r in &results {
+                    parent = Some(h.store.append(&h.session, parent, "tool", &r.render())?);
+                }
+                let failed = results.iter().filter(|r| !r.ok).count();
+                all_results.extend(results);
+                if failed == calls.len() {
+                    consecutive_failures += 1;
+                    // 把失败原因回注，给模型一次纠错机会（太墟同样回注错误）
+                    let hint = format!(
+                        "【全部 {} 个工具调用失败】请根据上面的错误信息调整参数或改用其他工具；\
+                         不要重复完全相同的调用。",
+                        failed
+                    );
+                    h.store.append(&h.session, h.store.head(&h.session)?, "user", &hint)?;
+                    if consecutive_failures >= h.max_consecutive_failures() {
+                        return Ok(RunOutcome {
+                            stop: StopReason::FailureCircuit,
+                            final_text: last_text,
+                            rounds,
+                            tool_results: all_results,
+                            warning: Some(format!(
+                                "连续 {} 轮工具调用全部失败，已熔断停止（太墟 maxConsecutiveFailures 同策略）",
+                                consecutive_failures
+                            )),
+                        });
+                    }
+                } else {
+                    consecutive_failures = 0;
+                }
+            }
+            _ => {
+                // 无工具调用 → 收尾
+                last_text = match parse_reply(&out.content) {
+                    Reply::Text(t) => t,
+                    _ => out.content.trim().to_string(),
+                };
+                return Ok(RunOutcome {
+                    stop: StopReason::Stop,
+                    final_text: last_text,
+                    rounds,
+                    tool_results: all_results,
+                    warning: None,
+                });
+            }
+        }
+    }
+
+    Ok(RunOutcome {
+        stop: StopReason::BudgetExhausted,
+        final_text: last_text,
+        rounds,
+        tool_results: all_results,
+        warning: Some(format!("达到轮次上限 {}，已停止（太墟 RoundBudget 同策略）", h.max_rounds())),
+    })
+}
+
+/// 追加「用户输入」到会话库。
+///
+/// ⚠ 顺序：必须**先落 user 消息**，再跑模型——模型是从会话历史组装上下文的。
+pub fn persist_user(h: &HarnessCtx, user_text: &str) -> Result<i64> {
+    let parent = h.store.head(&h.session)?;
+    h.store.append(&h.session, parent, "user", user_text)
+}
+
+/// 只在会话里留一条最终回复（工具轮已由 `run_session` 落盘）。
+///
+/// 返回落盘的消息数。
+pub fn persist_final(h: &HarnessCtx, outcome: &RunOutcome) -> Result<usize> {
+    if outcome.final_text.trim().is_empty() {
+        return Ok(0);
+    }
+    let parent = h.store.head(&h.session)?;
+    h.store.append(&h.session, parent, "assistant", &outcome.final_text)?;
+    Ok(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_plain_text() {
+        assert_eq!(parse_reply("你好啊"), Reply::Text("你好啊".into()));
+    }
+
+    #[test]
+    fn parse_single_tool_call() {
+        let r = parse_reply(r#"<tool_call>{"name":"read","args":{"path":"a.txt"}}</tool_call>"#);
+        match r {
+            Reply::ToolCalls(c) => {
+                assert_eq!(c.len(), 1);
+                assert_eq!(c[0].name, "read");
+                assert_eq!(c[0].args.get("path"), Some("a.txt"));
+            }
+            other => panic!("应为 ToolCalls，得到 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_mixed_text_and_calls() {
+        let r = parse_reply("我先看看\n<tool_call>{\"name\":\"ls\",\"args\":{\"path\":\".\"}}</tool_call>\n稍等");
+        match r {
+            Reply::ToolCalls(c) => assert_eq!(c[0].name, "ls"),
+            other => panic!("应为 ToolCalls，得到 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_unterminated_call_stays_text() {
+        match parse_reply("前面 <tool_call>{\"name\":\"read\"") {
+            Reply::Text(t) => assert!(t.contains("前面")),
+            other => panic!("未闭合应回退文本，得到 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_unknown_json_stays_text() {
+        match parse_reply("看这个 <tool_call>not json</tool_call> 哦") {
+            Reply::Text(t) => assert!(t.contains("not json")),
+            other => panic!("非法 body 应保留，得到 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn aborted_placeholders_pair_every_call() {
+        let calls = vec![
+            Call { name: "read".into(), args: ToolArgs::new() },
+            Call { name: "write".into(), args: ToolArgs::new() },
+        ];
+        let ph = aborted_placeholders(&calls, "被截断");
+        assert_eq!(ph.len(), 2, "每个 call 必须有配对结果");
+        assert!(ph.iter().all(|r| !r.ok));
+    }
+
+    #[test]
+    fn sanitize_converts_unpaired_tool_role_to_user_text() {
+        // 太墟 sanitizeApiTranscript 的核心：孤立 tool 结果不能直接发，会 400。
+        let msgs = vec![
+            ne_engine::llm::Message { role: "user".into(), content: "写个文件".into() },
+            ne_engine::llm::Message { role: "assistant".into(), content: "好的".into() },
+            ne_engine::llm::Message { role: "tool".into(), content: "[OK] 已写入 a.txt".into() },
+        ];
+        let out = sanitize_for_provider(&msgs);
+        assert_eq!(out.len(), 3);
+        assert!(out.iter().all(|m| m.role != "tool"), "不得残留 role=tool");
+        assert_eq!(out[2].role, "user");
+        assert!(out[2].content.contains("已写入 a.txt"), "信息必须保留");
+    }
+
+    #[test]
+    fn sanitize_is_identity_for_normal_messages() {
+        let msgs = vec![
+            ne_engine::llm::Message { role: "user".into(), content: "hi".into() },
+            ne_engine::llm::Message { role: "assistant".into(), content: "hello".into() },
+        ];
+        let out = sanitize_for_provider(&msgs);
+        assert_eq!(out.len(), msgs.len());
+        for (a, b) in out.iter().zip(msgs.iter()) {
+            assert_eq!(a.role, b.role);
+            assert_eq!(a.content, b.content);
+        }
+    }
+}

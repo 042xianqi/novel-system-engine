@@ -163,8 +163,8 @@ context:
   reserve_tokens: 4096
 
 tools:
-  # 内置工具开关（M1 落地）
-  enabled: [read, write, edit, base, process]
+  # 内置工具开关（名字见 `ne-agent tools`）
+  enabled: [read, write, edit, ls, base]
 
 memory:
   # 记忆策略（M2 落地）

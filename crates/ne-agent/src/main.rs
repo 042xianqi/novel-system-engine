@@ -47,6 +47,39 @@ enum Cmd {
         #[command(subcommand)]
         cmd: ModelsCmd,
     },
+    /// 交互式对话
+    Chat {
+        /// 单次提问（非交互，直接打印回复后退出）
+        #[arg(short, long)]
+        message: Option<String>,
+        /// 恢复最近一次会话
+        #[arg(long)]
+        resume: bool,
+        /// 指定会话 id
+        #[arg(long, value_name = "ID")]
+        session: Option<String>,
+        /// 新建会话
+        #[arg(long)]
+        new: bool,
+    },
+    /// 管理会话
+    Session {
+        #[command(subcommand)]
+        cmd: SessionCmd,
+    },
+    /// 列出内置工具
+    Tools,
+}
+
+#[derive(Subcommand, Debug)]
+enum SessionCmd {
+    /// 列出会话
+    List,
+    /// 显示某会话的历史消息
+    Show {
+        /// 会话 id（缺省用最新）
+        id: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -90,6 +123,29 @@ fn run() -> Result<()> {
     match &cli.cmd {
         Cmd::Vault { cmd } => run_vault(&vault, cmd, cli.json),
         Cmd::Models { cmd } => run_models(&vault, cmd, cli.json),
+        Cmd::Chat { message, resume, session, new } => {
+            run_chat(&vault, message.as_deref(), *resume, session.as_deref(), *new, cli.json)
+        }
+        Cmd::Session { cmd } => run_session(&vault, cmd, cli.json),
+        Cmd::Tools => {
+            for t in ne_agent::tool::Tool::all() {
+                if cli.json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "name": t.name(),
+                            "tier": format!("{:?}", t.tier()),
+                            "description": t.description(),
+                            "params": t.params(),
+                        })
+                    );
+                } else {
+                    println!("{:<8} {:<6?} {}", t.name(), t.tier(), t.description());
+                    println!("         参数：{}", t.params().join(", "));
+                }
+            }
+            Ok(())
+        }
     }
 }
 
@@ -190,6 +246,162 @@ fn import_llm(vault: &Vault) -> Result<(Vec<PathBuf>, PathBuf)> {
         created.push(to);
     }
     Ok((created, src))
+}
+
+/// 装配运行一次对话所需的全部运行时对象。
+fn build_runtime(vault: &Vault) -> Result<RuntimeHandles> {
+    vault.init()?;
+    let cfg = RuntimeConfig::load(vault.root())?;
+    let llm = cfg.llm_params(&vault.llm_dir())?;
+    let enabled = ne_agent::resolve_enabled_tools(&cfg)?;
+    let store = ne_agent::session::SessionStore::open(vault.agent_db())?;
+    Ok(RuntimeHandles { cfg, llm, enabled, store })
+}
+
+struct RuntimeHandles {
+    cfg: RuntimeConfig,
+    llm: ne_engine::llm::LlmParams,
+    enabled: Vec<ne_agent::tool::Tool>,
+    store: ne_agent::session::SessionStore,
+}
+
+/// 选定/新建会话。
+fn pick_session(
+    store: &ne_agent::session::SessionStore,
+    explicit: Option<&str>,
+    resume: bool,
+    new: bool,
+    auto_title: &str,
+) -> Result<String> {
+    if let Some(id) = explicit {
+        if store.get_session(id)?.is_none() {
+            anyhow::bail!("会话不存在：{id}");
+        }
+        return Ok(id.to_string());
+    }
+    if resume && !new {
+        if let Some(s) = store.latest_session()? {
+            return Ok(s.id);
+        }
+    }
+    store.create_session(auto_title)
+}
+
+fn run_chat(
+    vault: &Vault,
+    message: Option<&str>,
+    resume: bool,
+    session: Option<&str>,
+    new: bool,
+    json: bool,
+) -> Result<()> {
+    let h = build_runtime(vault)?;
+    let title = match message {
+        Some(m) => format!("cli: {}", truncate(m, 30)),
+        None => "交互对话".to_string(),
+    };
+    let sid = pick_session(&h.store, session, resume, new, &title)?;
+
+    if let Some(msg) = message {
+        let out = ne_agent::task::chat_once(
+            &h.store,
+            &sid,
+            &h.cfg,
+            h.llm,
+            vault.workspace(),
+            vault.path(ne_agent::vault::PROMPTS_DIR),
+            h.enabled,
+            msg,
+        )?;
+        if json {
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                "session": sid, "reply": out,
+            }))?);
+        } else {
+            println!("{out}");
+        }
+        return Ok(());
+    }
+
+    ne_agent::task::chat_interactive(
+        &h.store,
+        &sid,
+        &h.cfg,
+        h.llm,
+        vault.workspace(),
+        vault.path(ne_agent::vault::PROMPTS_DIR),
+        h.enabled,
+    )
+}
+
+fn run_session(vault: &Vault, cmd: &SessionCmd, json: bool) -> Result<()> {
+    let vault_ready = vault.is_initialized();
+    if !vault_ready {
+        anyhow::bail!("vault 未初始化：{}（跑 `ne-agent vault init`）", vault.root().display());
+    }
+    let store = ne_agent::session::SessionStore::open(vault.agent_db())?;
+    match cmd {
+        SessionCmd::List => {
+            let rows = store.list_sessions()?;
+            if json {
+                let v: Vec<serde_json::Value> = rows
+                    .iter()
+                    .map(|s| {
+                        serde_json::json!({
+                            "id": s.id, "title": s.title,
+                            "updatedAt": s.updated_at,
+                            "parent": s.parent_session_id,
+                            "messages": store.message_count(&s.id).unwrap_or(0),
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            } else if rows.is_empty() {
+                println!("（无会话）");
+            } else {
+                for s in rows {
+                    let n = store.message_count(&s.id).unwrap_or(0);
+                    println!("  {}  {:>3} 条  {}", s.id, n, truncate(&s.title, 40));
+                }
+            }
+            Ok(())
+        }
+        SessionCmd::Show { id } => {
+            let sid = match id {
+                Some(i) => i.clone(),
+                None => match store.latest_session()? {
+                    Some(s) => s.id,
+                    None => {
+                        println!("（无会话）");
+                        return Ok(());
+                    }
+                },
+            };
+            let hist = store.history(&sid)?;
+            if json {
+                let v: Vec<serde_json::Value> = hist
+                    .iter()
+                    .map(|m| serde_json::json!({"role": m.role, "content": m.content}))
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            } else {
+                println!("会话 {sid}（{} 条）", hist.len());
+                for m in hist {
+                    println!("  [{}] {}", m.role, truncate(&m.content, 80));
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+fn truncate(s: &str, n: usize) -> String {
+    let one_line = s.lines().next().unwrap_or("");
+    if one_line.chars().count() > n {
+        format!("{}…", one_line.chars().take(n).collect::<String>())
+    } else {
+        one_line.to_string()
+    }
 }
 
 fn run_models(vault: &Vault, cmd: &ModelsCmd, json: bool) -> Result<()> {

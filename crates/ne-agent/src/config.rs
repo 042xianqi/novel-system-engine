@@ -87,8 +87,8 @@ impl Default for ToolsSection {
                 "read".into(),
                 "write".into(),
                 "edit".into(),
+                "ls".into(),
                 "base".into(),
-                "process".into(),
             ],
         }
     }
@@ -243,6 +243,20 @@ mod tests {
         // deny_unknown_fields：写错字段名要报错，不能静默忽略
         let y = "model:\n  role: x\n  typo_field: 1\n";
         assert!(RuntimeConfig::parse(y).is_err());
+    }
+
+    #[test]
+    fn default_tools_are_all_real() {
+        // 回归：默认 runtime.yaml 里出现过 `process`，而实际工具叫 `base`，
+        // 导致 chat 一启动就报"未知工具"。默认值必须都在 Tool 注册表里。
+        let c = RuntimeConfig::default();
+        let cfg = RuntimeConfig::parse(crate::vault::DEFAULT_RUNTIME_YAML).unwrap();
+        for name in c.tools.enabled.iter().chain(cfg.tools.enabled.iter()) {
+            assert!(
+                crate::tool::Tool::from_name(name).is_some(),
+                "默认 tools.enabled 含不存在的工具 `{name}`"
+            );
+        }
     }
 
     #[test]

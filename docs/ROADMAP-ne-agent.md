@@ -50,26 +50,48 @@ crates/ne-agent/
 
 ---
 
-## M1 · 它自己（第一刀，最关键）
+## M1 · 它自己（第一刀，最关键）— ✅ 已完成（2026-10-11）
 
 **做什么**
 - `session`：会话表（**树结构**：`id / parent_id / role / content / created_at / token_usage`）+ 持久化 + 恢复
 - `prompt`：分层组装 —— system 段（稳定）+ 逐轮块（挂 user 轮）+ `{{VAR}}` 严格校验
 - `harness::loop`：主循环（双层，含停止语义与 tool_call⇄result 配对）
-- `tool`：`enum Tool` + 结构化 `ToolResult`，先内置 `read/write/edit/base/process`
+- `tool`：`enum Tool` + 结构化 `ToolResult`，先内置 `read/write/edit/ls/base`
 - `task::chat`：`ne-agent chat` 交互式对话，**重开能接着上次聊**
 
-**两个定死的决定**
-1. 会话存成**树**（哪怕 v1 只走单链）
-2. system prompt 只放稳定字节，逐轮变化的挂 user 轮
+### ✅ 交付
 
-**验收**
-- `ne-agent chat` 能多轮对话，退出后 `ne-agent chat --resume` 续上
-- 会话持久化在 `agent.db`，与 `novel.db` 分家
-- 主循环停止语义测试：`toolUse/length/error/aborted` 四种收尾都有单测
-- prompt 缺变量 → 报错（不是静默空串）
+```
+crates/ne-agent/src/
+├── session.rs   会话树（parent_id）+ 持久化 + 按 head 回溯分支历史   + 4 单测
+├── prompt.rs    分层组装 + 双层资源(include_str! + override) + {{VAR}} + 8 单测
+├── tool.rs      enum Tool + 结构化 ToolResult + 路径沙箱      + 8 单测
+├── harness.rs   主循环 + 停止语义 + 出口 sanitize + 配对      + 10 单测
+├── task.rs      chat 任务（交互 / 单次）
+├── main.rs      +chat / session / tools 子命令
+└── prompts/     root_system.md · chat_rules.md（编译内嵌）
+```
 
-**产出**：一个能对话、有记忆落盘、有骨架的智能体。
+**两个不可逆决定已定死**：
+1. 会话存**树**（`parent_id`）；`history()` 沿 head 回溯，分叉时只取 head 路径（有测试）。
+2. system prompt 只放**稳定字节**；逐轮内容走 `TurnPrefix` 挂最新 user 轮（有测试断言 system 不受影响）。
+
+**修正（对照太墟后）**：初版想用「输出长度是否顶到 max_tokens」猜 `finish_reason` 决定要不要执行工具。
+查太墟后确认**这是错的**——太墟的 OpenAI 路径只看 `toolCalls.isNotEmpty()`（`HarnessLoop.kt:1309`），
+根本不依赖 finish_reason。已改为同策略。
+
+**新增出口防线**（学太墟 `sanitizeApiTranscript:711`）：内部把工具结果记为 `role=tool`，
+发送前统一转写为 user 文本——因为文本协议下没有结构化 `tool_calls` 与之配对，
+直接发 role=tool 会被真实服务端 400 拒绝。
+
+**真机验收**（非单测）：
+- 假 LLM 服务端跑通：普通对话 / 工具调用多轮 / `--json` / `session list|show` / `--resume` 续接。
+- **严格模式验证**：服务端见到 `role=tool` 即返 400；实跑两轮请求 `hasToolRole:false`，0 次违规。
+- 全 workspace **230 测试 0 失败**（原有 192 未动 + 新增 38）。
+
+**修正的 bug**：`{{VAR}}` 渲染按字节索引取 char → 中文乱码（`ä½\u{a0}å¥½`）；已改子串推进 + 回归测试。
+`vault init` 默认 `tools.enabled` 含不存在的 `process`（实际叫 `base`）→ chat 一启动即失败；已修 + 回归测试。
+
 
 ---
 

@@ -35,6 +35,7 @@ pub mod subagent_runner;
 pub mod task;
 pub mod task_state;
 pub mod tool;
+pub mod tool_schema;
 pub mod vault;
 pub mod web;
 pub mod web_html;

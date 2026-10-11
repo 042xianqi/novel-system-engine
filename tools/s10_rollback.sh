@@ -39,19 +39,44 @@ say ""
 if [ "$DO_DB" = 1 ]; then
   SRC="$BK/novel.db"
   [ -f "$SRC" ] || { echo "❌ 备份 DB 缺失: $SRC" >&2; exit 1; }
-  say "1) 回滚 novel.db"
-  # 先给"当前库"留个退路，避免回滚本身不可逆
+
+  # 幂等防呆：已是回滚后状态（(=959 且 27 空)）就不再做任何写操作，
+  # 避免反复回滚时在根目录堆积 .pre-rollback-* 垃圾。
   if [ -f "$R/novel.db" ]; then
-    cp -p "$R/novel.db" "$R/novel.db.pre-rollback-$(date +%Y%m%d_%H%M%S)"
-    say "   已另存当前库为 novel.db.pre-rollback-*"
+    STATE=$(python3 - "$R/novel.db" <<'PY' 2>/dev/null || echo "?"
+import sqlite3,sys
+try:
+    c=sqlite3.connect(sys.argv[1])
+    n=c.execute("select count(*) from materials").fetchone()[0]
+    e=c.execute("select count(*) from materials where content is null or trim(content)=''").fetchone()[0]
+    print(f"{n}/{e}")
+except Exception:
+    print("?")
+PY
+)
+    if [ "$STATE" = "959/27" ]; then
+      say "1) novel.db 已是回滚后状态（materials=959, 空正文=27），跳过"
+      say ""
+      DO_DB=2   # 标记已跳过
+    fi
   fi
-  run "cp -f '$SRC' '$R/novel.db'"
-  # WAL/SHM 是旧格式残留，回滚后必须清掉，否则 SQLite 可能重放旧日志
-  for f in "$R/novel.db-wal" "$R/novel.db-shm"; do
-    [ -e "$f" ] && run "rm -f '$f'"
-  done
-  say "   ✅ 已还原（该版本应为 materials=959，空正文=27）"
-  say ""
+
+  if [ "$DO_DB" = 1 ]; then
+    say "1) 回滚 novel.db"
+    SAFE="$R/novel.db.pre-rollback-$(date +%Y%m%d_%H%M%S)"
+    # ⚠ 必须走 run()，否则 --dry-run 仍会落盘（曾经的 bug）
+    if [ -f "$R/novel.db" ]; then
+      run "cp -p '$R/novel.db' '$SAFE'"
+      [ "$DRY" = 0 ] && say "   已另存当前库为 $(basename "$SAFE")"
+    fi
+    run "cp -f '$SRC' '$R/novel.db'"
+    # WAL/SHM 是旧格式残留，回滚后必须清掉，否则 SQLite 可能重放旧日志
+    for f in "$R/novel.db-wal" "$R/novel.db-shm"; do
+      [ -e "$f" ] && run "rm -f '$f'"
+    done
+    say "   ✅ 已还原（该版本应为 materials=959，空正文=27）"
+    say ""
+  fi
 fi
 
 # ── 2. 回滚删除候选目录 ────────────────────────────────────────

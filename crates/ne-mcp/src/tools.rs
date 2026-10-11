@@ -59,6 +59,61 @@ pub fn funnel(cfg: &Cfg) -> Result<serde_json::Value> {
     }))
 }
 
+/// 已有正文章节号（读 `novel.db` 的 `chapters` 表），升序去重。
+///
+/// volume 兼容 `01` 与 `卷01` 两种写法。
+pub fn generated_chapters(cfg: &Cfg, volume: &str) -> Vec<u32> {
+    let con = match rusqlite::Connection::open_with_flags(
+        cfg.db_path(),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let vol_exact = if volume.starts_with('卷') { volume.to_string() } else { format!("卷{volume}") };
+    let mut st = match con.prepare(
+        "SELECT chapter_no FROM chapters WHERE volume = ?1 OR volume = ?2 ORDER BY chapter_no",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let mut v: Vec<u32> = st
+        .query_map(rusqlite::params![vol_exact.as_str(), volume], |r| r.get::<_, i64>(0))
+        .map(|rows| rows.flatten().map(|n| n as u32).collect())
+        .unwrap_or_default();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+/// 章节规划：识别**编号缺口**，给出「补缺口 / 向后续写」两种建议。
+///
+/// ⚠ 不能简单 `max(chapter_no)+1`：若中间有缺口（实测 卷01 已有第1、3章，
+/// **第2章缺**），直接续写会跳过第2章。故默认建议**先补缺口**。
+pub fn chapter_plan(cfg: &Cfg, volume: &str) -> serde_json::Value {
+    let have = generated_chapters(cfg, volume);
+    let max = have.iter().max().copied().unwrap_or(0);
+    // 首个缺口：1..=max+1 中第一个未出现的
+    let first_gap = (1..=max + 1).find(|n| !have.contains(n));
+    let suggest_append = max + 1;
+    let has_gap = first_gap.map(|g| g <= max).unwrap_or(false);
+    serde_json::json!({
+        "volume": volume,
+        "generated_chapters": have,
+        "generated_count": have.len(),
+        "has_gap": has_gap,
+        "first_gap": if has_gap { first_gap } else { None },
+        "suggest_fill_gap": if has_gap { first_gap } else { None },
+        "suggest_append": suggest_append,
+        "default_target": first_gap.unwrap_or(suggest_append),
+        "note": if has_gap {
+            format!("检测到第{}章缺失，默认优先补缺口（mode=fill_gap）；如需跳过缺口向后续写请显式传 chapter={suggest_append}", first_gap.unwrap())
+        } else {
+            format!("章节连续，建议续写第{suggest_append}章（mode=append）")
+        },
+    })
+}
+
 // ─────────────────────────────────────────── 工具 2：ne_cardgen
 /// 抽某卷细纲的【待建卡】工单，按类别归堆。
 ///
@@ -168,9 +223,10 @@ pub fn inject(
     let banned: Vec<String> = ne_qc::BANNED_WORDS.iter().map(|s| s.to_string()).collect();
     let prev = chapter.saturating_sub(1);
 
-    let packet: InjectionPacket = ne_injection::build_injection_ranked(
+    let packet: InjectionPacket = ne_injection::build_injection_db(
         &ch,
         &cfg.lib_root(),
+        Some(&cfg.db_path()),
         &cfg.content_dir(),
         volume,
         prev,
@@ -180,12 +236,15 @@ pub fn inject(
 
     // 缺失引用：如实列出（不杜撰）。allow_missing=false 时视为硬失败。
     let missing = packet.missing_refs.clone();
+    let card_source = if cfg.lib_root().exists() { "disk_first_db_fallback" } else { "db_only" };
     if !missing.is_empty() && !allow_missing {
         return Ok(serde_json::json!({
             "ok": false,
             "reason": "存在库中缺失的引用（如需继续请传 allow_missing=true）",
             "chapter": chapter, "volume": volume,
+            "card_source": card_source,
             "missing_refs": missing,
+            "chapter_plan": chapter_plan(cfg, volume),
         }));
     }
 
@@ -195,6 +254,9 @@ pub fn inject(
         "scene_type": format!("{:?}", ch.scene_type),
         "characters": ch.characters,
         "card_refs": ch.card_refs,
+        "card_source": card_source,
+        "missing_refs": missing,
+        "chapter_plan": chapter_plan(cfg, volume),
         "packet": packet,
     }))
 }

@@ -15,7 +15,7 @@ use ne_core::{
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// 细纲某章 + 资料库根 → 注入包（兼容入口：无用量统计、无额外禁词）。
+/// 细纲某章 + 资料库根 + 真值库根 → 注入包（兼容入口：无用量统计、无额外禁词）。
 pub fn build_injection(
     chapter: &ChapterOutline,
     lib_root: &Path,
@@ -36,18 +36,38 @@ pub fn build_injection_ranked(
     usage: &[UsageStat],
     banned_words: &[String],
 ) -> InjectionPacket {
+    build_injection_db(chapter, lib_root, None, content_dir, volume, prev_chapter, usage, banned_words)
+}
+
+/// 同 [`build_injection_ranked`]，但可用 `db_path` 指向真值库作**卡片回退源**。
+///
+/// 背景（S10）：`02_资料库` 的卡片磁盘副本已删，卡片正文 100% 存在 `materials.content`。
+/// 因此取卡策略为「**磁盘优先 → DB 回退**」：
+/// - 磁盘存在（或未删源的环境）→ 行为与改造前完全一致，零回归；
+/// - 磁盘缺失 → 按 code 回退查 DB，命中则与磁盘同构（name/summary/正文截断口径一致）。
+///
+/// code 兜底：细纲可能仍用**旧编号**（如 `LOC-99-001`），而 DB 已重编号（`LOCA-99-001`）。
+/// 命中不到时按 `renumber_map.old_code → new_code` 再查一次，避免误报 missing_refs。
+#[allow(clippy::too_many_arguments)]
+pub fn build_injection_db(
+    chapter: &ChapterOutline,
+    lib_root: &Path,
+    db_path: Option<&Path>,
+    content_dir: &Path,
+    volume: &str,
+    prev_chapter: u32,
+    usage: &[UsageStat],
+    banned_words: &[String],
+) -> InjectionPacket {
     let mut packet = InjectionPacket::default();
     packet.chapter = chapter.clone();
+    let cards = CardSource::new(lib_root, db_path);
 
     // ① 出场角色：查 角色/ 下 CHAR-*.md（状态快照注入，占预算极小，不走资料卡预算）
-    let char_files = std::fs::read_dir(lib_root.join("角色"))
-        .map(|rd| rd.flatten().filter_map(|e| e.path().to_str().map(String::from)).collect::<Vec<_>>())
-        .unwrap_or_default();
     for ref_code in &chapter.card_refs {
         if ref_code.starts_with("CHAR") {
-            match char_files.iter().find(|p| p.contains(ref_code.as_str())) {
-                Some(p) => {
-                    let body = std::fs::read_to_string(p).unwrap_or_default();
+            match cards.load(ref_code) {
+                Some(body) => {
                     packet.chars.push(CharacterSnapshot {
                         name: extract_name(&body),
                         code: ref_code.clone(),
@@ -70,9 +90,8 @@ pub fn build_injection_ranked(
         .collect();
     let (full_codes, summary_codes) = rank_cards(&non_char_refs, usage, chapter.number);
     for code in &full_codes {
-        match locate_card(lib_root, code) {
-            Some(p) => {
-                let body = std::fs::read_to_string(p).unwrap_or_default();
+        match cards.load(code) {
+            Some(body) => {
                 packet.materials.push(MaterialRef {
                     code: code.clone(),
                     name: extract_name(&body),
@@ -85,9 +104,8 @@ pub fn build_injection_ranked(
         }
     }
     for code in &summary_codes {
-        match locate_card(lib_root, code) {
-            Some(p) => {
-                let body = std::fs::read_to_string(p).unwrap_or_default();
+        match cards.load(code) {
+            Some(body) => {
                 packet.materials.push(MaterialRef {
                     code: code.clone(),
                     name: extract_name(&body),
@@ -152,12 +170,116 @@ pub fn build_injection_ranked(
     packet
 }
 
+/// 卡片取数源：**磁盘优先 → DB 回退**（S10 后磁盘卡片已删，正文只在 `materials.content`）。
+struct CardSource<'a> {
+    lib_root: &'a Path,
+    /// 真值库路径；None 表示不做 DB 回退（纯磁盘模式，兼容未删源环境）。
+    db: Option<rusqlite::Connection>,
+    /// 旧编号 → 新编号（renumber_map）；仅 DB 命中不到时用。
+    renum: HashMap<String, String>,
+}
+
+impl<'a> CardSource<'a> {
+    fn new(lib_root: &'a Path, db_path: Option<&Path>) -> Self {
+        let (db, renum) = match db_path {
+            Some(p) if p.exists() => match rusqlite::Connection::open_with_flags(
+                p,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            ) {
+                Ok(con) => {
+                    let mut renum = HashMap::new();
+                    if let Ok(mut st) =
+                        con.prepare("SELECT old_code, new_code FROM renumber_map WHERE old_code IS NOT NULL")
+                    {
+                        if let Ok(rows) = st.query_map([], |r| {
+                            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                        }) {
+                            for (o, n) in rows.flatten() {
+                                renum.insert(o, n);
+                            }
+                        }
+                    }
+                    (Some(con), renum)
+                }
+                Err(_) => (None, HashMap::new()),
+            },
+            _ => (None, HashMap::new()),
+        };
+        Self { lib_root, db, renum }
+    }
+
+    /// 取一张卡的正文：先磁盘，再 DB（含旧编号兜底）。都取不到返回 None。
+    fn load(&self, code: &str) -> Option<String> {
+        if let Some(p) = locate_card(self.lib_root, code) {
+            if let Ok(body) = std::fs::read_to_string(&p) {
+                return Some(body);
+            }
+        }
+        let con = self.db.as_ref()?;
+        // ① 直接按 code 查（精确优先）
+        if let Some(b) = query_card(con, code) {
+            return Some(b);
+        }
+        // ② 旧编号兜底：renumber_map.old_code = code → new_code
+        if let Some(new) = self.renum.get(code) {
+            if new != code {
+                if let Some(b) = query_card(con, new) {
+                    return Some(b);
+                }
+            }
+        }
+        // ③ 反向：code 已是新编号但 DB 行 code 用了别的写法 —— 按 new_code 列再查
+        query_card_by_new_code(con, code)
+    }
+}
+
+/// `materials.code = code` 的非空正文。
+fn query_card(con: &rusqlite::Connection, code: &str) -> Option<String> {
+    con.query_row(
+        "SELECT content FROM materials WHERE code = ?1 AND content IS NOT NULL AND trim(content) <> '' LIMIT 1",
+        [code],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+}
+
+/// `materials.new_code = code` 的非空正文（兼容 code 列仍是旧值的行）。
+fn query_card_by_new_code(con: &rusqlite::Connection, code: &str) -> Option<String> {
+    con.query_row(
+        "SELECT content FROM materials WHERE new_code = ?1 AND content IS NOT NULL AND trim(content) <> '' LIMIT 1",
+        [code],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+}
+
 /// 按编号在 02_资料库 各子类里找卡文件（编号在文件名里，如 EVT-99-005.md）。
 fn locate_card(lib_root: &Path, ref_code: &str) -> Option<PathBuf> {
+    // 前缀 → 子目录。**新旧前缀都要列**：
+    // 旧前缀（MTC/EVT/REL/LOC/…) 用于未重编号的磁盘；新前缀（PILL/EVNT/FORE/…）用于已重编号的库。
+    // 缺新前缀会让「磁盘明明有卡却报 missing」——实测 PILL 曾漏列。
     let by_prefix_sub: HashMap<&str, &str> = [
-        ("EVT", "事件"), ("REL", "关系"), ("CAUSE", "因果线"), ("CAS", "因果线"),
-        ("TECH", "科技"), ("ART", "科技"), ("LOC", "地图"), ("MTC", "丹药"),
-        ("CHAR", "角色"), ("SYS", "文明"), ("CULT", "文明"), ("ORG", "文明"), ("CIV", "文明"),
+        // 事件
+        ("EVT", "事件"), ("EVNT", "事件"),
+        // 关系 / 因果线 / 伏笔
+        ("REL", "关系"), ("CAUSE", "因果线"), ("CAS", "因果线"), ("FORE", "伏笔"),
+        // 科技 / 物品 / 装备
+        ("TECH", "科技"), ("ART", "科技"), ("ITEM", "物品"), ("GEAR", "装备"),
+        // 地点
+        ("LOC", "地图"), ("LOCA", "地图"),
+        // 丹药
+        ("MTC", "丹药"), ("PILL", "丹药"),
+        // 角色
+        ("CHAR", "角色"),
+        // 文明系
+        ("SYS", "文明"), ("SYSX", "文明"), ("CULT", "文明"), ("CLTR", "文化"),
+        ("ORG", "文明"), ("CIV", "文明"), ("CIVI", "文明"), ("XREA", "文明"),
+        // 力量体系 / 功法
+        ("POWR", "力量体系"), ("ARTS", "功法"), ("YGEN", "力量体系"),
+        // 势力
+        ("FACT", "势力"), ("RELA", "势力"),
+        // 时间 / 异象
+        ("TIME", "时间"), ("ANC", "事件"), ("WEIR", "事件"),
     ]
     .into_iter()
     .collect();
@@ -301,6 +423,91 @@ mod tests {
         assert!(pkt.budget.total_est_tokens <= pkt.budget.total_budget || pkt.budget.total_est_tokens > 0);
         assert_eq!(pkt.budget.total_budget, 20000);
         assert!(pkt.banned_words.iter().any(|w| w == "归墟"));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    // ── S10 新增：卡片 DB 回退 ────────────────────────────────
+    /// 造一个只有 materials + renumber_map 的最小库。
+    fn make_db(path: &std::path::Path) {
+        let con = rusqlite::Connection::open(path).unwrap();
+        con.execute_batch(
+            "CREATE TABLE materials(code TEXT, name TEXT, content TEXT, new_code TEXT);
+             CREATE TABLE renumber_map(old_code TEXT, new_code TEXT);",
+        )
+        .unwrap();
+        con.execute(
+            "INSERT INTO materials(code, name, content) VALUES ('PILL-99-001','谐振髓核','# PILL-99-001 谐振髓核\\n## 摘要\\n- a\\n- b\\n- c\\n\\n正文。')",
+            [],
+        )
+        .unwrap();
+        // 旧编号行：code 仍是旧值，但 new_code 指向新编号
+        con.execute(
+            "INSERT INTO materials(code, name, content, new_code) VALUES ('CAS-014','因果线·残响归流','# CAS-014\\n## 摘要\\n- x\\n- y\\n- z\\n\\n正文。','FORE-99-014')",
+            [],
+        )
+        .unwrap();
+        con.execute("INSERT INTO renumber_map(old_code,new_code) VALUES ('EVT-141','EVNT-99-141')", []).unwrap();
+        con.execute(
+            "INSERT INTO materials(code, name, content) VALUES ('EVNT-99-141','第七次共振·裂河','# EVNT-99-141\\n## 摘要\\n- p\\n- q\\n- r\\n\\n正文。')",
+            [],
+        )
+        .unwrap();
+    }
+
+    /// DB 回退：磁盘无卡时，按 code 命中 materials.content。
+    #[test]
+    fn card_source_falls_back_to_db() {
+        let tmp = std::env::temp_dir().join(format!("ne_inj_db_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        let db = tmp.join("novel.db");
+        make_db(&db);
+
+        // 磁盘目录为空（模拟 S10 后的 live 根）
+        let empty_lib = tmp.join("02_资料库");
+        fs::create_dir_all(&empty_lib).unwrap();
+
+        let mut ch = ChapterOutline::default();
+        ch.number = 2;
+        ch.card_refs = vec!["PILL-99-001".into()];
+        let pkt = build_injection_db(&ch, &empty_lib, Some(&db), &tmp.join("04_正文"), "卷01", 0, &[], &[]);
+        assert!(pkt.missing_refs.is_empty(), "DB 回退应命中：{:?}", pkt.missing_refs);
+        assert_eq!(pkt.materials.len(), 1);
+        assert!(pkt.materials[0].content.contains("正文"), "应取到 DB 正文");
+
+        // 旧编号兜底：细纲仍写 CAS-014 → 按 new_code 回退
+        let mut ch2 = ChapterOutline::default();
+        ch2.number = 2;
+        ch2.card_refs = vec!["CAS-014".into(), "EVT-141".into()];
+        let p2 = build_injection_db(&ch2, &empty_lib, Some(&db), &tmp.join("04_正文"), "卷01", 0, &[], &[]);
+        assert!(p2.missing_refs.is_empty(), "旧编号应兜底命中：{:?}", p2.missing_refs);
+
+        // 无 DB 时（纯磁盘模式）应如实报缺失，不静默通过
+        let p3 = build_injection_db(&ch, &empty_lib, None, &tmp.join("04_正文"), "卷01", 0, &[], &[]);
+        assert_eq!(p3.missing_refs, vec!["PILL-99-001".to_string()]);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// 磁盘优先：磁盘有卡时不得走 DB（零回归）。
+    #[test]
+    fn card_source_prefers_disk_when_present() {
+        let tmp = std::env::temp_dir().join(format!("ne_inj_disk_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("02_资料库/丹药")).unwrap();
+        fs::write(
+            tmp.join("02_资料库/丹药/PILL-99-001.md"),
+            "# PILL-99-001 磁盘版\n## 摘要\n- d1\n- d2\n- d3\n\n磁盘正文。",
+        )
+        .unwrap();
+        let db = tmp.join("novel.db");
+        make_db(&db); // DB 里也有同名卡，但内容不同
+
+        let mut ch = ChapterOutline::default();
+        ch.number = 2;
+        ch.card_refs = vec!["PILL-99-001".into()];
+        let pkt = build_injection_db(&ch, &tmp.join("02_资料库"), Some(&db), &tmp.join("04_正文"), "卷01", 0, &[], &[]);
+        assert!(pkt.materials[0].content.contains("磁盘正文"), "磁盘应优先：{}", pkt.materials[0].content);
         let _ = fs::remove_dir_all(&tmp);
     }
 }

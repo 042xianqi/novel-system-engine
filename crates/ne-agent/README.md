@@ -11,7 +11,9 @@ ne-agent 一个可执行文件
 ├── 模型配置       自有 models.yml / config.yml / runtime.yaml（复用 ne-engine 解析）
 ├── 会话           会话**树**（parent_id）+ 分支 rewind
 ├── 记忆           pinned + BM25 召回
-├── 工具总线        read/write/edit/ls/base + web_fetch/web_search + MCP + plan/scratchpad
+├── 工具总线        17 个：read/write/edit/ls/base + web_fetch/web_search + MCP(`mcp__*`)
+│                  + plan/scratchpad + ask_user + load_rule/load_skill
+│                  + subagents/dual_agent + compress/history_read/history_search
 ├── 任务           持久化状态机（8 状态 + CAS）+ 子智能体 Lane
 └── 审批           三档模式 + 正交的只读规划门禁
 ```
@@ -63,6 +65,8 @@ cargo build --release -p ne-agent        # 产物 target/release/ne-agent（约 
 | M5 | 长大：上下文预算（CJK token 估算 + 老轮次截断 + 折叠线）+ 会话树 rewind |
 | M6 | 安全协作：审批三档 + 任务状态机（CAS）+ plan/scratchpad |
 | M7 | 完善：架构门禁 + 子智能体 Lane + 单二进制打包 |
+| M8 | 补齐旧待办：ask_user + load_rule/load_skill + 顺序 dual agent + Android 交叉编译 |
+| M9 | 上下文可设置 + 压缩（自动/命令/手动）+ 投影（为 UI 铺垫） |
 
 详细路线图见 [`docs/ROADMAP-ne-agent.md`](docs/ROADMAP-ne-agent.md)。
 

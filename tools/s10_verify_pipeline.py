@@ -94,10 +94,11 @@ try:
         chk(all(m.get("content") for m in full), f"{len(full)} 张全文卡 content 非空（DB 正文确实读到）")
         chk(len(pkt.get("chars", [])) > 0, f"取到角色快照 {len(pkt.get('chars', []))} 个")
 
-        # 章节缺口
+        # 章节规划：选项A 执行后，旧开局 2 章已清，应从第1章（涧底醒）重新开始
         cp = d.get("chapter_plan", {})
-        chk(cp.get("has_gap") is True and cp.get("first_gap") == 2,
-            f"识别缺口：first_gap={cp.get('first_gap')}, suggest_append={cp.get('suggest_append')}")
+        chk(cp.get("has_gap") is False and cp.get("generated_chapters") == [],
+            f"无残留章节：generated={cp.get('generated_chapters')}, has_gap={cp.get('has_gap')}")
+        chk(cp.get("default_target") == 1, f"default_target=1（实得 {cp.get('default_target')}）")
 
     # ── 4. ne_cardgen ─────────────────────────────────────────
     print("\n[4] ne_cardgen")

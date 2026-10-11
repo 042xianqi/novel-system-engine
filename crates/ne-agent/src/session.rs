@@ -88,12 +88,36 @@ pub struct MsgRow {
     pub role: String,
     pub content: String,
     pub created_at: i64,
+    /// 附加字段的 JSON（工具调用配对信息 `tool_calls` / `tool_call_id`）。
+    /// 文本协议时代为空；NATIVE 协议下用于在投影里重建配对。
+    pub meta: Option<String>,
 }
 
 impl MsgRow {
     /// 转成 ne-engine 的 LLM 消息（复用现有类型，不另立一套）。
     pub fn to_llm(&self) -> ne_engine::llm::Message {
-        ne_engine::llm::Message { role: self.role.clone(), content: self.content.clone() }
+        ne_engine::llm::Message {
+            role: self.role.clone(),
+            content: self.content.clone(),
+            tool_calls: self.tool_calls(),
+            tool_call_id: self.tool_call_id(),
+        }
+    }
+
+    /// 该消息携带的工具调用（来自 meta 列；非 assistant 或无 meta 则为 None）。
+    pub fn tool_calls(&self) -> Option<Vec<ne_engine::llm::ToolCall>> {
+        let meta = self.meta.as_deref()?;
+        let v: serde_json::Value = serde_json::from_str(meta).ok()?;
+        let calls: Vec<ne_engine::llm::ToolCall> =
+            serde_json::from_value(v.get("tool_calls")?.clone()).ok()?;
+        if calls.is_empty() { None } else { Some(calls) }
+    }
+
+    /// 该消息配对的 tool_call_id（来自 meta 列）。
+    pub fn tool_call_id(&self) -> Option<String> {
+        let meta = self.meta.as_deref()?;
+        let v: serde_json::Value = serde_json::from_str(meta).ok()?;
+        v.get("tool_call_id")?.as_str().map(|s| s.to_string())
     }
 }
 
@@ -261,11 +285,26 @@ impl SessionStore {
         role: &str,
         content: &str,
     ) -> Result<i64> {
+        self.append_meta(session, parent, role, content, None)
+    }
+
+    /// 追加一条消息（可带 meta JSON）。
+    ///
+    /// `meta` 存协议侧附加字段：assistant 轮的 `{"tool_calls":[...]}`、
+    /// tool 轮的 `{"tool_call_id":"..."}`。NATIVE 工具协议靠它重建配对。
+    pub fn append_meta(
+        &self,
+        session: &str,
+        parent: Option<i64>,
+        role: &str,
+        content: &str,
+        meta: Option<&str>,
+    ) -> Result<i64> {
         let t = now_ms();
         self.con.execute(
-            "INSERT INTO messages (session_id, parent_id, role, content, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![session, parent, role, content, t],
+            "INSERT INTO messages (session_id, parent_id, role, content, created_at, meta)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![session, parent, role, content, t, meta],
         )?;
         let id = self.con.last_insert_rowid();
         // 追新消息即推进 head（rewind 后 append 会从新位置继续，形成分支）
@@ -382,7 +421,7 @@ impl SessionStore {
             let row = self
                 .con
                 .query_row(
-                    "SELECT id, parent_id, role, content, created_at FROM messages WHERE id = ?1",
+                    "SELECT id, parent_id, role, content, created_at, meta FROM messages WHERE id = ?1",
                     params![id],
                     |r| {
                         Ok(MsgRow {
@@ -391,6 +430,7 @@ impl SessionStore {
                             role: r.get(2)?,
                             content: r.get(3)?,
                             created_at: r.get(4)?,
+                            meta: r.get(5)?,
                         })
                     },
                 )
@@ -488,7 +528,7 @@ impl SessionStore {
         let r = self
             .con
             .query_row(
-                "SELECT id, parent_id, role, content, created_at FROM messages WHERE id = ?1",
+                "SELECT id, parent_id, role, content, created_at, meta FROM messages WHERE id = ?1",
                 params![id],
                 |r| {
                     Ok(MsgRow {
@@ -497,6 +537,7 @@ impl SessionStore {
                         role: r.get(2)?,
                         content: r.get(3)?,
                         created_at: r.get(4)?,
+                        meta: r.get(5)?,
                     })
                 },
             )

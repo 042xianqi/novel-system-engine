@@ -39,24 +39,13 @@
 
 use crate::config::RuntimeConfig;
 use crate::prompt::{self, TurnPrefix};
+use crate::protocol::{resolve, sanitize_for_provider, Reply};
 use crate::session::{MsgRow, SessionStore};
-use crate::tool::{self, Tool, ToolArgs, ToolCtx};
+use crate::tool::{self, Tool, ToolCtx};
 use anyhow::Result;
 use std::collections::BTreeMap;
 
-/// 一次模型回复的解析结果。
-#[derive(Debug, Clone, PartialEq)]
-pub enum Reply {
-    Text(String),
-    ToolCalls(Vec<Call>),
-    Empty,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Call {
-    pub name: String,
-    pub args: ToolArgs,
-}
+pub use crate::protocol::Call;
 
 /// 一次会话推进的结束原因（对齐太墟的 RunResult 语义）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -228,30 +217,6 @@ fn agent_vars<'v>(tools_desc: &'v str, work_root: &'v std::path::Path) -> BTreeM
     vars
 }
 
-/// 出口修复：把内部消息整理成**协议合法**的发送序列。
-///
-/// 学太墟 `sanitizeApiTranscript`：
-///   * `role=tool` 仅在与前一条 assistant 的结构化 tool_call_id 配对时合法；
-///   * M1 走文本协议，没有结构化 tool_calls → 所有 `role=tool` 都不配对，
-///     因此统一转写为 user 文本（信息保留、协议合法）。
-///   * 同时：若 assistant 声明了要调用工具却没有结果，补占位（防整轮被拒）。
-///
-/// 返回可直接发送的消息序列。
-pub fn sanitize_for_provider(msgs: &[ne_engine::llm::Message]) -> Vec<ne_engine::llm::Message> {
-    let mut out = Vec::with_capacity(msgs.len());
-    for m in msgs {
-        if m.role == "tool" {
-            out.push(ne_engine::llm::Message {
-                role: "user".into(),
-                content: format!("【工具执行结果】\n{}", m.content),
-            });
-        } else {
-            out.push(m.clone());
-        }
-    }
-    out
-}
-
 /// 从会话树取出要发给模型的完整消息序列（已应用压缩投影 + 出口修复）。
 ///
 /// 装配顺序（M9 起）：
@@ -260,10 +225,10 @@ pub fn sanitize_for_provider(msgs: &[ne_engine::llm::Message]) -> Vec<ne_engine:
 ///      投影等同于全量历史，行为与 M8 完全一致
 ///   3. 逐轮变化前缀只挂最新 user 轮
 ///   4. 老工具结果截断 + 预算折叠（M5）
-///   5. 出口修复（tool→user 转写）
+///   5. 出口修复（[`crate::protocol::sanitize_for_provider`]：保配对、补占位、错位转写）
 pub fn build_messages(h: &HarnessCtx, turn_prefix: &TurnPrefix) -> Result<Vec<ne_engine::llm::Message>> {
     let mut out = Vec::new();
-    out.push(ne_engine::llm::Message { role: "system".into(), content: system_prompt_text(h)? });
+    out.push(ne_engine::llm::Message::system(system_prompt_text(h)?));
 
     // M9：压缩投影是"实际上下文"的唯一来源（发模型与 UI 同口径）
     let proj = crate::compaction::project(h.store, &h.session)?;
@@ -272,10 +237,10 @@ pub fn build_messages(h: &HarnessCtx, turn_prefix: &TurnPrefix) -> Result<Vec<ne
     // 摘要条本身是 user 角色；逐轮前缀必须挂在**最新 user 轮**，不能挂到摘要上 →
     // 先推摘要条，再对保留区定位最后一条 user。
     if let Some(s) = &proj.summary {
-        out.push(ne_engine::llm::Message {
-            role: "user".into(),
-            content: format!("{}\n{s}", crate::compaction::SUMMARY_HEADER),
-        });
+        out.push(ne_engine::llm::Message::user(format!(
+            "{}\n{s}",
+            crate::compaction::SUMMARY_HEADER
+        )));
     }
     let last_user_idx = hist.iter().rposition(|m| m.role == "user");
     for (i, m) in hist.iter().enumerate() {
@@ -284,6 +249,7 @@ pub fn build_messages(h: &HarnessCtx, turn_prefix: &TurnPrefix) -> Result<Vec<ne
             out.push(ne_engine::llm::Message {
                 role: m.role.clone(),
                 content: turn_prefix.apply_to(&m.content),
+                ..Default::default()
             });
         } else {
             out.push(m.to_llm());
@@ -296,70 +262,27 @@ pub fn build_messages(h: &HarnessCtx, turn_prefix: &TurnPrefix) -> Result<Vec<ne
     Ok(sanitize_for_provider(&out))
 }
 
-/// 解析模型输出中的工具调用（M1 文本协议）。
+/// 把本轮调用编码成 assistant 消息的 meta JSON（`{"tool_calls":[...]}`）。
 ///
-/// ```text
-/// <tool_call>{"name":"read","args":{"path":"a.txt"}}</tool_call>
-/// ```
-pub fn parse_reply(text: &str) -> Reply {
-    const OPEN: &str = "<tool_call>";
-    const CLOSE: &str = "</tool_call>";
-    let mut calls = Vec::new();
-    let mut rest = String::new();
-    let mut cursor = 0usize;
-    while let Some(s) = text[cursor..].find(OPEN) {
-        let abs_s = cursor + s;
-        rest.push_str(&text[cursor..abs_s]);
-        let body_start = abs_s + OPEN.len();
-        let Some(e) = text[body_start..].find(CLOSE) else {
-            rest.push_str(&text[abs_s..]);
-            cursor = text.len();
-            break;
-        };
-        let body = text[body_start..body_start + e].trim();
-        if let Some(c) = parse_one_call(body) {
-            calls.push(c);
-        } else {
-            rest.push_str(&text[abs_s..body_start + e + CLOSE.len()]);
-        }
-        cursor = body_start + e + CLOSE.len();
-    }
-    rest.push_str(&text[cursor..]);
-
-    if calls.is_empty() {
-        let t = rest.trim();
-        return if t.is_empty() { Reply::Empty } else { Reply::Text(t.to_string()) };
-    }
-    Reply::ToolCalls(calls)
-}
-
-fn parse_one_call(body: &str) -> Option<Call> {
-    let v: serde_json::Value = serde_json::from_str(body).ok()?;
-    let name = v.get("name")?.as_str()?.to_string();
-    let mut args = ToolArgs::new();
-    if let Some(obj) = v.get("args").and_then(|a| a.as_object()) {
-        for (k, val) in obj {
-            let s = match val {
-                serde_json::Value::String(s) => s.clone(),
-                other => other.to_string(),
-            };
-            args = args.set(k, s);
-        }
-    }
-    Some(Call { name, args })
-}
-
-/// 为未执行的调用补配对结果（配对规则的落点，单独可测）。
-pub fn aborted_placeholders(calls: &[Call], why: &str) -> Vec<tool::ToolResult> {
-    calls
+/// 只有带 id 的调用才入 meta（文本回退的调用没有 id，无配对可言）。
+/// `arguments` 以**字符串**存（OpenAI 线格式如此），复用 `ToolCall` 的嵌套序列化。
+fn assistant_meta(calls: &[Call]) -> String {
+    let arr: Vec<ne_engine::llm::ToolCall> = calls
         .iter()
-        .map(|c| tool::ToolResult::err(format!("未执行（{}）：{}", why, c.name)))
-        .collect()
+        .filter_map(|c| {
+            let id = c.id.as_ref()?;
+            Some(ne_engine::llm::ToolCall {
+                id: id.clone(),
+                name: c.name.clone(),
+                arguments: c.args.to_json_except("").to_string(),
+            })
+        })
+        .collect();
+    serde_json::json!({ "tool_calls": arr }).to_string()
 }
 
 /// 执行一批工具调用。
-fn run_calls(h: &HarnessCtx, ctx: &ToolCtx, calls: &[Call]) -> Vec<tool::ToolResult> {
-    let mut results = Vec::new();
+fn run_calls(h: &HarnessCtx, ctx: &ToolCtx, calls: &[Call]) -> Vec<tool::ToolResult> {    let mut results = Vec::new();
     for (i, c) in calls.iter().enumerate() {
         if i >= h.max_tool_calls() {
             results.push(tool::ToolResult::err(format!(
@@ -477,15 +400,35 @@ pub fn run_session(h: &HarnessCtx, turn_prefix: &TurnPrefix) -> Result<RunOutcom
             }
         };
 
-        match parse_reply(&out.content) {
+        // 决议顺序：原生 tool_calls 优先，文本标记回退（太墟 resolveCalls 同策略）
+        match resolve(&out.tool_calls, &out.content) {
             Reply::ToolCalls(calls) if !calls.is_empty() => {
-                // 记录 assistant 原文（含工具调用标记）——它是这一轮的"因"
-                h.store.append(&h.session, h.store.head(&h.session)?, "assistant", &out.content)?;
+                // 记录 assistant 轮：正文（原生轮常为空）+ meta 里的结构化 tool_calls。
+                // meta 是协议侧数据，用于下一轮投影时重建 assistant(tool_calls) 配对——
+                // 缺它则工具结果变"孤儿"，模型看不到自己调用了什么。
+                let meta = assistant_meta(&calls);
+                h.store.append_meta(
+                    &h.session,
+                    h.store.head(&h.session)?,
+                    "assistant",
+                    out.content.trim(),
+                    Some(&meta),
+                )?;
                 let results = run_calls(h, &ctx, &calls);
-                // 落盘工具结果（内部记 role=tool；出口会 sanitize）
+                // 落盘工具结果：与调用按序号配对，meta 记 tool_call_id
                 let mut parent = h.store.head(&h.session)?;
-                for r in &results {
-                    parent = Some(h.store.append(&h.session, parent, "tool", &r.render())?);
+                for (c, r) in calls.iter().zip(results.iter()) {
+                    let rmeta = c
+                        .id
+                        .as_deref()
+                        .map(|id| format!("{}", serde_json::json!({"tool_call_id": id})));
+                    parent = Some(h.store.append_meta(
+                        &h.session,
+                        parent,
+                        "tool",
+                        &r.render(),
+                        rmeta.as_deref(),
+                    )?);
                 }
                 let failed = results.iter().filter(|r| !r.ok).count();
                 all_results.extend(results);
@@ -516,7 +459,7 @@ pub fn run_session(h: &HarnessCtx, turn_prefix: &TurnPrefix) -> Result<RunOutcom
             }
             _ => {
                 // 无工具调用 → 收尾
-                last_text = match parse_reply(&out.content) {
+                last_text = match resolve(&out.tool_calls, &out.content) {
                     Reply::Text(t) => t,
                     _ => out.content.trim().to_string(),
                 };
@@ -563,55 +506,14 @@ pub fn persist_final(h: &HarnessCtx, outcome: &RunOutcome) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_plain_text() {
-        assert_eq!(parse_reply("你好啊"), Reply::Text("你好啊".into()));
-    }
-
-    #[test]
-    fn parse_single_tool_call() {
-        let r = parse_reply(r#"<tool_call>{"name":"read","args":{"path":"a.txt"}}</tool_call>"#);
-        match r {
-            Reply::ToolCalls(c) => {
-                assert_eq!(c.len(), 1);
-                assert_eq!(c[0].name, "read");
-                assert_eq!(c[0].args.get("path"), Some("a.txt"));
-            }
-            other => panic!("应为 ToolCalls，得到 {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_mixed_text_and_calls() {
-        let r = parse_reply("我先看看\n<tool_call>{\"name\":\"ls\",\"args\":{\"path\":\".\"}}</tool_call>\n稍等");
-        match r {
-            Reply::ToolCalls(c) => assert_eq!(c[0].name, "ls"),
-            other => panic!("应为 ToolCalls，得到 {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_unterminated_call_stays_text() {
-        match parse_reply("前面 <tool_call>{\"name\":\"read\"") {
-            Reply::Text(t) => assert!(t.contains("前面")),
-            other => panic!("未闭合应回退文本，得到 {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_unknown_json_stays_text() {
-        match parse_reply("看这个 <tool_call>not json</tool_call> 哦") {
-            Reply::Text(t) => assert!(t.contains("not json")),
-            other => panic!("非法 body 应保留，得到 {other:?}"),
-        }
-    }
+    use crate::protocol::aborted_placeholders;
+    use crate::tool::ToolArgs;
 
     #[test]
     fn aborted_placeholders_pair_every_call() {
         let calls = vec![
-            Call { name: "read".into(), args: ToolArgs::new() },
-            Call { name: "write".into(), args: ToolArgs::new() },
+            Call { id: None, name: "read".into(), args: ToolArgs::new() },
+            Call { id: None, name: "write".into(), args: ToolArgs::new() },
         ];
         let ph = aborted_placeholders(&calls, "被截断");
         assert_eq!(ph.len(), 2, "每个 call 必须有配对结果");
@@ -619,31 +521,29 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_converts_unpaired_tool_role_to_user_text() {
-        // 太墟 sanitizeApiTranscript 的核心：孤立 tool 结果不能直接发，会 400。
-        let msgs = vec![
-            ne_engine::llm::Message { role: "user".into(), content: "写个文件".into() },
-            ne_engine::llm::Message { role: "assistant".into(), content: "好的".into() },
-            ne_engine::llm::Message { role: "tool".into(), content: "[OK] 已写入 a.txt".into() },
-        ];
-        let out = sanitize_for_provider(&msgs);
-        assert_eq!(out.len(), 3);
-        assert!(out.iter().all(|m| m.role != "tool"), "不得残留 role=tool");
-        assert_eq!(out[2].role, "user");
-        assert!(out[2].content.contains("已写入 a.txt"), "信息必须保留");
+    fn assistant_meta_carries_ids_and_arguments() {
+        let calls = vec![Call {
+            id: Some("call_1".into()),
+            name: "read".into(),
+            args: ToolArgs::new().set("path", "a.txt"),
+        }];
+        let meta = assistant_meta(&calls);
+        let v: serde_json::Value = serde_json::from_str(&meta).unwrap();
+        let c = &v["tool_calls"][0];
+        assert_eq!(c["id"], "call_1");
+        assert_eq!(c["type"], "function");
+        assert_eq!(c["function"]["name"], "read");
+        // arguments 是 JSON **字符串**（OpenAI 线格式），内容为参数对象
+        let args: serde_json::Value =
+            serde_json::from_str(c["function"]["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(args["path"], "a.txt");
     }
 
     #[test]
-    fn sanitize_is_identity_for_normal_messages() {
-        let msgs = vec![
-            ne_engine::llm::Message { role: "user".into(), content: "hi".into() },
-            ne_engine::llm::Message { role: "assistant".into(), content: "hello".into() },
-        ];
-        let out = sanitize_for_provider(&msgs);
-        assert_eq!(out.len(), msgs.len());
-        for (a, b) in out.iter().zip(msgs.iter()) {
-            assert_eq!(a.role, b.role);
-            assert_eq!(a.content, b.content);
-        }
+    fn assistant_meta_skips_idless_text_calls() {
+        // 文本回退的调用没有 id → 无配对可言，不入 meta
+        let calls = vec![Call { id: None, name: "read".into(), args: ToolArgs::new() }];
+        let v: serde_json::Value = serde_json::from_str(&assistant_meta(&calls)).unwrap();
+        assert_eq!(v["tool_calls"].as_array().unwrap().len(), 0);
     }
 }

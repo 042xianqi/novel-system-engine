@@ -24,6 +24,10 @@ pub struct LlmParams {
     pub enable_thinking: bool,
     pub retries: usize,
     pub timeout: Duration,
+    /// 工具定义（空 = 纯聊天，请求体不注入 `tools`）。
+    pub tools: Vec<ToolDefinition>,
+    /// 工具调用模式（决定注入方式与解析优先级）。
+    pub tool_call_mode: ToolCallMode,
 }
 
 impl Default for LlmParams {
@@ -39,40 +43,238 @@ impl Default for LlmParams {
             enable_thinking: false,
             retries: 3,
             timeout: Duration::from_secs(600),
+            tools: Vec::new(),
+            tool_call_mode: ToolCallMode::Native,
         }
     }
 }
 
+/// 一次结构化工具调用。
+///
+/// **线格式对齐 OpenAI / 太墟 `ApiToolCall`**：`{"id","type":"function","function":{"name","arguments"}}`。
+/// `arguments` 保持**原始 JSON 字符串**（OpenAI 协议如此），不在这一层解析成对象——
+/// 参数解释权归工具层（它才知道自己接受哪些键），契约层只负责透传。
+///
+/// 因为线格式是嵌套的，这里手写 Serialize/Deserialize，不用 derive（derive 会拍平成
+/// `{id,name,arguments}`，provider 会拒收）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: String,
+}
+
+impl Serialize for ToolCall {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut m = s.serialize_map(Some(3))?;
+        m.serialize_entry("id", &self.id)?;
+        m.serialize_entry("type", "function")?;
+        let f = serde_json::json!({"name": self.name, "arguments": self.arguments});
+        m.serialize_entry("function", &f)?;
+        m.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for ToolCall {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let v = serde_json::Value::deserialize(d)?;
+        let id = v.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+        let f = v.get("function").ok_or_else(|| serde::de::Error::missing_field("function"))?;
+        let name = f.get("name").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+        let arguments = f
+            .get("arguments")
+            .and_then(|x| x.as_str())
+            .unwrap_or("{}")
+            .to_string();
+        Ok(ToolCall { id, name, arguments })
+    }
+}
+
+/// 工具定义（JSON Schema，对齐太墟 `ApiToolDefinition`）。
+///
+/// 发请求时放进 `tools` 数组，走 provider 原生 function calling 通道。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolDefinition {
+    /// 固定 "function"（OpenAI 兼容协议目前只有这一种）
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub function: FunctionDefinition,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionDefinition {
+    pub name: String,
+    pub description: String,
+    /// JSON Schema 对象（如 `{"type":"object","properties":{...},"required":[...]}`）
+    pub parameters: serde_json::Value,
+}
+
+impl ToolDefinition {
+    pub fn function(name: impl Into<String>, description: impl Into<String>, parameters: serde_json::Value) -> Self {
+        ToolDefinition {
+            kind: "function".into(),
+            function: FunctionDefinition {
+                name: name.into(),
+                description: description.into(),
+                parameters,
+            },
+        }
+    }
+}
+
+/// 一条消息。对齐太墟 `ApiMessage`：`content` 可空（工具调用轮常无正文），
+/// 并可携带 `tool_calls`（assistant 发起调用）与 `tool_call_id`（tool 结果配对）。
+///
+/// 后两个字段额外参与**序列化**：`None` 时完全不出现在 JSON 里，
+/// 从而对既有调用方（不传这两个字段）保持**逐字节兼容**。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Message {
     pub role: String,
+    #[serde(default)]
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 impl Message {
     pub fn system(c: impl Into<String>) -> Self {
-        Message { role: "system".into(), content: c.into() }
+        Message { role: "system".into(), content: c.into(), ..Default::default() }
     }
     pub fn user(c: impl Into<String>) -> Self {
-        Message { role: "user".into(), content: c.into() }
+        Message { role: "user".into(), content: c.into(), ..Default::default() }
+    }
+    /// assistant 文本（无工具调用）。
+    pub fn assistant(c: impl Into<String>) -> Self {
+        Message { role: "assistant".into(), content: c.into(), ..Default::default() }
+    }
+    /// assistant 发起工具调用（对齐太墟：content 为空串，不 omit）。
+    pub fn assistant_tool_calls(calls: Vec<ToolCall>) -> Self {
+        Message {
+            role: "assistant".into(),
+            content: String::new(),
+            tool_calls: Some(calls),
+            tool_call_id: None,
+        }
+    }
+    /// tool 结果（必须紧跟对应 assistant(tool_calls)）。
+    pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Message {
+            role: "tool".into(),
+            content: content.into(),
+            tool_calls: None,
+            tool_call_id: Some(tool_call_id.into()),
+        }
     }
 }
 
-/// 调用结果：正文 + 推理内容（thinking 透传）。
+/// 调用结果：正文 + 推理内容（thinking 透传）+ 结构化工具调用。
 #[derive(Debug, Clone)]
 pub struct LlmOutput {
     pub content: String,
     pub reasoning: String,
+    /// 原生 `tool_calls`（provider 结构化通道）。空 = 本轮没有工具调用。
+    pub tool_calls: Vec<ToolCall>,
+}
+
+/// 工具调用模式（对齐太墟 `ToolCallMode`）。
+///
+/// * `Native`：注入 provider 标准 `tools` 数组，解析 `message.tool_calls`（默认）；
+/// * `JsonText`：工具 schema 写进 system 提示词，模型用文本标记输出调用（兼容网关兜底）；
+/// * `Disabled`：纯聊天，不注入任何工具。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToolCallMode {
+    #[default]
+    Native,
+    JsonText,
+    Disabled,
+}
+
+impl LlmParams {
+    /// 本参数是否配置了工具（决定要不要注入 `tools`）。默认无 → 不改变既有请求体。
+    pub fn has_tools(&self) -> bool {
+        !self.tools.is_empty() && self.tool_call_mode != ToolCallMode::Disabled
+    }
 }
 
 fn body_json(p: &LlmParams, messages: &[Message]) -> serde_json::Value {
-    serde_json::json!({
+    let msgs: Vec<serde_json::Value> = messages
+        .iter()
+        .map(|m| {
+            // 与太墟一致：content 永远发（严格网关要求它是 String），空串也不省。
+            let mut obj = serde_json::Map::new();
+            obj.insert("role".into(), serde_json::json!(m.role));
+            obj.insert("content".into(), serde_json::json!(m.content));
+            if let Some(id) = &m.tool_call_id {
+                obj.insert("tool_call_id".into(), serde_json::json!(id));
+            }
+            if let Some(calls) = &m.tool_calls {
+                obj.insert("tool_calls".into(), serde_json::json!(calls));
+            }
+            serde_json::Value::Object(obj)
+        })
+        .collect();
+
+    let mut body = serde_json::json!({
         "model": p.model,
-        "messages": messages.iter().map(|m| serde_json::json!({"role": m.role, "content": m.content})).collect::<Vec<_>>(),
+        "messages": msgs,
         "max_tokens": p.max_tokens,
         "temperature": p.temperature,
         "enable_thinking": p.enable_thinking,
-    })
+    });
+
+    // 仅在配置了工具时注入 `tools` —— 默认（空）时请求体与既有逐字节一致。
+    if p.has_tools() {
+        body["tools"] = serde_json::to_value(&p.tools).unwrap_or(serde_json::Value::Null);
+    }
+    body
+}
+
+/// 解析一次响应里的 `message.tool_calls`（结构化通道；缺失/空数组 → 空 Vec）。
+fn parse_tool_calls(msg: &serde_json::Value) -> Vec<ToolCall> {
+    let Some(arr) = msg.get("tool_calls").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|c| {
+            let f = c.get("function")?;
+            let name = f.get("name")?.as_str()?.trim().to_string();
+            if name.is_empty() {
+                return None;
+            }
+            // 部分网关对无参函数不下发 arguments → 兜底 "{}"（对齐太墟）
+            let arguments = f
+                .get("arguments")
+                .and_then(|a| a.as_str())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("{}")
+                .to_string();
+            // id 缺失时合成一个稳定 id（与 tool 结果配对用）
+            let id = c
+                .get("id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("call_{}", crate::llm::short_hash(&name)));
+            Some(ToolCall { id, name, arguments })
+        })
+        .collect()
+}
+
+/// 无外部依赖的短哈希（配对 id 用，只要进程内唯一即可）。
+pub(crate) fn short_hash(s: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    s.hash(&mut h);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{:x}{:x}", h.finish(), now)
 }
 
 fn key_tail(k: &str) -> String {
@@ -108,8 +310,11 @@ pub fn call(p: &LlmParams, messages: &[Message]) -> Result<LlmOutput> {
                         .or_else(|| msg["reasoning"].as_str())
                         .unwrap_or("")
                         .to_string();
-                    if !content.trim().is_empty() {
-                        return Ok(LlmOutput { content, reasoning });
+                    let tool_calls = parse_tool_calls(msg);
+                    // 工具调用轮正文常为空（模型只发调用）→ 有 tool_calls 也算有效响应，
+                    // 不能按"empty content"切 key（对齐太墟：content 与 toolCalls 任一非空即有效）。
+                    if !content.trim().is_empty() || !tool_calls.is_empty() {
+                        return Ok(LlmOutput { content, reasoning, tool_calls });
                     }
                     last_err = "empty content".into();
                     break; // 切 key

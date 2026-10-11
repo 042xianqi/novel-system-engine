@@ -1,7 +1,13 @@
 # ne-agent 路线图（从"松散脚本"到"单二进制智能体"）
 
 > 主参考：太墟 harness（抄契约，不抄体量）；oh-my-pi 只补「主循环停止语义」与「单二进制打包」。
-> 铁律：现有 9 个 `ne-*` crate 一行不改，只被调用。
+> 铁律：现有 9 个 `ne-*` crate **不动业务语义**，只被调用。
+>
+> **2026-10-11 修订（M10）**：原措辞是"一行不改"。真机验证暴露 `ne-engine::llm`
+> 作为**通用 LLM 调用层**缺 `tools` 通道，导致工具调用在真实模型上完全不工作（见 M10）。
+> 经用户指示"不知道的问题参考太墟"，按太墟 `ProviderClient` 契约对 `ne-engine::llm`
+> 做**向后兼容的功能扩展**（加字段/加解析，不改既有行为）。修订后的铁律：
+> **不改业务语义与既有行为；允许为补齐通用基础设施（如 LLM 调用层的 tools 通道）而扩展。**
 
 ---
 
@@ -440,6 +446,48 @@ NovelCtx::open → chapter::build_prompt → llm::call → chapter::write_chapte
 全工作区 33 套件 0 失败；门禁通过。
 
 **产出**：成品（v0.0.7）。
+
+---
+
+## M10 · 原生工具协议 — ✅ 已完成（2026-10-11）
+
+**背景（真机暴露的头号缺陷）**
+用真实端点（`glm-5.3-flash` @ 127.0.0.1:8788）验证时发现：让模型调 `read` 工具，
+模型直接回「我没有文件读取工具」——**工具调用在真实模型上完全不工作**。
+
+根因：`harness.rs` 走 v1 **文本协议**（`<tool_call>{json}</tool_call>`），
+模块注释写着"不走 provider 的结构化 tools/tool_calls 通道……留到 M4"；
+但 M4 做的是 web/MCP，**这件事从没兑现**。`ne-engine::llm::body_json` 不发 `tools`，
+`Message` 结构装不下 `tool_calls`。此前"真机验收"用的是**假 LLM 服务端**，
+所以 410 测试全绿却从未发生真实工具调用。
+
+**做什么（对齐太墟双通道）**
+- `ne-engine::llm`：`ToolCall`（手写 serde，OpenAI 嵌套线格式）、`ToolDefinition`、
+  `ToolCallMode{Native,JsonText,Disabled}`；`Message` 加 `tool_calls`/`tool_call_id`
+  （可选 + 空时省略序列化 = 向后逐字节兼容）；`body_json` 有工具时注入 `tools`；
+  `call()` 解析 `tool_calls`（工具调用轮空正文不再当错误）。
+- `ne-agent/src/protocol.rs`（新）：`resolve`（**结构化优先，文本回退**，对齐太墟
+  `TextToolCallCodec.resolveCalls`）；`sanitize_for_provider`（**保住 tool_call⇄result 配对**，
+  孤立/错位转写 user、缺失补占位，对齐 `sanitizeApiTranscript`）；`builtin_tool_definitions`
+  （17 个内建工具 JSON Schema）。
+- `session.rs`：`MsgRow.meta` 列 + `append_meta`，持久化工具调用配对，供投影回放。
+- `context.rs`/`ctx_window.rs`：`HistMsg` 透传 tool 字段（曾因丢字段导致配对失效）。
+- `main.rs`：把内建工具 schema 注入 `llm.tools`。
+
+**验收（真机，非单测）**
+- 真机多轮回环：`读 note.txt → 写 summary.txt → 作答`，`summary.txt` 内容 = "沈砚" ✅
+- 工具失败路径：读不存在文件，模型如实报"读不到"而非编造 ✅
+- 会话续接：下一句还记得上一轮文件名 ✅
+- `cargo test --workspace` 414 通过 0 失败；架构门禁通过。
+
+**模块**：`ne-agent/src/protocol.rs`（新）；`ne-engine/src/llm.rs`（扩展）；
+`harness.rs`/`session.rs`/`context.rs`/`ctx_window.rs`/`main.rs`。
+
+**代价与注意**：破了原"一行不改"铁律（见文件头修订说明）——`ne-engine::llm` 是
+通用 LLM 调用层，本就必须支持 tools 才能承载 agent；扩展是向后兼容的，`ne-*` 既有
+业务调用（`novel_chapter` 等）行为不变。
+
+**产出**：v0.0.8。
 
 ---
 

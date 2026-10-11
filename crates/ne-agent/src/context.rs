@@ -96,6 +96,10 @@ pub struct HistMsg {
     pub content: String,
     /// 这条是否是"老轮次工具结果"（可被截断）
     pub is_tool_result: bool,
+    /// 工具调用（assistant 轮）；截断/折叠时必须原样带回，否则配对丢失。
+    pub tool_calls: Option<Vec<ne_engine::llm::ToolCall>>,
+    /// 配对的 tool_call_id（tool 轮）。
+    pub tool_call_id: Option<String>,
 }
 
 /// 老轮次工具结果截断（太墟 `truncateStaleToolResults` 的等价物）。
@@ -151,6 +155,8 @@ pub fn truncate_stale_tool_results(
                 role: m.role.clone(),
                 content: compact_output(&m.content),
                 is_tool_result: true,
+                tool_calls: m.tool_calls.clone(),
+                tool_call_id: m.tool_call_id.clone(),
             }
         })
         .collect();
@@ -206,7 +212,13 @@ mod tests {
     use super::*;
 
     fn hm(role: &str, content: &str, is_tool: bool) -> HistMsg {
-        HistMsg { role: role.into(), content: content.into(), is_tool_result: is_tool }
+        HistMsg {
+            role: role.into(),
+            content: content.into(),
+            is_tool_result: is_tool,
+            tool_calls: None,
+            tool_call_id: None,
+        }
     }
 
     #[test]

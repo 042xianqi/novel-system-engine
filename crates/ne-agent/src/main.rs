@@ -257,8 +257,11 @@ fn import_llm(vault: &Vault) -> Result<(Vec<PathBuf>, PathBuf)> {
 fn build_runtime(vault: &Vault) -> Result<RuntimeHandles> {
     vault.init()?;
     let cfg = RuntimeConfig::load(vault.root())?;
-    let llm = cfg.llm_params(&vault.llm_dir())?;
+    let mut llm = cfg.llm_params(&vault.llm_dir())?;
     let enabled = ne_agent::resolve_enabled_tools(&cfg)?;
+    // 工具定义注入 provider 原生 `tools` 通道（对齐太墟 NATIVE 模式）。
+    // 不注入的话模型看不到工具，会直接回答"我没有文件读取工具"——真机验证暴露的头号缺陷。
+    llm.tools = ne_agent::protocol::builtin_tool_definitions(&enabled);
     let store = ne_agent::session::SessionStore::open(vault.agent_db())?;
     let memory = ne_agent::memory::MemoryStore::open(vault.agent_db())?;
     Ok(RuntimeHandles { cfg, llm, enabled, store, memory })

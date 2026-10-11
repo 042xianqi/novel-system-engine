@@ -339,11 +339,10 @@ pub fn novel_chapter(
 
     // 2) 调模型
     let msgs = vec![
-        ne_engine::llm::Message {
-            role: "system".into(),
-            content: "你是《残响之河》的小说撰稿者。严格按用户给出的写作指令输出正文，不要复述指令。".into(),
-        },
-        ne_engine::llm::Message { role: "user".into(), content: prompt },
+        ne_engine::llm::Message::system(
+            "你是《残响之河》的小说撰稿者。严格按用户给出的写作指令输出正文，不要复述指令。",
+        ),
+        ne_engine::llm::Message::user(prompt),
     ];
     let out = ne_engine::llm::call(llm, &msgs)
         .map_err(|e| anyhow::anyhow!("模型调用失败：{e}"))?;

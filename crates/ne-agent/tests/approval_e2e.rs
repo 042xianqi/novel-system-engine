@@ -15,23 +15,32 @@ fn tmp(tag: &str) -> PathBuf {
     p
 }
 
-/// 启动一个假 LLM：第一次回 tool_call，之后回纯文本收尾。返回端口。
+/// 启动一个假 LLM：第一次回**原生 tool_calls**，其后（看到 role=tool 结果）回纯文本收尾。
+/// 返回端口。
+///
+/// 用原生 `tool_calls` 而非文本标记：这正是真实 provider 的形态，
+/// 也让测试覆盖「结构化通道优先」的新协议（对齐太墟 NATIVE 模式）。
 fn start_fake_llm(port: u16, tool_name: &str, tool_args: &str) -> std::process::Child {
     let script = format!(
         r#"
-import http.server, json, re
+import http.server, json
 TOOL = {tool_name:?}
-ARGS = {tool_args:?}
+ARGS = json.loads({tool_args:?})
 class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get('Content-Length', 0))
         body = json.loads(self.rfile.read(n) or b'{{}}')
-        joined = " ".join(m.get('content','') for m in body.get('messages', []))
-        if '【工具执行结果】' in joined:
-            content = "收尾：" + joined.split('【工具执行结果】')[-1][:200]
+        msgs = body.get('messages', [])
+        has_tool_result = any(m.get('role') == 'tool' for m in msgs)
+        if has_tool_result:
+            last = [m for m in msgs if m.get('role') == 'tool'][-1].get('content', '')
+            msg = {{"role": "assistant", "content": "收尾：" + last[:200]}}
+            resp = {{"choices": [{{"message": msg, "finish_reason": "stop"}}]}}
         else:
-            content = '<tool_call>{{"name":"%s","args":%s}}</tool_call>' % (TOOL, ARGS)
-        resp = {{"choices":[{{"message":{{"role":"assistant","content":content}},"finish_reason":"stop"}}]}}
+            msg = {{"role": "assistant", "content": "",
+                    "tool_calls": [{{"id": "call_fake_1", "type": "function",
+                                     "function": {{"name": TOOL, "arguments": json.dumps(ARGS)}}}}]}}
+            resp = {{"choices": [{{"message": msg, "finish_reason": "tool_calls"}}]}}
         data = json.dumps(resp).encode()
         self.send_response(200); self.send_header('Content-Type','application/json')
         self.send_header('Content-Length', str(len(data))); self.end_headers(); self.wfile.write(data)

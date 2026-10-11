@@ -29,6 +29,8 @@ pub(crate) fn truncate_context(
             role: m.role.clone(),
             content: m.content.clone(),
             is_tool_result: m.role == "tool",
+            tool_calls: m.tool_calls.clone(),
+            tool_call_id: m.tool_call_id.clone(),
         })
         .collect();
 
@@ -58,7 +60,12 @@ pub(crate) fn truncate_context(
     }
 
     hist.into_iter()
-        .map(|m| ne_engine::llm::Message { role: m.role, content: m.content })
+        .map(|m| ne_engine::llm::Message {
+            role: m.role,
+            content: m.content,
+            tool_calls: m.tool_calls,
+            tool_call_id: m.tool_call_id,
+        })
         .collect()
 }
 

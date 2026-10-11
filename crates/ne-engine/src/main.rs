@@ -218,10 +218,7 @@ fn main() -> Result<()> {
             println!("→ 端点 = {}/chat/completions", p.base_url.trim_end_matches('/'));
             println!("→ 模型 = {}", p.model);
             println!("→ key  = {} 把（不打印内容）", p.keys.len());
-            let msgs = vec![llm::Message {
-                role: "user".into(),
-                content: prompt.clone(),
-            }];
+            let msgs = vec![llm::Message::user(prompt.clone())];
             let t0 = std::time::Instant::now();
             match llm::call(&p, &msgs) {
                 Ok(o) => {

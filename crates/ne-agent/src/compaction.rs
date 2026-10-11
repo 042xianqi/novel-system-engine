@@ -226,8 +226,8 @@ impl Summarizer for LlmSummarizer {
             input.folded.len()
         );
         let msgs = vec![
-            ne_engine::llm::Message { role: "system".into(), content: sys.into() },
-            ne_engine::llm::Message { role: "user".into(), content: user },
+            ne_engine::llm::Message::system(sys),
+            ne_engine::llm::Message::user(user),
         ];
         let out = ne_engine::llm::call(&self.llm, &msgs)?;
         let mut text = out.content.trim().to_string();
@@ -264,10 +264,7 @@ impl Projection {
     pub fn to_messages(&self) -> Vec<ne_engine::llm::Message> {
         let mut out = Vec::new();
         if let Some(s) = &self.summary {
-            out.push(ne_engine::llm::Message {
-                role: "user".into(),
-                content: format!("{SUMMARY_HEADER}\n{s}"),
-            });
+            out.push(ne_engine::llm::Message::user(format!("{SUMMARY_HEADER}\n{s}")));
         }
         out.extend(self.retained.iter().map(|m| m.to_llm()));
         out

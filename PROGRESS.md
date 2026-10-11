@@ -1,6 +1,6 @@
 # ne-agent 开发进度（跨段续跑用）
 
-> 最后更新：2026-10-11（**M0–M9 全部完成，v0.0.7**）
+> 最后更新：2026-10-11（**M0–M10 全部完成，v0.0.8**）
 > 仓库：github.com/042xianqi/novel-system　本地：/workspace/小说系统
 > 路线图：docs/ROADMAP-ne-agent.md　参考笔记：docs/ref_taixu_harness_notes.md、docs/ref_omp_notes.md
 > 太墟源码：/workspace/taixu-ref（Kotlin，47535 行，**主参考**）
@@ -306,3 +306,57 @@ tests/m8_tools_e2e.rs / tests/dual_agent_e2e.rs。工具数 10→14。
 - [ ] `cargo test` 全量 + 门禁 + clippy（清理新引入警告）。
 - [ ] 补 `tests/` 端到端：compress 走真实工具总线 + CLI `context --json` 形状。
 - [ ] 文档 ROADMAP 追加 M9；版本 0.0.6 → 0.0.7；提交推送。
+
+### M10 · 原生工具协议（真机暴露的头号缺陷）—— 进行中（续跑 5）
+
+用户需求原话：「用真实模型测一下，看看是不是真的写好了」，并明确「不知道的问题、拿不准的
+问题，都参考太墟」。
+
+**真机验证暴露的头号缺陷**
+- 用真实端点（127.0.0.1:8788，模型 id `glm-5.3-flash`）跑起来后，让模型调 `read` 工具，
+  模型直接回「我没有文件读取工具」——**工具调用在真实模型上完全不工作**。
+- 根因：`harness.rs:34` 写着 v1 走**文本协议**（`<tool_call>{json}</tool_call>`），
+  「不走 provider 的结构化 tools/tool_calls 通道……留到 M4」；而 **M4 做的是 web/MCP，
+  这件事从没兑现**。`ne-engine::llm::body_json` 不发 `tools`，`Message` 装不下 `tool_calls`。
+- 对照实验（curl 直连端点，铁证）：
+  - A 只列工具名（= 当前 ne-agent）→ 模型「我没有文件读取工具」❌
+  - B 教它文本 `<tool_call>` 协议 → 仍拒绝 ❌
+  - C **provider 原生 `tools` 通道** → `finish_reason=tool_calls` → 回填 result → 答出正确答案 ✅
+- 结论：所谓 410 测试全绿，是因为「真机验收」用的是**假 LLM 服务端**，真实工具调用从未发生。
+
+**方案（对齐太墟，用户指示参考太墟）**
+- 太墟 `ProviderClient.kt`：`ApiMessage{content?, tool_calls?, tool_call_id?}` +
+  NATIVE 模式注入 `tools` 数组（默认）+ 解析 `message.tool_calls`；
+  `TextToolCallCodec.resolveCalls`：**结构化优先，文本回退**（`structuredCalls.ifEmpty{calls}`）；
+  `sanitizeApiTranscript`：保住 tool_call 与 tool 结果的配对。
+- 落地 = **双通道**：NATIVE 优先 + 文本回退。
+
+**已完成（代码就位，编译通过，193 库测试全绿）**
+- `ne-engine/src/llm.rs`：新增 `ToolCall`（**手写 serde，OpenAI 嵌套线格式**
+  `{id,type:function,function:{name,arguments}}`）、`ToolDefinition`/`FunctionDefinition`、
+  `ToolCallMode{Native,JsonText,Disabled}`；`Message` 加 `tool_calls`/`tool_call_id`
+  （`skip_serializing_if=None` → 对既有调用方逐字节兼容）+ 构造器；`body_json` 有工具时注入
+  `tools`；`call()` 解析 `tool_calls`，且**工具调用轮空正文不再当错误切 key**。
+- `ne-agent/src/protocol.rs`（**新**）：`resolve`（结构化优先/文本回退）、`parse_reply`
+  （兼容 `<tool_call>` 与太墟 `[[tool_call]]`）、`sanitize_for_provider`（**保配对**：
+  合法 tool 结果保留，孤立/错位转写 user，缺失补占位）、`builtin_tool_definitions`（17 个内建
+  工具 JSON Schema，MCP 动态工具不枚举）。
+- `session.rs`：`MsgRow` 加 `meta` 列；`append_meta()` 存 assistant 的 `{"tool_calls":[...]}`
+  与 tool 的 `{"tool_call_id":...}`；`to_llm()` 从 meta 重建结构 → 投影时配对可回放。
+- `harness.rs`：主循环改走 `resolve(原生, 文本)` + meta 落盘；`parse_reply`/`sanitize` 迁至
+  protocol.rs（harness 降到 542 行）；新增 `assistant_meta()`。
+- `main.rs::build_runtime`：把 `protocol::builtin_tool_definitions(&enabled)` 注入 `llm.tools`。
+- `context.rs` `HistMsg` + `ctx_window.rs`：**透传 tool_calls/tool_call_id**（曾因这里丢字段
+  导致配对失效 → 假 LLM 死循环）。
+- `tests/approval_e2e.rs`：假 LLM 改回**原生 tool_calls**（覆盖新协议）。
+
+**未完成（下一步）**
+- [x] 重跑 `cargo test --workspace` 全绿 → **414 通过 0 失败**。
+- [x] **真机回归**：真实模型多轮工具回环（读→写→答）成功；工具失败路径如实报告；会话续接正常。
+- [x] 破铁律：`ne-engine::llm` 扩展已在 ROADMAP 文件头注明修订说明与理由。
+- [x] ROADMAP 追加 M10；版本 0.0.7 → 0.0.8；提交推送。
+
+### ✅ M10 全部完成（续跑 5 收尾）
+- 真机验证（真实端点 glm-5.3-flash）头号缺陷：工具调用完全不工作 → 已修（原生 tools 通道 + 文本回退）。
+- 全量：`cargo test --workspace` 414 通过 0 失败；arch_check 通过；新代码（protocol.rs/llm.rs）零 clippy 警告。
+- ROADMAP 头部铁律修订 + M10 段；版本 0.0.7 → 0.0.8；提交推送。

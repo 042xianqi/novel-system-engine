@@ -167,9 +167,9 @@ fn history_read_and_search_see_folded() {
 #[test]
 fn mechanical_summary_preserves_user_turns() {
     let folded = vec![
-        MsgRow { id: 1, parent_id: None, role: "user".into(), content: "目标：写第一章".into(), created_at: 0 },
-        MsgRow { id: 2, parent_id: Some(1), role: "assistant".into(), content: "好的".into(), created_at: 0 },
-        MsgRow { id: 3, parent_id: Some(2), role: "user".into(), content: "改用第三人称".into(), created_at: 0 },
+        MsgRow { id: 1, parent_id: None, role: "user".into(), content: "目标：写第一章".into(), created_at: 0, meta: None },
+        MsgRow { id: 2, parent_id: Some(1), role: "assistant".into(), content: "好的".into(), created_at: 0, meta: None },
+        MsgRow { id: 3, parent_id: Some(2), role: "user".into(), content: "改用第三人称".into(), created_at: 0, meta: None },
     ];
     let s = MechanicalSummarizer.summarize(&SummarizeInput { folded: &folded }).unwrap();
     assert!(s.contains("写第一章"), "机械摘要须保住用户要点：{s}");

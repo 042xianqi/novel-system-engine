@@ -195,15 +195,19 @@ fn resources_catalog(h: &HarnessCtx) -> String {
 /// MCP 工具清单行（供 prompt 告知模型）。**已连接的**才列出（避免启动全部服务）。
 ///
 /// ⚠ 这里不主动 `discover_all()`（那会 spawn 所有服务）；只列出**显式启用的服务名**，
-/// 让模型知道"存在这些服务，工具名形如 mcp__<服务>__<工具>"。具体工具清单
-/// 在服务首次被调用时由模型按需发现（或由 `ne-agent mcp list` 主动枚举）。
+/// 让模型知道"存在这些服务"，**并走 `use_capability` 代理按需发现**。
+///
+/// 学太墟 v0.22.0：MCP 工具 schema 不进 provider 可见面（避免服务清单变化击穿
+/// KV prefix cache），模型经 `use_capability` 的 list/inspect 发现、call 调用。
+/// 具体工具清单在服务首次 inspect/call 时由模型按需发现（或 `ne-agent mcp list`）。
 fn mcp_tool_lines(h: &HarnessCtx) -> Vec<String> {
     let Some(specs) = &h.mcp_servers else { return Vec::new() };
     let mut out = Vec::new();
     for s in specs.iter().filter(|s| s.enabled) {
         out.push(format!(
-            "- `mcp__{}__*`：外部 MCP 服务 `{}` 提供的工具（工具名形如 `mcp__服务__工具`）",
-            s.name, s.name
+            "- MCP 服务 `{}`：用 `use_capability`（action=\"inspect\" + server=\"{}\"）查看其工具清单，\
+             再用 action=\"call\" + server=\"{}\" + tool=… + arguments={{…}} 调用",
+            s.name, s.name, s.name
         ));
     }
     out
@@ -282,7 +286,8 @@ fn assistant_meta(calls: &[Call]) -> String {
 }
 
 /// 执行一批工具调用。
-fn run_calls(h: &HarnessCtx, ctx: &ToolCtx, calls: &[Call]) -> Vec<tool::ToolResult> {    let mut results = Vec::new();
+fn run_calls(h: &HarnessCtx, ctx: &ToolCtx, calls: &[Call]) -> Vec<tool::ToolResult> {
+    let mut results = Vec::new();
     for (i, c) in calls.iter().enumerate() {
         if i >= h.max_tool_calls() {
             results.push(tool::ToolResult::err(format!(
@@ -317,13 +322,19 @@ fn run_calls(h: &HarnessCtx, ctx: &ToolCtx, calls: &[Call]) -> Vec<tool::ToolRes
             }
         }
         // 2) 审批策略：需要批准时问用户；无法交互则**默认拒绝**（安全默认）
+        // MCP 限定名（`mcp__<服务>__<工具>`）由 harness 放进内部键，供路由与风险定级。
+        let args = if t == Tool::Mcp && c.args.get(tool::MCP_TOOL_KEY).is_none() {
+            c.args.clone().set(tool::MCP_TOOL_KEY, c.name.as_str())
+        } else {
+            c.args.clone()
+        };
         let raw_mcp = if t == Tool::Mcp {
-            c.args.get(tool::MCP_TOOL_KEY)
+            args.get(tool::MCP_TOOL_KEY)
         } else {
             None
         };
         let decision =
-            crate::approval::decide(h.approval_mode, t, &c.args, &h.work_root, raw_mcp);
+            crate::approval::decide(h.approval_mode, t, &args, &h.work_root, raw_mcp);
         if decision.required {
             let approved = match &h.approver {
                 Some(f) => f(&decision),
@@ -344,7 +355,7 @@ fn run_calls(h: &HarnessCtx, ctx: &ToolCtx, calls: &[Call]) -> Vec<tool::ToolRes
             }
         }
 
-        match tool::execute(ctx, t, &c.args) {
+        match tool::execute(ctx, t, &args) {
             Ok(r) => results.push(r),
             Err(e) => results.push(tool::ToolResult::err(format!("执行 `{}` 内部错误：{e}", c.name))),
         }

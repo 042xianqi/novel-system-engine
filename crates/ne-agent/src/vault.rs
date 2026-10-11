@@ -174,7 +174,7 @@ context:
 tools:
   # 内置工具开关（名字见 `ne-agent tools`）
   # 网络工具（web_fetch/web_search）默认**关闭**，需显式打开（M6 会接审批策略）
-  # 启用 MCP 服务后，其工具以 `mcp__<服务>__<工具>` 暴露给模型
+  # 配有已启用的 MCP 服务时，use_capability 代理会自动启用（模型据其发现并调用 MCP 工具）
   # plan/scratchpad：会话局部协作状态（持久化到 agent.db），建议常开
   # ask_user/load_rule/load_skill：M8 按需协作工具，无副作用，建议常开
   # subagents/dual_agent：派生子智能体（会执行工具，谨慎常开）
@@ -186,7 +186,10 @@ memory:
   recall_min_score: 0.0
 
 # 外部 MCP 服务（stdio + newline-delimited JSON-RPC 2.0）。
-# 工具名走太墟命名法 `mcp__<服务>__<工具>`，模型直接可调。
+# 调用方式：模型用 use_capability 代理按需发现与调用（服务清单变化不击穿 KV cache）：
+#   list  → 列出已启用服务
+#   inspect + server=<服务>  → 查看该服务的工具名与参数
+#   call + server=<服务> + tool=<工具> + arguments={…}  → 调用
 # 例：
 # mcp:
 #   servers:

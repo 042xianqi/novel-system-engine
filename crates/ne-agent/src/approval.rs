@@ -27,6 +27,13 @@
 
 use crate::tool::Tool;
 
+/// 能力代理是否指向**外部调用**（`action="call"`）。
+///
+/// `list`/`inspect` 是纯发现动作（不产生工作区副作用），`call` 才真正触发外部服务。
+fn capability_invokes_external(args: &crate::tool::ToolArgs) -> bool {
+    args.get("action").map(|a| a.trim() == "call").unwrap_or(false)
+}
+
 /// 审批模式（三档，太墟 `ApprovalMode`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ApprovalMode {
@@ -105,6 +112,12 @@ pub fn decide(
         _ => {}
     }
 
+    // 能力代理的 list/inspect 是只读发现动作 → 任何模式都免审；
+    // call 不在此放行，继续走下面的模式判定（request 模式仍会问）。
+    if tool == Tool::Capability && !capability_invokes_external(args) {
+        return Decision::allow();
+    }
+
     // ── request 模式：一切可变操作都要问（白名单已在上面放行）
     if mode == ApprovalMode::Request {
         return Decision::ask(
@@ -151,6 +164,18 @@ pub fn decide(
             "MCP 工具可能访问外部服务或产生工作区之外的副作用。",
             summarize(tool, args, raw_mcp_name),
         ),
+        // 能力代理：list/inspect 只读发现（免审），call 才触发外部调用（保守要求确认）
+        Tool::Capability => {
+            if capability_invokes_external(args) {
+                Decision::ask(
+                    "high",
+                    "能力代理 call 会调用外部 MCP 服务，可能产生工作区之外的副作用。",
+                    summarize(tool, args, raw_mcp_name),
+                )
+            } else {
+                Decision::allow()
+            }
+        }
         // 子智能体 / 双智能体：会派生隔离子会话并可能执行写/命令 → 保守要求确认
         Tool::Subagents | Tool::DualAgent => Decision::ask(
             "high",
@@ -173,7 +198,7 @@ pub fn decide(
 /// **与 [`ApprovalMode`] 正交**：`full_access + plan_only` 仍然只读。
 /// 刻意不复用 [`is_routine_command`]：它把 `./gradlew test`、`npm run build` 视为例常放行
 /// （会写构建产物、可能联网），在只读规划下必须当作写操作拦下。
-pub fn plan_block(tool: Tool, _args: &crate::tool::ToolArgs) -> Option<String> {
+pub fn plan_block(tool: Tool, args: &crate::tool::ToolArgs) -> Option<String> {
     match tool {
         // 纯只读：放行
         Tool::Read | Tool::Ls | Tool::WebFetch | Tool::WebSearch => None,
@@ -184,6 +209,14 @@ pub fn plan_block(tool: Tool, _args: &crate::tool::ToolArgs) -> Option<String> {
         Tool::AskUser | Tool::LoadRule | Tool::LoadSkill => None,
         // 压缩/历史回读：无文件与外部副作用，只读规划下放行
         Tool::Compress | Tool::HistoryRead | Tool::HistorySearch => None,
+        // 能力代理：list/inspect 只读发现放行；call 触发外部调用 → 硬拒
+        Tool::Capability => {
+            if capability_invokes_external(args) {
+                Some("只读规划模式：不允许通过能力代理调用外部 MCP 服务".into())
+            } else {
+                None
+            }
+        }
         // 写 / 执行 / 外部调用：只读规划下硬拒
         Tool::Write | Tool::Edit => Some("只读规划模式：不允许写文件".into()),
         Tool::Base => Some("只读规划模式：不允许执行命令（含构建/测试，它们会写产物）".into()),
@@ -228,6 +261,15 @@ fn summarize(tool: Tool, args: &crate::tool::ToolArgs, raw_mcp: Option<&str>) ->
         Tool::Write | Tool::Edit => format!("{} {}", tool.name(), args.get("path").unwrap_or("")),
         Tool::Base => format!("base {}", args.get("command").unwrap_or("")),
         Tool::Mcp => format!("{} 调用", raw_mcp.unwrap_or("mcp")),
+        Tool::Capability => {
+            let server = args.get("server").unwrap_or("");
+            let tool = args.get("tool").unwrap_or("");
+            if tool.is_empty() {
+                format!("use_capability call {server}")
+            } else {
+                format!("use_capability call {server}/{tool}")
+            }
+        }
         _ => tool.name().to_string(),
     }
 }

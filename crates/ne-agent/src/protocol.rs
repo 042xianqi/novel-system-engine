@@ -132,39 +132,69 @@ fn parse_one_call(body: &str) -> Option<Call> {
 ///
 /// 与 M1 的差异：M1 无条件把所有 `tool` 转 user（文本协议下没有配对可言）；
 /// 现在保留合法配对，只修复真正非法的部分——否则模型看不到调用与结果的关联。
+/// 稳定错误码：工具结果**未知**（非"失败"，非"缺失"）。
+///
+/// 语义对齐太墟 v0.22.0（`HarnessMessage.kt` 的 `errorCode` + `HarnessLoop` 文案
+/// 「上次工具结果未知，继续前需核验实际状态」）：历史里 assistant 有 tool_call、
+/// 但结果没落盘 → 那次调用**是否执行过无从判断**，可能已产生副作用。占位结果必须
+/// 如实表达"未知"，而不是谎称"失败"——否则模型会放心重放，可能造成重复副作用。
+pub const UNKNOWN_RESULT_CODE: &str = "unknown_tool_result";
+
+/// 为"结果未知"的调用生成**结构化**占位结果（机读错误码 + 人读告警）。
+fn unknown_result_placeholder(id: &str, name: &str) -> String {
+    serde_json::json!({
+        "error_code": UNKNOWN_RESULT_CODE,
+        "outcome": "unknown",
+        "tool_call_id": id,
+        "tool": name,
+        "message": "[ERROR] 工具结果未知：该调用可能未执行、已执行但未落盘、或结果在中断/裁剪中丢失。\
+继续前必须先核验实际状态（读文件、查日志，或改用只读查询重放）；\
+在未核验前**严禁重放原调用**——若它带副作用，可能已经生效。",
+    })
+    .to_string()
+}
+
 pub fn sanitize_for_provider(msgs: &[ne_engine::llm::Message]) -> Vec<ne_engine::llm::Message> {
-    use std::collections::BTreeSet;
-    let mut awaiting: BTreeSet<String> = BTreeSet::new();
+    let mut awaiting: Vec<(String, String)> = Vec::new();
     let mut out: Vec<ne_engine::llm::Message> = Vec::with_capacity(msgs.len());
 
-    fn flush(out: &mut Vec<ne_engine::llm::Message>, awaiting: &mut BTreeSet<String>) {
-        for id in awaiting.iter() {
+    // 中断处没等到结果的调用 → 补"结果未知"占位（保配对合法 + 如实标注未知）
+    fn flush(out: &mut Vec<ne_engine::llm::Message>, awaiting: &mut Vec<(String, String)>) {
+        for (id, name) in awaiting.drain(..) {
             out.push(ne_engine::llm::Message::tool_result(
                 id.clone(),
-                format!("[ERROR] 工具结果缺失（历史中断或被裁剪）：{id}"),
+                unknown_result_placeholder(&id, &name),
             ));
         }
-        awaiting.clear();
     }
 
     for m in msgs {
         match m.role.as_str() {
             "assistant" if m.tool_calls.as_ref().is_some_and(|c| !c.is_empty()) => {
                 flush(&mut out, &mut awaiting);
-                awaiting = m.tool_calls.as_ref().unwrap().iter().map(|c| c.id.clone()).collect();
+                awaiting = m
+                    .tool_calls
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .map(|c| (c.id.clone(), c.name.clone()))
+                    .collect();
                 out.push(m.clone());
             }
             "tool" => {
                 let id = m.tool_call_id.clone().unwrap_or_default();
-                if !id.is_empty() && awaiting.contains(&id) {
-                    out.push(m.clone());
-                    awaiting.remove(&id);
-                } else {
-                    // 紧邻前一条不是含该 id 的 assistant(tool_calls) → 转写 user 文本
-                    out.push(ne_engine::llm::Message::user(format!(
-                        "【工具执行结果（历史顺序异常，已转写为文本）】\n{}",
-                        m.content
-                    )));
+                match awaiting.iter().position(|(aid, _)| *aid == id) {
+                    Some(pos) if !id.is_empty() => {
+                        awaiting.remove(pos);
+                        out.push(m.clone());
+                    }
+                    _ => {
+                        // 紧邻前一条不是含该 id 的 assistant(tool_calls) → 转写 user 文本
+                        out.push(ne_engine::llm::Message::user(format!(
+                            "【工具执行结果（历史顺序异常，已转写为文本）】\n{}",
+                            m.content
+                        )));
+                    }
                 }
             }
             _ => {
@@ -215,6 +245,12 @@ fn tool_definition(t: Tool) -> Option<ToolDefinition> {
         Tool::Base => d("base", t.description(), serde_json::json!({"command": s("string", "要执行的 shell 命令")}), &["command"]),
         Tool::WebFetch => d("web_fetch", t.description(), serde_json::json!({"url": s("string", "http/https URL"), "max_chars": s("integer", "截断上限（可选）")}), &["url"]),
         Tool::WebSearch => d("web_search", t.description(), serde_json::json!({"query": s("string", "搜索词"), "engine": s("string", "引擎（可选）"), "limit": s("integer", "条数（可选）")}), &["query"]),
+        Tool::Capability => d("use_capability", t.description(), serde_json::json!({
+            "action": s("string", "list=列出已启用的 MCP 服务（不启动进程）；inspect=查看某服务的工具清单与参数；call=调用某服务的某工具"),
+            "server": s("string", "MCP 服务名（list 时省略；inspect/call 必填）"),
+            "tool": s("string", "目标工具名（call 必填；inspect 省略则列出该服务全部工具）"),
+            "arguments": serde_json::json!({"type": "object", "description": "call 时传给目标工具的实参对象，结构与 inspect 输出的参数 schema 一致"})
+        }), &["action"]),
         Tool::Plan => d("plan", t.description(), serde_json::json!({
             "action": s("string", "replace_active/get_active/advance/clear_active"),
             "goal": s("string", "总体目标（replace_active 时）"),
@@ -333,11 +369,55 @@ mod tests {
         assert_eq!(out[2].role, "user");
     }
 
+    /// 占位结果必须表达"**未知**"（可能已产生副作用），而非谎称"失败/缺失"——
+    /// 否则模型会放心重放，可能造成重复副作用（对齐太墟 v0.22.0 语义）。
+    #[test]
+    fn missing_result_placeholder_says_unknown_not_failed() {
+        let calls = vec![ToolCall {
+            id: "c7".into(),
+            name: "write".into(),
+            arguments: r#"{"path":"a.txt"}"#.into(),
+        }];
+        let msgs = vec![
+            ne_engine::llm::Message::assistant_tool_calls(calls),
+            ne_engine::llm::Message::user("继续"),
+        ];
+        let out = sanitize_for_provider(&msgs);
+        assert_eq!(out[1].role, "tool");
+        let v: serde_json::Value = serde_json::from_str(&out[1].content)
+            .expect("占位应是结构化 JSON（机读错误码）");
+        assert_eq!(v["error_code"], UNKNOWN_RESULT_CODE);
+        assert_eq!(v["outcome"], "unknown");
+        assert_eq!(v["tool"], "write", "要保留工具名，便于模型判断该核验什么");
+        let msg = v["message"].as_str().unwrap();
+        assert!(msg.contains("严禁重放"), "必须明确禁止未核验重放：{msg}");
+    }
+
+    /// 两个都等不到结果的调用不应互相覆盖（旧实现用 BTreeSet，多个同 id 会丢）。
+    #[test]
+    fn multiple_missing_results_all_placeholder() {
+        let calls = vec![
+            ToolCall { id: "a".into(), name: "read".into(), arguments: "{}".into() },
+            ToolCall { id: "b".into(), name: "ls".into(), arguments: "{}".into() },
+        ];
+        let msgs = vec![
+            ne_engine::llm::Message::assistant_tool_calls(calls),
+            ne_engine::llm::Message::user("继续"),
+        ];
+        let out = sanitize_for_provider(&msgs);
+        let ids: Vec<_> = out
+            .iter()
+            .filter(|m| m.role == "tool")
+            .map(|m| m.tool_call_id.clone().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["a".to_string(), "b".to_string()]);
+    }
+
     #[test]
     fn builtin_definitions_cover_enabled_tools() {
         let all = builtin_tool_definitions(Tool::all());
-        // 18 个内建工具里 17 个有 schema（MCP 动态工具除外）
-        assert_eq!(all.len(), 17, "应有 17 个内建工具 schema（MCP 走文本回退）");
+        // 19 个内建工具里 18 个有原生 schema（MCP 动态工具除外，走 use_capability 代理发现）
+        assert_eq!(all.len(), 18, "应有 18 个内建工具 schema（MCP 经 use_capability 代理）");
         for d in &all {
             assert!(!d.function.name.is_empty());
             assert_eq!(d.function.parameters["type"], "object");

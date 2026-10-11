@@ -45,11 +45,17 @@ pub use vault::Vault;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// 当前开发阶段（随路线图里程碑更新，便于 `--version` 自证进度）。
-pub const STAGE: &str = "M9 上下文压缩";
+pub const STAGE: &str = "M10.2 MCP 可达性";
 
 /// 从 `runtime.yaml` 的 `tools.enabled` 解析出启用工具列表。
 ///
 /// 未知名字**报错**而非忽略——避免"我明明配了却没生效"这种静默失败。
+///
+/// # 自动接线（M10）
+///
+/// 只要有**已启用的 MCP 服务**，就自动补上 [`tool::Tool::Capability`]（`use_capability`
+/// 代理）——否则模型面对 MCP 服务却没有任何发现/调用入口（这正是原先的可达性缺口：
+/// MCP 工具名是动态的、不进 provider 工具面，而 `use_capability` 又没被启用）。
 pub fn resolve_enabled_tools(cfg: &RuntimeConfig) -> anyhow::Result<Vec<tool::Tool>> {
     let mut out = Vec::new();
     for name in &cfg.tools.enabled {
@@ -67,5 +73,65 @@ pub fn resolve_enabled_tools(cfg: &RuntimeConfig) -> anyhow::Result<Vec<tool::To
             ),
         }
     }
+    // 有启用的 MCP 服务 → 自动启用能力代理（模型据此 list/inspect/call）
+    let has_mcp = cfg.mcp.servers.iter().any(|s| s.enabled);
+    if has_mcp && !out.contains(&tool::Tool::Capability) {
+        out.push(tool::Tool::Capability);
+    }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capability_auto_enabled_only_with_live_mcp_server() {
+        // 无 MCP 服务：不给代理（避免平白多一个工具进工具面）
+        let cfg = RuntimeConfig::default();
+        let t = resolve_enabled_tools(&cfg).unwrap();
+        assert!(!t.contains(&tool::Tool::Capability));
+
+        // 有已启用 MCP 服务：自动补上代理
+        let mut cfg = RuntimeConfig::default();
+        cfg.mcp.servers.push(crate::config::McpServerCfg {
+            name: "fake".into(),
+            command: "python3".into(),
+            args: vec![],
+            cwd: None,
+            enabled: true,
+        });
+        let t = resolve_enabled_tools(&cfg).unwrap();
+        assert!(t.contains(&tool::Tool::Capability));
+
+        // 显式关闭的服务不算数
+        let mut cfg = RuntimeConfig::default();
+        cfg.mcp.servers.push(crate::config::McpServerCfg {
+            name: "off".into(),
+            command: "python3".into(),
+            args: vec![],
+            cwd: None,
+            enabled: false,
+        });
+        let t = resolve_enabled_tools(&cfg).unwrap();
+        assert!(!t.contains(&tool::Tool::Capability));
+    }
+
+    #[test]
+    fn dedup_keeps_single_capability() {
+        let mut cfg = RuntimeConfig::default();
+        cfg.tools.enabled.push("use_capability".into());
+        cfg.mcp.servers.push(crate::config::McpServerCfg {
+            name: "fake".into(),
+            command: "python3".into(),
+            args: vec![],
+            cwd: None,
+            enabled: true,
+        });
+        let t = resolve_enabled_tools(&cfg).unwrap();
+        assert_eq!(
+            t.iter().filter(|x| **x == tool::Tool::Capability).count(),
+            1
+        );
+    }
 }

@@ -275,6 +275,24 @@ impl McpRegistry {
         conn.call_tool(tool, arguments)
     }
 
+    /// 确保某服务已连接并完成 `tools/list`（惰性 + 缓存）。
+    ///
+    /// 供 `use_capability` 的 `inspect` 按需发现**单个**服务用——不会像
+    /// [`Self::discover_all`] 那样把全部服务都拉起来。
+    pub fn discover(&mut self, server: &str) -> Result<()> {
+        self.ensure(server)
+    }
+
+    /// 某服务已发现的工具清单（需先 [`Self::discover`] 或 [`Self::call`]）。
+    ///
+    /// 返回克隆而非借用——调用方多在与 `borrow()` 分离后组装文本。
+    pub fn tools_of(&self, server: &str) -> Vec<McpTool> {
+        self.live
+            .get(server)
+            .map(|c| c.tools.clone())
+            .unwrap_or_default()
+    }
+
     /// 全部服务的工具限定名清单（供 prompt 里告诉模型可用工具）。
     ///
     /// ⚠ 这个动作会**真的启动**所有服务（需要 tools/list）。为避免启动开销，

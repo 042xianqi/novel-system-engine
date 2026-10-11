@@ -115,11 +115,17 @@
         assert_eq!(
             names,
             vec![
-                "read", "write", "edit", "ls", "base", "web_fetch", "web_search", "plan",
-                "scratchpad", "ask_user", "load_rule", "load_skill", "subagents", "dual_agent",
-                "compress", "history_read", "history_search"
+                "read", "write", "edit", "ls", "base", "web_fetch", "web_search", "use_capability",
+                "plan", "scratchpad", "ask_user", "load_rule", "load_skill", "subagents",
+                "dual_agent", "compress", "history_read", "history_search"
             ]
         );
+    }
+
+    #[test]
+    fn capability_aliases_resolve() {
+        assert_eq!(Tool::from_name("use_capability"), Some(Tool::Capability));
+        assert_eq!(Tool::from_name("capability"), Some(Tool::Capability));
     }
 
     #[test]

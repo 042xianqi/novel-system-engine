@@ -1,12 +1,13 @@
 # ne-agent 开发进度（跨段续跑用）
 
-> 最后更新：2026-10-11（**M0–M10.1 全部完成，v0.0.9**）
+> 最后更新：2026-10-11（**M0–M10.2 全部完成，v0.0.10**）
 > 仓库：github.com/042xianqi/novel-system　本地：/workspace/小说系统
 > 路线图：docs/ROADMAP-ne-agent.md　参考笔记：docs/ref_taixu_harness_notes.md、docs/ref_omp_notes.md
 > 太墟源码：/workspace/taixu-ref（Kotlin，47535 行，**主参考**）
 >
-> **状态速览**：M0–M9 已交付并推送；`cargo test --workspace` **407 通过 0 失败**；架构门禁通过。
-> 若续跑，先读本文件末尾「M9」段与 `docs/ROADMAP-ne-agent.md` 的「阶段依赖与不要跳清单」。
+> **状态速览**：M0–M10.2 已交付并推送；`cargo test --workspace` **431 通过 0 失败**；架构门禁通过；
+> Linux release + Android aarch64 release 均已重建。
+> 若续跑，先读本文件末尾「M10.2」段与 `docs/ROADMAP-ne-agent.md` 的「阶段依赖与不要跳清单」。
 
 ## 铁律（不要违反）
 
@@ -37,8 +38,11 @@
 | M8 补齐旧待办 | `bab41f2` | ask_user.rs / resources.rs(+rules) / dual_agent.rs(+tests) / subagent_runner.rs / Android 交叉编译 / tool 拆分（v0.0.6） |
 | M9 上下文+压缩 | `c90e5c7` | 上下文可设置（context 段 + `context` CLI）；compaction.rs（锚点/摘要/投影）+ ctx_window.rs；`compress` 工具与 CLI；`history read/search` 回读；工具 14→17（v0.0.7） |
 | 工作流重构 | `3e8e1a1` | 太墟工作流 JSON 只写文本、逻辑全归 `workflows/scripts/`，可后台跑（详见 `workflows/README.md`） |
+| M10 原生工具协议 | `6854cf0` | 真机揪出头号缺陷：真实模型上工具调用完全不能用 → 双通道（原生 tools 优先 + 文本回退）；protocol.rs；ne-engine::llm 扩展（v0.0.8） |
+| M10.1 全路径真机 | `7938ddd` | 逐条真机验 chat/compress/dual_agent/novel/ne-engine；dual_agent 两个真 bug（非工具角色误携 tools、Planner 不守 JSON 协议死循环）已修（v0.0.9） |
+| M10.2 MCP 可达性 | 见下 | `use_capability` 静态代理（list/inspect/call）+ 配 MCP 服务自动启用 + 悬空调用「结果未知」恢复（v0.0.10） |
 
-测试基线：全 workspace **407 通过 0 失败**；架构门禁通过。
+测试基线：全 workspace **431 通过 0 失败**；架构门禁通过。
 
 > ⚠️ 本文件下方从「进行中：M4 外部世界」起的章节是**历史流水日志**（当时逐段续跑留下），
 > 其中的「进行中/未提交/待办」等字样**已过期**——各段实际均已提交推送。以本表与
@@ -406,4 +410,36 @@ tests/m8_tools_e2e.rs / tests/dual_agent_e2e.rs。工具数 10→14。
 **验证**：`cargo test --workspace` **416 通过 0 失败**；arch_check 通过；真机 dual_agent 2 轮收敛。
 
 **未完成（下一步）**
-- [ ] ROADMAP 追加 M10.1；版本 0.0.8 → 0.0.9；提交推送。
+- [x] ROADMAP 追加 M10.1；版本 0.0.8 → 0.0.9；提交推送。
+
+### ✅ M10.2 · MCP 工具可达性缺口（续跑 7）
+
+用户需求：「继续」，承接补 MCP 可用性缺口。
+
+**缺口（真问题）**
+- MCP 工具名是**动态**的（连上才知道），`protocol::builtin_tool_definitions` 不枚举 → 模型看不到；
+  而唯一入口 `Tool::Capability`（`use_capability`）**没默认启用** → 配了 MCP 服务形同虚设。
+- 直连 `mcp__<服务>__<工具>` 的**路由本来就通**（harness.rs 注入 `MCP_TOOL_KEY`），缺的是**可见性**。
+
+**改动**
+- `tool/capability.rs`（**新**）：静态 `use_capability` 工具，三 action：
+  - `list` → 列已启用服务；`inspect + server` → 该服务工具名与参数 schema；
+  - `call + server + tool + arguments` → 经 `McpRegistry` 调起（未连接首调自动启动）。
+  - schema **稳定字节**（服务清单变化不进工具定义 → 不击穿 KV cache）。
+- `lib.rs::resolve_enabled_tools`：**只要有已启用的 MCP 服务，自动补上 `Tool::Capability`**（去重；
+  `enabled:false` 不算数）。这是接通缺口的关键一刀。
+- `protocol.rs::sanitize_for_provider`：悬空工具调用（assistant 有 tool_call、无结果）占位从
+  `工具结果缺失` 改为**结构化 JSON + 稳定错误码 `unknown_tool_result`**（`outcome:"unknown"`，
+  明确"未核验前**严禁重放**"）——对齐太墟 v0.22.0 `errorCode` 语义；顺带修多个悬空调用互相覆盖
+  （`BTreeSet<String>` 丢工具名 → 改 `Vec<(id,name)>`）。
+- `vault.rs`：模板注释修正（原写"MCP 工具模型直接可调"是**误导**，改为 use_capability 用法）。
+- `tool/mod.rs`/`tool/tests.rs`/`approval.rs`：Capability 的 tier/白名单/plan_block 同步。
+
+**验证**
+- 新增全链路 e2e（`tests/mcp_e2e.rs`）：假 LLM 只发 `use_capability` → harness 循环 → 真 MCP 服务
+  回显 `echo: 残响之河` ✅。
+- **真机 smoke（真实端点 glm-5.3-flash @ 127.0.0.1:8788）**：模型自发 list → inspect fake → call fake/echo，
+  会话库铁证（assistant `tool_calls` 三次 `use_capability`，tool 消息 `[OK] echo: 残响之河`，最终答"残响之河"）✅。
+- `cargo test --workspace` **431 通过 0 失败**；arch_check 通过；Linux + Android release 均重建成功（6.6M，仅 bionic 库）。
+
+**版本**：0.0.9 → 0.0.10。

@@ -523,6 +523,44 @@ NovelCtx::open → chapter::build_prompt → llm::call → chapter::write_chapte
 
 ---
 
+## M10.2 · MCP 工具可达性缺口 — ✅ 已完成（2026-10-11）
+
+**缺口（真问题，非新增功能）**
+
+MCP 工具名是**动态**的（连上服务才知道），`protocol::builtin_tool_definitions` 只枚举内建 17 个，
+不枚举 MCP 工具 → 模型**看不到** MCP 工具名；而唯一入口 `Tool::Capability`（`use_capability`）
+**默认不在 `tools.enabled` 里** → 配了 MCP 服务等于形同虚设。
+
+补充事实：直连 `mcp__<服务>__<工具>` 的**路由本来就通**（`harness.rs` 注入 `MCP_TOOL_KEY`），
+缺的只是**可见性**——所以修法是补一个不依赖预知工具名的发现入口。
+
+**改动**
+- `tool/capability.rs`（新）：静态 `use_capability` 工具，三 action：
+  - `list` → 列已启用服务
+  - `inspect + server` → 该服务的工具名与参数 schema
+  - `call + server + tool + arguments` → 经 `McpRegistry` 调起（未连接服务首调时自动启动）
+  - schema 保持**字节稳定**（服务清单变化不进工具定义 → 不击穿 KV cache）
+- `lib.rs::resolve_enabled_tools`：**只要有已启用的 MCP 服务，自动补上 `Tool::Capability`**
+  （去重；`enabled: false` 不算数）。这是接通缺口的关键一刀。
+- `protocol.rs::sanitize_for_provider`：悬空工具调用（assistant 有 tool_call、无结果）占位，
+  从 `工具结果缺失` 改为**结构化 JSON + 稳定错误码 `unknown_tool_result`**（`outcome: "unknown"`，
+  明文"未核验前严禁重放"——因为该调用**可能已产生副作用**）；顺带修多个悬空调用互相覆盖的缺陷
+  （`BTreeSet<String>` 丢工具名 → 改 `Vec<(id, name)>`）。
+  契约对齐太墟 v0.22.0（`HarnessMessage.errorCode` + 「上次工具结果未知，继续前需核验实际状态」）。
+- `vault.rs`：模板注释修正（原文"MCP 工具以 `mcp__…` 暴露给模型，模型直接可调"是**误导**）。
+- `tool/mod.rs` / `tool/tests.rs` / `approval.rs`：`Capability` 的 tier / 白名单 / plan_block 同步。
+
+**验证**
+- 全链路 e2e（`tests/mcp_e2e.rs`）：假 LLM 只发 `use_capability` → harness 循环 → 真 MCP 服务回显 ✅
+- **真机 smoke（真实端点 glm-5.3-flash @ 127.0.0.1:8788）**：模型自发 list → inspect fake →
+  call fake/echo；会话库铁证（assistant 三轮 `use_capability` tool_calls + tool 消息
+  `[OK] echo: 残响之河` + 终答"残响之河"）✅
+- `cargo test --workspace` **431 通过 0 失败**；arch_check 通过；Linux + Android release 重建成功。
+
+**产出**：v0.0.10。
+
+---
+
 ## 阶段依赖与"不要跳"清单
 
 ```

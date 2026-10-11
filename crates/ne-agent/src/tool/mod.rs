@@ -20,12 +20,14 @@ use anyhow::Result;
 use std::path::{Component, Path, PathBuf};
 
 // ── 子模块（从单文件拆出，过架构门禁 ≤700 行）──
+mod capability;
 mod external_io;
 mod fs;
 mod session_local;
 #[cfg(test)]
 mod tests;
 
+use capability::capability_tool;
 use external_io::{mcp_call, web_fetch, web_search};
 use fs::{base, edit, ls, read, write};
 use session_local::{
@@ -84,6 +86,9 @@ pub enum Tool {
     WebSearch,
     /// 调用外部 MCP 服务（名字形如 `mcp__<server>__<tool>`）
     Mcp,
+    /// 能力代理（太墟 `use_capability` 同形）：按需发现并调用 MCP 服务工具
+    /// （action: list/inspect/call）。**静态 schema**——MCP 服务清单变化不击穿 KV cache。
+    Capability,
     /// 多步骤计划管理（持久化到会话库）
     Plan,
     /// 会话局部工作草稿（持久化到会话库）
@@ -117,6 +122,7 @@ impl Tool {
             Tool::WebFetch => "web_fetch",
             Tool::WebSearch => "web_search",
             Tool::Mcp => "mcp",
+            Tool::Capability => "use_capability",
             Tool::Plan => "plan",
             Tool::Scratchpad => "scratchpad",
             Tool::AskUser => "ask_user",
@@ -138,6 +144,8 @@ impl Tool {
             Tool::WebFetch | Tool::WebSearch => Tier::Read,
             // MCP 外部服务能力未知 → 按"有副作用"算，保守
             Tool::Mcp => Tier::Exec,
+            // 能力代理：会间接触发 MCP 外部调用 → 保守按 Exec
+            Tool::Capability => Tier::Exec,
             // 计划/草稿：只改会话局部状态，无文件/外部副作用
             Tool::Plan | Tool::Scratchpad => Tier::Read,
             // ask/load_*：读取或会话局部，无文件/外部副作用
@@ -159,6 +167,7 @@ impl Tool {
             Tool::WebFetch => "抓取网页并转为纯文本（http/https；自动跟随重定向）",
             Tool::WebSearch => "联网搜索（返回标题/摘要/链接）",
             Tool::Mcp => "调用外部 MCP 服务（工具名形如 mcp__<服务>__<工具>）",
+            Tool::Capability => "按需发现并调用外部 MCP 服务（action: list 列服务 / inspect+server 看工具清单 / call+server+tool+arguments 调用）；未连接的服务首次 call 时自动启动",
             Tool::Plan => "多步骤任务计划管理（action: replace_active/get_active/advance/clear_active）",
             Tool::Scratchpad => "会话局部工作草稿（action: save/get/list/delete/clear）",
             Tool::AskUser => "在关键决策点向用户提出结构化问题（选择题或自由输入）",
@@ -176,6 +185,10 @@ impl Tool {
         // MCP 工具名是动态的（mcp__<server>__<tool>）→ 前缀识别
         if s.starts_with("mcp__") {
             return Some(Tool::Mcp);
+        }
+        // 能力代理：兼容太墟命名 use_capability（含历史别名 capability/?）
+        if s == "use_capability" || s == "capability" {
+            return Some(Tool::Capability);
         }
         Some(match s {
             "read" => Tool::Read,
@@ -208,6 +221,7 @@ impl Tool {
             Tool::Base,
             Tool::WebFetch,
             Tool::WebSearch,
+            Tool::Capability,
             Tool::Plan,
             Tool::Scratchpad,
             Tool::AskUser,
@@ -232,6 +246,7 @@ impl Tool {
             Tool::WebFetch => &["url", "max_chars"],
             Tool::WebSearch => &["query", "engine", "limit"],
             Tool::Mcp => &["（由具体 MCP 工具定义）"],
+            Tool::Capability => &["action", "server", "tool", "arguments"],
             Tool::Plan => &["action", "goal", "steps", "status"],
             Tool::Scratchpad => &["action", "key", "value"],
             Tool::AskUser => &["questions"],
@@ -247,7 +262,7 @@ impl Tool {
 
     /// 是否走网络（需要联网工具开关；M6 审批会用）。
     pub fn is_network(&self) -> bool {
-        matches!(self, Tool::WebFetch | Tool::WebSearch | Tool::Mcp)
+        matches!(self, Tool::WebFetch | Tool::WebSearch | Tool::Mcp | Tool::Capability)
     }
 
     /// 是否属于"会话局部协作状态"（不需要审批、不受只读规划限制）。
@@ -437,6 +452,7 @@ impl ToolCtx {
         Tool::WebFetch => web_fetch(args),
         Tool::WebSearch => web_search(args),
         Tool::Mcp => mcp_call(ctx, args),
+        Tool::Capability => capability_tool(ctx, args),
         Tool::Plan => plan_tool(ctx, args),
         Tool::Scratchpad => scratchpad_tool(ctx, args),
         Tool::AskUser => ask_user(ctx, args),

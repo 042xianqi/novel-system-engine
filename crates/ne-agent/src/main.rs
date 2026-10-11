@@ -69,6 +69,48 @@ enum Cmd {
     },
     /// 列出内置工具
     Tools,
+    /// 管理长期记忆（pinned 常驻 / recall 按需）
+    Memory {
+        #[command(subcommand)]
+        cmd: MemoryCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum MemoryCmd {
+    /// 列出记忆
+    List {
+        /// 只看 pinned
+        #[arg(long)]
+        pinned: bool,
+    },
+    /// 保存一条记忆（同 scope+owner+key 覆盖）
+    Save {
+        /// 键
+        key: String,
+        /// 值
+        value: String,
+        /// 作用域：global | project | session
+        #[arg(long, default_value = "project")]
+        scope: String,
+        /// 类型：preference | rule | fact | project_info
+        #[arg(long, default_value = "fact")]
+        kind: String,
+        /// 钉选到 system prompt 稳定前缀（始终注入）
+        #[arg(long)]
+        pinned: bool,
+    },
+    /// 删除一条记忆
+    Forget {
+        key: String,
+        #[arg(long, default_value = "project")]
+        scope: String,
+    },
+    /// 试跑召回：给一段查询，看会召回哪些（不发模型请求）
+    Recall {
+        /// 查询文本
+        query: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -127,6 +169,7 @@ fn run() -> Result<()> {
             run_chat(&vault, message.as_deref(), *resume, session.as_deref(), *new, cli.json)
         }
         Cmd::Session { cmd } => run_session(&vault, cmd, cli.json),
+        Cmd::Memory { cmd } => run_memory(&vault, cmd, cli.json),
         Cmd::Tools => {
             for t in ne_agent::tool::Tool::all() {
                 if cli.json {
@@ -255,7 +298,8 @@ fn build_runtime(vault: &Vault) -> Result<RuntimeHandles> {
     let llm = cfg.llm_params(&vault.llm_dir())?;
     let enabled = ne_agent::resolve_enabled_tools(&cfg)?;
     let store = ne_agent::session::SessionStore::open(vault.agent_db())?;
-    Ok(RuntimeHandles { cfg, llm, enabled, store })
+    let memory = ne_agent::memory::MemoryStore::open(vault.agent_db())?;
+    Ok(RuntimeHandles { cfg, llm, enabled, store, memory })
 }
 
 struct RuntimeHandles {
@@ -263,6 +307,7 @@ struct RuntimeHandles {
     llm: ne_engine::llm::LlmParams,
     enabled: Vec<ne_agent::tool::Tool>,
     store: ne_agent::session::SessionStore,
+    memory: ne_agent::memory::MemoryStore,
 }
 
 /// 选定/新建会话。
@@ -305,6 +350,7 @@ fn run_chat(
     if let Some(msg) = message {
         let out = ne_agent::task::chat_once(
             &h.store,
+            &h.memory,
             &sid,
             &h.cfg,
             h.llm,
@@ -325,6 +371,7 @@ fn run_chat(
 
     ne_agent::task::chat_interactive(
         &h.store,
+        &h.memory,
         &sid,
         &h.cfg,
         h.llm,
@@ -332,6 +379,104 @@ fn run_chat(
         vault.path(ne_agent::vault::PROMPTS_DIR),
         h.enabled,
     )
+}
+
+/// 记忆管理。
+fn run_memory(vault: &Vault, cmd: &MemoryCmd, json: bool) -> Result<()> {
+    vault.init()?;
+    let mem = ne_agent::memory::MemoryStore::open(vault.agent_db())?;
+    // owner 标识必须与 task.rs 用的 `work_root`（即 workspace 目录）一致，
+    // 否则 CLI 存的记忆对话里召回不到。
+    let owner = vault.workspace().display().to_string();
+
+    match cmd {
+        MemoryCmd::List { pinned } => {
+            let rows = if *pinned { mem.pinned(&owner, "")? } else { mem.all()? };
+            if json {
+                let v: Vec<serde_json::Value> = rows
+                    .iter()
+                    .map(|m| serde_json::json!({
+                        "scope": m.scope, "kind": m.kind, "key": m.key,
+                        "value": m.value, "pinned": m.pinned,
+                    }))
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            } else if rows.is_empty() {
+                println!("（无记忆）");
+            } else {
+                for m in rows {
+                    println!(
+                        "  [{}/{}]{} {} = {}",
+                        m.scope, m.kind,
+                        if m.pinned { " 📌" } else { "" },
+                        m.key, truncate(&m.value, 70)
+                    );
+                }
+            }
+            Ok(())
+        }
+        MemoryCmd::Save { key, value, scope, kind, pinned } => {
+            let valid_scope = ["global", "project", "session"];
+            if !valid_scope.contains(&scope.as_str()) {
+                anyhow::bail!("scope 必须是 global|project|session，收到 `{scope}`");
+            }
+            let owner_id = match scope.as_str() {
+                "global" => String::new(),
+                "session" => anyhow::bail!("session 作用域需指定会话，暂请用 project 或 global"),
+                _ => owner.clone(),
+            };
+            let m = ne_agent::memory::Memory {
+                id: String::new(),
+                scope: scope.clone(),
+                owner_id,
+                kind: kind.clone(),
+                key: key.clone(),
+                value: value.clone(),
+                pinned: *pinned,
+                expires_at: None,
+                created_at: 0,
+                updated_at: 0,
+            };
+            mem.save(&m)?;
+            if !json {
+                println!(
+                    "已保存 [{}/{}]{} {key}（owner={}）",
+                    scope, kind,
+                    if *pinned { " 📌" } else { "" },
+                    truncate(&owner, 40)
+                );
+            }
+            let _ = &owner;
+            Ok(())
+        }
+        MemoryCmd::Forget { key, scope } => {
+            let owner_id = if scope == "global" { "" } else { owner.as_str() };
+            let done = mem.delete(key, scope, owner_id)?;
+            if !json {
+                println!("{}", if done { format!("已删除 {key}") } else { format!("未找到 {key}") });
+            }
+            Ok(())
+        }
+        MemoryCmd::Recall { query } => {
+            let cands = mem.candidates(&owner, "", 64)?;
+            let picked = ne_agent::memory::select_recall(query, &cands, ne_agent::memory::now_ms());
+            if json {
+                let v: Vec<serde_json::Value> = picked
+                    .iter()
+                    .map(|m| serde_json::json!({"key": m.key, "value": m.value, "scope": m.scope}))
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            } else if picked.is_empty() {
+                println!("（无召回命中——不相关就不注入）");
+            } else {
+                println!("召回 {} 条：", picked.len());
+                for m in picked {
+                    println!("  [{}/{}] {} = {}", m.scope, m.kind, m.key, truncate(&m.value, 70));
+                }
+            }
+            Ok(())
+        }
+    }
 }
 
 fn run_session(vault: &Vault, cmd: &SessionCmd, json: bool) -> Result<()> {

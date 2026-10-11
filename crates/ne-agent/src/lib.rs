@@ -14,6 +14,7 @@
 
 pub mod config;
 pub mod harness;
+pub mod memory;
 pub mod prompt;
 pub mod session;
 pub mod task;

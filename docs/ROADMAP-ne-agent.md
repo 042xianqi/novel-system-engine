@@ -95,20 +95,42 @@ crates/ne-agent/src/
 
 ---
 
-## M2 · 记忆
+## M2 · 记忆 — ✅ 已完成（2026-10-11）
 
 **做什么**
 - `memory::pinned`：常驻 system 段的稳定记忆（最高权威）
-- `memory::recall`：**BM25 + CJK 字符 bigram** 召回（纯函数，可直接从太墟移植）
+- `memory::recall`：**BM25 + CJK 字符 bigram** 召回（纯函数，逐条对照太墟移植）
 - 泛化轮次抑制（"继续"/"ok" 不触发召回）；**无命中不注入**
 - 记忆表落 vault
 
-**验收**
-- 召回质量测试：给定记忆集与查询，命中相关项、不命中噪声
-- `ne-agent memory list / recall / stats` 可用
-- 召回结果以**低权威声明**包裹注入
+### ✅ 交付（crates/ne-agent/src/memory.rs，13 单测）
 
-**产出**：它开始"记得"东西。
+逐条对照太墟：
+| 太墟 | 本实现 |
+|---|---|
+| `AgentContextEntities.kt:29` 数据模型 | `Memory{scope,owner_id,kind,key,value,pinned,expires_at,...}` |
+| `AgentContextDao.kt:37` `getPinnedMemories` | `MemoryStore::pinned()` —— **排序内容确定** |
+| `MemoryRecallSelector.selectRecall` | `select_recall()` —— BM25 + CJK bigram 纯函数 |
+| `SystemPromptBuilder.kt:178` pinned 常驻 | `render_pinned_section()` 拼进 system 末尾 |
+| `MemoryRecallSelector.renderBlock` | `render_recall_block()` —— XML 包裹 + 低权威声明 |
+
+**抄到的关键细节**（不看太墟想不到）：
+- **pinned 排序必须内容确定**（`scope权威序 → createdAt → id`），**不能用 updatedAt**。
+  太墟 DAO 注释专门警告：保存会刷新 updatedAt（哪怕内容未改），按它排序会让"模型重复保存
+  同一 pinned"重排列表、改变提示词字节、**击穿 prefix cache**。有回归测试 `pinned_order_is_content_deterministic`。
+- **pinned 与 recall 正交**：pinned 不参与召回（`candidates` 里 `pinned=0`），避免重复占预算。
+- **无命中不注入**：不做"无命中就注入最近记忆"（那是噪声 + token 浪费）。
+- **CJK bigram**：让"调用链"命中"调用链路分析"这类真实词重叠，同时避免散字误命中。
+- **续期不删除**：`touch()` 只刷新 `last_verified_at`（新鲜度信号）。
+
+**真机验收**：
+- `memory save/list/forget/recall` 全部跑通；召回命中相关、无关与泛化轮次均不注入。
+- **注入链路抓包验证**：pinned 出现在 system 末尾；recall 的 `<recalled_memory>` 只挂在
+  有相关性的 user 轮前缀，无关问题不挂（服务端抓到的真实请求逐条确认）。
+- 全 workspace **243 测试 0 失败**。
+
+**CLI**：`memory list [--pinned] | save <key> <value> [--scope --kind --pinned] | forget <key> | recall <query>`
+
 
 ---
 

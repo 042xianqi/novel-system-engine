@@ -99,6 +99,11 @@ pub struct HarnessCtx<'a> {
     pub max_rounds: usize,
     /// 连续失败熔断阈值（太墟默认 8）
     pub max_consecutive_failures: usize,
+    /// pinned 记忆段：**常驻 system prompt 稳定前缀**。
+    ///
+    /// 在 ctx 构造时**取一次快照**；会话进行中记忆库变化不影响本次运行——
+    /// 这是 prefix cache 稳定性的要求（见 memory.rs 模块头）。
+    pub pinned_section: String,
 }
 
 impl<'a> HarnessCtx<'a> {
@@ -114,6 +119,9 @@ impl<'a> HarnessCtx<'a> {
 }
 
 /// 组装 system prompt（**稳定段**，不含逐轮变化内容）。
+///
+/// pinned 记忆段拼在末尾——它同样是**稳定**的（排序内容确定，见 memory.rs），
+/// 因此可以安全地进 system prompt；逐轮变的 recall 走 [`TurnPrefix`]。
 pub fn system_prompt_text(h: &HarnessCtx) -> Result<String> {
     let tools_desc = h
         .enabled
@@ -123,7 +131,11 @@ pub fn system_prompt_text(h: &HarnessCtx) -> Result<String> {
         .join("\n");
     let vars = agent_vars(&tools_desc, &h.work_root);
     prompt::validate_vars(&vars)?;
-    Ok(prompt::build_system_prompt(&h.prompt_dir, &vars)?.text)
+    let mut s = prompt::build_system_prompt(&h.prompt_dir, &vars)?.text;
+    if !h.pinned_section.is_empty() {
+        s.push_str(&h.pinned_section);
+    }
+    Ok(s)
 }
 
 fn agent_vars<'v>(tools_desc: &'v str, work_root: &'v std::path::Path) -> BTreeMap<&'v str, String> {

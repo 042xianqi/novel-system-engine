@@ -1,8 +1,8 @@
 [package]
 name = "ne-mcp"
-version = "0.1.0"
-edition = "2021"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 publish = false
 description = "残响之河 novel-engine 的 MCP stdio 服务（太墟外挂）"
 

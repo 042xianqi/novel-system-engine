@@ -69,6 +69,8 @@ enum Cmd {
     },
     /// 列出内置工具
     Tools,
+    /// 显示版本
+    Version,
     /// 管理长期记忆（pinned 常驻 / recall 按需）
     Memory {
         #[command(subcommand)]
@@ -207,6 +209,22 @@ fn run() -> Result<()> {
                     println!("{:<8} {:<6?} {}", t.name(), t.tier(), t.description());
                     println!("         参数：{}", t.params().join(", "));
                 }
+            }
+            Ok(())
+        }
+        Cmd::Version => {
+            let v = ne_agent::VERSION;
+            if cli.json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "name": env!("CARGO_PKG_NAME"),
+                        "version": v,
+                        "stage": ne_agent::STAGE,
+                    })
+                );
+            } else {
+                println!("{} {}（{}）", env!("CARGO_PKG_NAME"), v, ne_agent::STAGE);
             }
             Ok(())
         }

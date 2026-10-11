@@ -1,8 +1,8 @@
 [package]
 name = "ne-agent"
-version = "0.1.0"
-edition = "2021"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 publish = false
 description = "《残响之河》Agent Runtime —— 单二进制智能体（会话/记忆/工具/任务），小说流水线的统一入口"
 

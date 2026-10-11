@@ -25,6 +25,12 @@ pub mod vault;
 pub use config::RuntimeConfig;
 pub use vault::Vault;
 
+/// 版本号（取自 Cargo 包版本，与 workspace 统一版本管理）。
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// 当前开发阶段（随路线图里程碑更新，便于 `--version` 自证进度）。
+pub const STAGE: &str = "M3 小说任务";
+
 /// 从 `runtime.yaml` 的 `tools.enabled` 解析出启用工具列表。
 ///
 /// 未知名字**报错**而非忽略——避免"我明明配了却没生效"这种静默失败。

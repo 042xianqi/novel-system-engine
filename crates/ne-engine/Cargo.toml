@@ -1,8 +1,8 @@
 [package]
 name = "ne-engine"
-version = "0.1.0"
-edition = "2021"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 publish = false
 description = "《残响之河》L0-L5 引擎（Rust 全量实现）：门禁/LLM/预算/灌库"
 

@@ -1,7 +1,8 @@
 [package]
 name = "ne-import"
-version = "0.1.0"
-edition = "2021"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
 
 [dependencies]
 anyhow = "1"

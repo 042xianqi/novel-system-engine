@@ -15,7 +15,8 @@ use tools::Cfg;
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
 const SERVER_NAME: &str = "taixu-novel-engine";
-const SERVER_VERSION: &str = "0.1.0";
+// 从 Cargo 包版本取（与 workspace 统一版本号，避免两处漂移）
+const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn tool_specs() -> serde_json::Value {
     serde_json::json!({"tools": [

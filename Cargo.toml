@@ -14,9 +14,11 @@ members = [
 ]
 
 [workspace.package]
+version = "0.0.1"
 edition = "2021"
 license = "MIT"
 publish = false
+repository = "https://github.com/042xianqi/novel-system"
 
 [profile.release]
 opt-level = 3

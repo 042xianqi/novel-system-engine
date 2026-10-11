@@ -15,6 +15,8 @@
 
 | 版本 | 日期 | 里程碑 | 内容 |
 |---|---|---|---|
+| 0.0.7 | 2026-10-11 | M9 | 上下文可设置 + 压缩（为 UI 铺垫）：`context` 段新增 `auto_compaction`/`auto_threshold_percent`/`keep_recent_tool_results` 与 `ne-agent context`（查看/设置/`--json`，写回保留注释）；`compaction.rs`（锚点解析 before/after、`LlmSummarizer`/`MechanicalSummarizer` 降级、`project()` 投影为发模型与 UI 的唯一读口径）+ `ctx_window.rs`（窗口策略 + 自动压缩判定）；`compress` 工具与 `ne-agent compress`（`--show`/`--clear`/`--mechanical`）；`history read`/`history search` 使**被折叠原文可回读**（压了不丢）；工具 14→17 |
+| 0.0.6 | 2026-10-11 | M8 | 补齐旧待办：`ask_user.rs`（多问 + 候选项 + 自定义，答案由外部回调回填，非交互环境明确交回主智能体）；`resources.rs` + `rules/*.md`（`load_rule`/`load_skill` 按需加载，system prompt 只放目录元数据，技能子资源越界防护）；`dual_agent.rs`（顺序版 Planner→Executor，保留 DAG 就绪判定与 REPLAN/级联失败语义）+ `subagent_runner.rs`（切断 task→tool→task 循环）；Android aarch64 交叉编译（`scripts/cross-build-android.sh`，仅依赖 bionic）；`tool.rs` 拆分为 `tool/{mod,fs,external_io,session_local}.rs`；工具 10→14 |
 | 0.0.5 | 2026-10-11 | M7 | 完善：架构门禁（`scripts/arch_check.py` + crate 依赖白名单 + import 黑名单 + 行数棘轮）；子智能体 Lane（`subagent.rs` 顺序隔离 + 写租约 + `subagent` CLI）；文件拆分（web.rs → web_html/web_search）；单二进制确认（9.2MB，仅 libc）+ strip |
 | 0.0.4 | 2026-10-11 | M6 | 安全与协作：`approval.rs`（审批三档 + 正交的只读规划门禁 + shell 反混淆，接进 harness 工具循环，无回调默认拒绝）；`task_state.rs`（任务状态机：纯转移表 + CAS 持久化，防进程恢复幻觉成功）；`context_tools.rs`（`plan`/`scratchpad` 持久化，plan.status 非法值保留原状）；`plan`/`scratchpad` 工具 + `task` CLI + `chat --plan/--approval` |
 | 0.0.3 | 2026-10-11 | M5 | 上下文预算：`context.rs`（token 估算 CJK 分桶、老轮次工具结果截断、折叠线）；会话树 rewind（`head_id` 显式指针 + 迁移）；`estimate` CLI；修 UX 缺陷（chat 默认续接会话） |

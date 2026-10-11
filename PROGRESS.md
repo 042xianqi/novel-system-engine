@@ -1,9 +1,12 @@
 # ne-agent 开发进度（跨段续跑用）
 
-> 最后更新：2026-10-11（M3 进行中）
+> 最后更新：2026-10-11（**M0–M9 全部完成，v0.0.7**）
 > 仓库：github.com/042xianqi/novel-system　本地：/workspace/小说系统
 > 路线图：docs/ROADMAP-ne-agent.md　参考笔记：docs/ref_taixu_harness_notes.md、docs/ref_omp_notes.md
 > 太墟源码：/workspace/taixu-ref（Kotlin，47535 行，**主参考**）
+>
+> **状态速览**：M0–M9 已交付并推送；`cargo test --workspace` **407 通过 0 失败**；架构门禁通过。
+> 若续跑，先读本文件末尾「M9」段与 `docs/ROADMAP-ne-agent.md` 的「阶段依赖与不要跳清单」。
 
 ## 铁律（不要违反）
 
@@ -28,8 +31,18 @@
 | M3 小说任务 | `aebb966` | novel_ctx.rs（补全 `BudgetCtx`/`ChapterCtx` 真实现）+ task::novel_chapter + `novel` CLI |
 | 版本管理 | `d5fb5f4` | workspace 统一版本 0.0.1、`version` 子命令、CHANGELOG、`scripts/push-bg.sh` |
 | M4 外部世界 | `d98c5f6` | web.rs（HTTPS GET + HTML→文本 + 多引擎搜索）、mcp.rs（MCP 客户端）、`mcp` CLI（v0.0.2） |
+| M5 长大 | `848ea86` | context.rs（token 估算 CJK 分桶 / 老轮次工具结果截断 / 折叠线）；会话树 rewind（`head_id` 显式指针）；`estimate` CLI；修 UX（chat 默认续接会话）（v0.0.3） |
+| M6 安全协作 | `848ea86` | approval.rs（审批三档 + 只读规划门禁 + shell 反混淆，接进工具循环）；task_state.rs（状态机 CAS 持久化）；context_tools.rs（plan/scratchpad）（v0.0.4） |
+| M7 完善 | `4d2f412` | 架构门禁（arch_check.py + 依赖白名单 + 行数棘轮）；子智能体 Lane；文件拆分；单二进制确认（v0.0.5） |
+| M8 补齐旧待办 | `bab41f2` | ask_user.rs / resources.rs(+rules) / dual_agent.rs(+tests) / subagent_runner.rs / Android 交叉编译 / tool 拆分（v0.0.6） |
+| M9 上下文+压缩 | `c90e5c7` | 上下文可设置（context 段 + `context` CLI）；compaction.rs（锚点/摘要/投影）+ ctx_window.rs；`compress` 工具与 CLI；`history read/search` 回读；工具 14→17（v0.0.7） |
+| 工作流重构 | `3e8e1a1` | 太墟工作流 JSON 只写文本、逻辑全归 `workflows/scripts/`，可后台跑（详见 `workflows/README.md`） |
 
-测试基线：M4 后全 workspace **282 通过 0 失败**。
+测试基线：全 workspace **407 通过 0 失败**；架构门禁通过。
+
+> ⚠️ 本文件下方从「进行中：M4 外部世界」起的章节是**历史流水日志**（当时逐段续跑留下），
+> 其中的「进行中/未提交/待办」等字样**已过期**——各段实际均已提交推送。以本表与
+> `docs/ROADMAP-ne-agent.md` 为准。保留它们只为追溯当时的调试细节（真机坑等）。
 
 ### 关键的、不可逆的决定（已定死）
 

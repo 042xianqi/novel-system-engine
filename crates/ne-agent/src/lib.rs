@@ -25,6 +25,7 @@ pub mod harness;
 pub mod mcp;
 pub mod memory;
 pub mod novel_ctx;
+pub mod output_retention;
 pub mod prompt;
 pub mod protocol;
 pub mod rewind;

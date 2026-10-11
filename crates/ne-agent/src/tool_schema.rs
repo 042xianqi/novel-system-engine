@@ -166,7 +166,7 @@ fn unflatten_object(obj: &Value) -> Value {
                     if let Value::Object(fv) = &processed {
                         if let Some(Node::Map(m)) = root.get_mut(key) {
                             for (k, v) in fv {
-                                insert(m, &[k.clone()], v.clone());
+                                insert(m, std::slice::from_ref(k), v.clone());
                             }
                         }
                     }
@@ -369,8 +369,8 @@ fn validate_value(schema: &Value, value: &Value, label: &str, prefix: &str) -> V
     // minimum / maximum（数字或字符串包裹的数字）
     if ty == Some("integer") || ty == Some("number") {
         if let Some(number) = as_number(value) {
-            let min = schema.get("minimum").and_then(|v| as_number(v));
-            let max = schema.get("maximum").and_then(|v| as_number(v));
+            let min = schema.get("minimum").and_then(as_number);
+            let max = schema.get("maximum").and_then(as_number);
             match (min, max) {
                 (Some(lo), Some(hi)) if number < lo || number > hi => problems.push(format!(
                     "参数 {label} 的值 {} 超出允许范围 [{}, {}]",
@@ -511,6 +511,7 @@ fn fmt_num(n: f64) -> String {
 }
 
 #[cfg(test)]
+#[allow(non_snake_case)]
 mod tests {
     use super::*;
     use serde_json::json;

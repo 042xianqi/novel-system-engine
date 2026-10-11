@@ -1,73 +1,54 @@
 {
   "id": "ne_push",
-  "name": "ne-agent · 推送（带重试）",
-  "description": "把本地提交推到 origin/main，网络抖动自动重试 3 次（本会话实测遇过 GnuTLS -110 断连）。推送前先做一次远端连通探测。",
+  "name": "ne-agent · 推送",
+  "description": "推送到 origin/<branch>（DNS 修复 + 连通探测 + 3 次重试）。薄壳：只调 workflows/run.sh ne_push，真正逻辑在 workflows/scripts/ne_push.sh。",
   "iconName": "CloudUpload",
   "category": "ne-agent",
   "isBuiltin": false,
-  "trigger": { "type": "manual", "slashCommand": "/wf ne_push" },
   "defaultVariables": {
     "PROJECT_DIR": "/workspace/小说系统",
     "BRANCH": "main"
   },
+  "trigger": { "type": "manual", "slashCommand": "/wf ne_push" },
   "nodes": [
     {
       "id": "start",
       "type": "TRIGGER",
       "title": "开始推送",
-      "description": "变量：PROJECT_DIR / BRANCH",
       "config": {},
-      "canvasX": 40.0,
-      "canvasY": 160.0
+      "timeoutSeconds": 30,
+      "failurePolicy": "ABORT",
+      "canvasX": 0.0,
+      "canvasY": 0.0,
+      "description": ""
     },
     {
-      "id": "local",
+      "id": "run",
       "type": "BASH_COMMAND",
-      "title": "本地状态",
+      "title": "run.sh ne_push",
       "config": {
-        "command": "cd ${PROJECT_DIR} && git log --oneline -1 && echo '--- 待推送 ---' && git log origin/${BRANCH}..HEAD --oneline 2>/dev/null | head -20"
+        "command": "cd ${PROJECT_DIR} && BRANCH=${BRANCH} bash workflows/run.sh ne_push"
       },
-      "canvasX": 260.0,
-      "canvasY": 160.0,
-      "failurePolicy": "CONTINUE"
-    },
-    {
-      "id": "probe",
-      "type": "BASH_COMMAND",
-      "title": "远端连通探测",
-      "config": {
-        "command": "cd ${PROJECT_DIR}; i=1; while [ $i -le 10 ]; do if timeout 15 curl -sI https://github.com >/dev/null 2>&1; then echo '✓ github 可达'; exit 0; fi; echo \"  尝试 $i 不通，等待…\"; sleep 3; i=$((i+1)); done; echo '✗ github 10 次不可达'; exit 1"
-      },
-      "canvasX": 480.0,
-      "canvasY": 160.0,
-      "timeoutSeconds": 300,
-      "failurePolicy": "ABORT"
-    },
-    {
-      "id": "push",
-      "type": "BASH_COMMAND",
-      "title": "git push（重试 3 次）",
-      "config": {
-        "command": "cd ${PROJECT_DIR}; n=1; while [ $n -le 3 ]; do echo \"--- 推送尝试 $n ---\"; if git push origin ${BRANCH} 2>&1; then echo '✓ 推送成功'; git rev-parse --short HEAD; exit 0; fi; echo \"  失败，3 秒后重试\"; sleep 3; n=$((n+1)); done; echo '✗ 推送 3 次失败（本地提交完好，稍后重跑）'; exit 1"
-      },
-      "canvasX": 700.0,
-      "canvasY": 160.0,
       "timeoutSeconds": 600,
-      "failurePolicy": "ABORT"
+      "failurePolicy": "ABORT",
+      "canvasX": 0.0,
+      "canvasY": 120.0,
+      "description": "唯一真源：workflows/scripts/ne_push.sh"
     },
     {
       "id": "done",
       "type": "TERMINAL_OUTPUT",
       "title": "推送完成",
       "config": {},
-      "canvasX": 920.0,
-      "canvasY": 160.0
+      "timeoutSeconds": 30,
+      "failurePolicy": "ABORT",
+      "canvasX": 0.0,
+      "canvasY": 240.0,
+      "description": ""
     }
   ],
   "edges": [
-    { "id": "e0", "fromNodeId": "start", "fromPort": "success", "toNodeId": "local", "toPort": "input" },
-    { "id": "e1", "fromNodeId": "local", "fromPort": "success", "toNodeId": "probe", "toPort": "input" },
-    { "id": "e2", "fromNodeId": "probe", "fromPort": "success", "toNodeId": "push", "toPort": "input" },
-    { "id": "e3", "fromNodeId": "push", "fromPort": "success", "toNodeId": "done", "toPort": "input" }
+    { "id": "e1", "fromNodeId": "start", "fromPort": "success", "toNodeId": "run", "toPort": "input" },
+    { "id": "e2", "fromNodeId": "run", "fromPort": "success", "toNodeId": "done", "toPort": "input" }
   ]
 }

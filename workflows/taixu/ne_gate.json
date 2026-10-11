@@ -1,46 +1,53 @@
 {
   "id": "ne_gate",
-  "name": "ne-agent · 架构门禁",
-  "description": "跑 architecture-policy 门禁：crate 依赖白名单 + import 黑名单 + 文件行数棘轮。通过则退出码 0。",
-  "iconName": "Shield",
+  "name": "ne-agent · 门禁",
+  "description": "架构门禁（单文件行数上限等）。薄壳：只调 workflows/run.sh ne_gate，真正逻辑在 workflows/scripts/ne_gate.sh。",
+  "iconName": "ShieldCheck",
   "category": "ne-agent",
   "isBuiltin": false,
-  "trigger": { "type": "manual", "slashCommand": "/wf ne_gate" },
   "defaultVariables": {
     "PROJECT_DIR": "/workspace/小说系统"
   },
+  "trigger": { "type": "manual", "slashCommand": "/wf ne_gate" },
   "nodes": [
     {
       "id": "start",
       "type": "TRIGGER",
       "title": "开始门禁",
       "config": {},
-      "canvasX": 40.0,
-      "canvasY": 120.0
+      "timeoutSeconds": 30,
+      "failurePolicy": "ABORT",
+      "canvasX": 0.0,
+      "canvasY": 0.0,
+      "description": ""
     },
     {
-      "id": "gate",
+      "id": "run",
       "type": "BASH_COMMAND",
-      "title": "arch_check.py",
+      "title": "run.sh ne_gate",
       "config": {
-        "command": "cd ${PROJECT_DIR} && python3 scripts/arch_check.py; rc=$?; echo \"门禁退出码 = $rc\"; exit $rc"
+        "command": "cd ${PROJECT_DIR} && bash workflows/run.sh ne_gate"
       },
-      "canvasX": 300.0,
-      "canvasY": 120.0,
       "timeoutSeconds": 300,
-      "failurePolicy": "ABORT"
+      "failurePolicy": "ABORT",
+      "canvasX": 0.0,
+      "canvasY": 120.0,
+      "description": "唯一真源：workflows/scripts/ne_gate.sh"
     },
     {
       "id": "done",
       "type": "TERMINAL_OUTPUT",
       "title": "门禁完成",
       "config": {},
-      "canvasX": 560.0,
-      "canvasY": 120.0
+      "timeoutSeconds": 30,
+      "failurePolicy": "ABORT",
+      "canvasX": 0.0,
+      "canvasY": 240.0,
+      "description": ""
     }
   ],
   "edges": [
-    { "id": "e0", "fromNodeId": "start", "fromPort": "success", "toNodeId": "gate", "toPort": "input" },
-    { "id": "e1", "fromNodeId": "gate", "fromPort": "success", "toNodeId": "done", "toPort": "input" }
+    { "id": "e1", "fromNodeId": "start", "fromPort": "success", "toNodeId": "run", "toPort": "input" },
+    { "id": "e2", "fromNodeId": "run", "fromPort": "success", "toNodeId": "done", "toPort": "input" }
   ]
 }

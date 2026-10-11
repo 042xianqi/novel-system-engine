@@ -1,58 +1,53 @@
 {
   "id": "ne_test",
-  "name": "ne-agent · 全量测试",
-  "description": "在 /workspace/小说系统 跑全 workspace 测试并汇总通过/失败数。失败即中止，不掩盖。",
-  "iconName": "CheckCircle",
+  "name": "ne-agent · 测试",
+  "description": "全 workspace 测试 + 汇总。薄壳：只调 workflows/run.sh ne_test，真正逻辑在 workflows/scripts/ne_test.sh。",
+  "iconName": "TestTube",
   "category": "ne-agent",
   "isBuiltin": false,
-  "trigger": { "type": "manual", "slashCommand": "/wf ne_test" },
   "defaultVariables": {
     "PROJECT_DIR": "/workspace/小说系统"
   },
+  "trigger": { "type": "manual", "slashCommand": "/wf ne_test" },
   "nodes": [
     {
       "id": "start",
       "type": "TRIGGER",
       "title": "开始测试",
       "config": {},
-      "canvasX": 40.0,
-      "canvasY": 120.0
+      "timeoutSeconds": 30,
+      "failurePolicy": "ABORT",
+      "canvasX": 0.0,
+      "canvasY": 0.0,
+      "description": ""
     },
     {
-      "id": "test",
+      "id": "run",
       "type": "BASH_COMMAND",
-      "title": "cargo test（全 workspace）",
+      "title": "run.sh ne_test",
       "config": {
-        "command": "export PATH=/opt/taixu/toolchains/rust/bin:$PATH; cd ${PROJECT_DIR}; cargo test --workspace > /tmp/ne-test.log 2>&1; rc=$?; tail -50 /tmp/ne-test.log; echo \"cargo 退出码 = $rc\"; test $rc -eq 0"
+        "command": "cd ${PROJECT_DIR} && bash workflows/run.sh ne_test"
       },
-      "canvasX": 300.0,
+      "timeoutSeconds": 900,
+      "failurePolicy": "ABORT",
+      "canvasX": 0.0,
       "canvasY": 120.0,
-      "timeoutSeconds": 1800,
-      "failurePolicy": "ABORT"
-    },
-    {
-      "id": "summary",
-      "type": "BASH_COMMAND",
-      "title": "汇总结果",
-      "config": {
-        "command": "python3 - <<'PY'\nimport re\nt=open('/tmp/ne-test.log',encoding='utf-8',errors='replace').read()\ntot=sum(int(m) for m in re.findall(r'test result: ok\\. (\\d+) passed',t))\nfail=sum(int(m) for m in re.findall(r'(\\d+) failed',t))\nign=sum(int(m) for m in re.findall(r'(\\d+) ignored',t))\nprint(f'✅ 总通过 {tot} · 失败 {fail} · 忽略 {ign}')\nPY"
-      },
-      "canvasX": 560.0,
-      "canvasY": 120.0,
-      "failurePolicy": "CONTINUE"
+      "description": "唯一真源：workflows/scripts/ne_test.sh"
     },
     {
       "id": "done",
       "type": "TERMINAL_OUTPUT",
       "title": "测试完成",
       "config": {},
-      "canvasX": 820.0,
-      "canvasY": 120.0
+      "timeoutSeconds": 30,
+      "failurePolicy": "ABORT",
+      "canvasX": 0.0,
+      "canvasY": 240.0,
+      "description": ""
     }
   ],
   "edges": [
-    { "id": "e0", "fromNodeId": "start", "fromPort": "success", "toNodeId": "test", "toPort": "input" },
-    { "id": "e1", "fromNodeId": "test", "fromPort": "success", "toNodeId": "summary", "toPort": "input" },
-    { "id": "e2", "fromNodeId": "summary", "fromPort": "success", "toNodeId": "done", "toPort": "input" }
+    { "id": "e1", "fromNodeId": "start", "fromPort": "success", "toNodeId": "run", "toPort": "input" },
+    { "id": "e2", "fromNodeId": "run", "fromPort": "success", "toNodeId": "done", "toPort": "input" }
   ]
 }

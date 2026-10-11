@@ -13,3 +13,6 @@ agent_override/
 # 编辑器/系统
 .DS_Store
 *.swp
+
+# 工作流运行产物（日志/状态）
+.wf/

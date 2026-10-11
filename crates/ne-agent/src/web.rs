@@ -29,6 +29,8 @@ use std::net::TcpStream;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::web_html::body_to_text;
+
 /// 默认响应体上限（字节）。
 pub const DEFAULT_MAX_BYTES: usize = 2 * 1024 * 1024;
 /// 默认超时。
@@ -245,7 +247,19 @@ fn request_once(
 
 /// 跟随重定向的 GET。
 pub fn get(url: &str, max_bytes: usize, timeout: Duration) -> Result<HttpResponse> {
-    let ua = format!("ne-agent/{} (novel-system)", env!("CARGO_PKG_VERSION"));
+    get_with_ua(url, max_bytes, timeout, None)
+}
+
+/// 同 [`get`]，但可指定 User-Agent（搜索引擎需要浏览器 UA 以免被反爬）。
+pub fn get_with_ua(
+    url: &str,
+    max_bytes: usize,
+    timeout: Duration,
+    ua: Option<&str>,
+) -> Result<HttpResponse> {
+    let ua = ua
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("ne-agent/{} (novel-system)", env!("CARGO_PKG_VERSION")));
     let mut current = url.to_string();
     for _hop in 0..=MAX_REDIRECTS {
         let r = request_once("GET", &current, &ua, None, max_bytes, timeout)?;
@@ -259,6 +273,15 @@ pub fn get(url: &str, max_bytes: usize, timeout: Duration) -> Result<HttpRespons
     }
     Err(anyhow!("重定向次数超过 {MAX_REDIRECTS}：{url}"))
 }
+
+/// 搜索请求 UA（照太墟，用常规浏览器 UA 以免被反爬）。
+pub fn search_user_agent() -> &'static str {
+    SEARCH_UA
+}
+
+// ── 拆出的模块在原路径上重导出，调用方无需改（`ne_agent::web::search` 等照旧）
+pub use crate::web_html::html_to_text;
+pub use crate::web_search::{search, SearchHit};
 
 fn read_capped<R: Read>(r: &mut R, out: &mut Vec<u8>, cap: usize) -> Result<()> {
     let mut buf = [0u8; 16 * 1024];
@@ -303,226 +326,6 @@ fn find_crlf(b: &[u8]) -> Option<usize> {
     b.windows(2).position(|w| w == b"\r\n")
 }
 
-// ───────────────────────────── HTML → 文本
-
-/// HTML → 纯文本（**无依赖**的保守实现，够用于读文章正文）。
-pub fn html_to_text(html: &str) -> String {
-    let mut s = html.to_string();
-    s = strip_between(&s, "<!--", "-->");
-    for (open, close) in [
-        ("<script", "</script>"),
-        ("<style", "</style>"),
-        ("<noscript", "</noscript>"),
-        ("<head", "</head>"),
-        ("<svg", "</svg>"),
-        ("<nav", "</nav>"),
-        ("<footer", "</footer>"),
-    ] {
-        s = strip_tag_blocks(&s, open, close);
-    }
-    for t in [
-        "p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article",
-        "header", "blockquote", "pre", "table",
-    ] {
-        s = replace_ci(&s, &format!("<{t}"), &format!("\n<{t}"));
-        s = replace_ci(&s, &format!("</{t}>"), "\n");
-    }
-    s = strip_tags(&s);
-    s = decode_entities(&s);
-    let mut out = String::new();
-    let mut blank = 0;
-    for line in s.lines() {
-        let t = line.split_whitespace().collect::<Vec<_>>().join(" ");
-        if t.is_empty() {
-            blank += 1;
-            if blank <= 1 {
-                out.push('\n');
-            }
-        } else {
-            blank = 0;
-            out.push_str(&t);
-            out.push('\n');
-        }
-    }
-    out.trim().to_string()
-}
-
-fn strip_between(s: &str, open: &str, close: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(i) = rest.find(open) {
-        out.push_str(&rest[..i]);
-        match rest[i..].find(close) {
-            Some(j) => rest = &rest[i + j + close.len()..],
-            None => {
-                rest = "";
-                break;
-            }
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
-fn strip_tag_blocks(s: &str, open: &str, close: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(i) = find_ci(rest, open) {
-        out.push_str(&rest[..i]);
-        match find_ci(&rest[i..], close) {
-            Some(j) => rest = &rest[i + j + close.len()..],
-            None => {
-                rest = "";
-                break;
-            }
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
-fn strip_tags(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut in_tag = false;
-    for c in s.chars() {
-        match c {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if !in_tag => out.push(c),
-            _ => {}
-        }
-    }
-    out
-}
-
-fn find_ci(hay: &str, needle: &str) -> Option<usize> {
-    hay.to_ascii_lowercase().find(&needle.to_ascii_lowercase())
-}
-
-fn replace_ci(s: &str, from: &str, to: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    loop {
-        match find_ci(rest, from) {
-            Some(i) => {
-                out.push_str(&rest[..i]);
-                out.push_str(to);
-                rest = &rest[i + from.len()..];
-            }
-            None => {
-                out.push_str(rest);
-                break;
-            }
-        }
-    }
-    out
-}
-
-fn decode_entities(s: &str) -> String {
-    let mut out = s.to_string();
-    for (e, c) in [
-        ("&nbsp;", " "),
-        ("&amp;", "&"),
-        ("&lt;", "<"),
-        ("&gt;", ">"),
-        ("&quot;", "\""),
-        ("&#39;", "'"),
-        ("&apos;", "'"),
-        ("&mdash;", "—"),
-        ("&ndash;", "–"),
-        ("&hellip;", "…"),
-        ("&ldquo;", "\u{201c}"),
-        ("&rdquo;", "\u{201d}"),
-        ("&middot;", "·"),
-        ("&times;", "×"),
-    ] {
-        out = out.replace(e, c);
-    }
-    let chars: Vec<char> = out.chars().collect();
-    let mut res = String::with_capacity(out.len());
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i] == '&' && i + 2 < chars.len() && chars[i + 1] == '#' {
-            let mut j = i + 2;
-            let hex = j < chars.len() && (chars[j] == 'x' || chars[j] == 'X');
-            if hex {
-                j += 1;
-            }
-            let start = j;
-            while j < chars.len() && chars[j] != ';' && j - start < 8 {
-                j += 1;
-            }
-            if j < chars.len() && chars[j] == ';' && j > start {
-                let digits: String = chars[start..j].iter().collect();
-                let code = if hex {
-                    u32::from_str_radix(&digits, 16).ok()
-                } else {
-                    digits.parse::<u32>().ok()
-                };
-                if let Some(cp) = code.and_then(char::from_u32) {
-                    res.push(cp);
-                    i = j + 1;
-                    continue;
-                }
-            }
-        }
-        res.push(chars[i]);
-        i += 1;
-    }
-    res
-}
-
-/// 从 Content-Type 头或 HTML meta 里探测字符集。
-fn detect_charset(content_type: &str, body_bytes: &[u8]) -> String {
-    // 1) HTTP 头
-    if let Some(i) = content_type.to_ascii_lowercase().find("charset=") {
-        let cs = content_type[i + 8..]
-            .trim()
-            .trim_matches('"')
-            .split(|c: char| c == ';' || c == ' ')
-            .next()
-            .unwrap_or("")
-            .to_string();
-        if !cs.is_empty() {
-            return cs.to_ascii_lowercase();
-        }
-    }
-    // 2) HTML <meta charset=...> / <meta http-equiv ... content="...charset=...">
-    let head = &body_bytes[..body_bytes.len().min(4096)];
-    let head = String::from_utf8_lossy(head).to_ascii_lowercase();
-    if let Some(i) = head.find("charset=") {
-        // 跳过 `=` 与其后的引号/空白
-        let after = head[i + 8..].trim_start_matches(['"', '\'', ' ', '=']);
-        let cs: String = after
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-            .collect();
-        if !cs.is_empty() {
-            return cs;
-        }
-    }
-    "utf-8".to_string()
-}
-
-/// 按字符集解码字节（支持 utf-8 / gbk / gb18030 / big5 等）。
-///
-/// ⚠ 这一步很关键：**中文搜索页常是 GBK**，用 `from_utf8_lossy` 会把整页中文
-/// 变成乱码 → 后续正则一条都匹配不到。
-/// 用 **`encoding_rs`**（成熟库，reqwest/浏览器同源）而非手搓字符表。
-fn decode_bytes(bytes: &[u8], charset: &str) -> String {
-    let enc = encoding_rs::Encoding::for_label(charset.trim().as_bytes())
-        .unwrap_or(encoding_rs::UTF_8);
-    let (cow, _, _) = enc.decode(bytes);
-    cow.into_owned()
-}
-
-/// 把响应体字节按其字符集解码成文本。
-fn body_to_text(content_type: &str, bytes: &[u8]) -> String {
-    let cs = detect_charset(content_type, bytes);
-    decode_bytes(bytes, &cs)
-}
-
-
 pub fn fetch_text(url: &str, max_chars: usize) -> Result<String> {
     let r = get(url, DEFAULT_MAX_BYTES, Duration::from_secs(DEFAULT_TIMEOUT_SECS))?;
     if r.status >= 400 {
@@ -547,319 +350,6 @@ pub fn fetch_text(url: &str, max_chars: usize) -> Result<String> {
         "URL: {url}\n状态: {}\n类型: {}\n\n{}",
         r.status, r.content_type, out
     ))
-}
-
-// ───────────────────────────── 搜索（照太墟 websearch_mcp_server.py）
-
-/// 一条搜索结果。
-#[derive(Debug, Clone, PartialEq)]
-pub struct SearchHit {
-    pub title: String,
-    pub url: String,
-    pub snippet: String,
-}
-
-/// 免 API Key 搜索：按引擎取结果页、正则解析；**首选失败自动回退其余引擎**。
-pub fn search(query: &str, engine: &str, limit: usize) -> Result<Vec<SearchHit>> {
-    if query.trim().is_empty() {
-        return Err(anyhow!("搜索词为空"));
-    }
-    let limit = limit.clamp(1, 15);
-    let primary = engine.to_ascii_lowercase();
-    let mut order = vec![primary.clone()];
-    for fb in ["bing", "baidu", "duckduckgo"] {
-        if !order.iter().any(|e| e == fb) {
-            order.push(fb.to_string());
-        }
-    }
-    let mut last_err = String::new();
-    for e in &order {
-        let r = match e.as_str() {
-            "bing" => search_bing(query, limit),
-            "duckduckgo" | "ddg" => search_ddg(query, limit),
-            _ => search_baidu(query, limit),
-        };
-        match r {
-            Ok(hits) if !hits.is_empty() => return Ok(hits),
-            Ok(_) => last_err = format!("{e} 无结果"),
-            Err(err) => last_err = format!("{e}: {err}"),
-        }
-    }
-    Err(anyhow!("全部引擎均未取得结果（{last_err}）"))
-}
-
-fn search_get(url: &str) -> Result<String> {
-    let r = request_once(
-        "GET",
-        url,
-        SEARCH_UA,
-        None,
-        DEFAULT_MAX_BYTES,
-        Duration::from_secs(15),
-    )?;
-    if r.status >= 400 {
-        return Err(anyhow!("HTTP {}", r.status));
-    }
-    Ok(r.text())
-}
-
-fn search_baidu(query: &str, limit: usize) -> Result<Vec<SearchHit>> {
-    let url = format!(
-        "https://www.baidu.com/s?wd={}&rn={}",
-        url_encode(query),
-        limit.max(10)
-    );
-    let html = search_get(&url)?;
-    let mut hits = extract_baidu_cards(&html, limit);
-    // 精确卡片未命中 → 回退通用 h3 抽取（太墟同法）
-    if hits.is_empty() {
-        hits = extract_h3_generic(&html, limit, Some("baidu.com"));
-    }
-    Ok(hits)
-}
-
-/// 百度搜索卡片：`<h3 class="t"><a href=...>标题</a></h3>...摘要 div`
-fn extract_baidu_cards(html: &str, limit: usize) -> Vec<SearchHit> {
-    let mut out = Vec::new();
-    let mut rest = html;
-    while let Some(i) = find_ci(rest, "<h3") {
-        let after = &rest[i..];
-        let Some(gt) = after.find('>') else { break };
-        let h3tag = &after[..gt];
-        // h3 需带 class="t"（搜索结果标题），否则跳过
-        if !h3tag.to_ascii_lowercase().contains("class=\"t") && !h3tag.contains("class=\"t") {
-            rest = &after[gt + 1..];
-            continue;
-        }
-        let seg = &after[gt..];
-        if let Some((link, inner, consumed)) = anchor_in(seg) {
-            let title = html_to_text(&inner);
-            if !title.is_empty() && !link.is_empty() {
-                out.push(SearchHit { title, url: link, snippet: String::new() });
-            }
-            rest = &seg[consumed..];
-        } else {
-            rest = &after[gt + 1..];
-        }
-        if out.len() >= limit {
-            break;
-        }
-    }
-    out
-}
-
-fn search_bing(query: &str, limit: usize) -> Result<Vec<SearchHit>> {
-    let url = format!(
-        "https://cn.bing.com/search?q={}&count={}",
-        url_encode(query),
-        limit.max(10)
-    );
-    let html = search_get(&url)?;
-    // Bing：<li class="b_algo"> ... <h2><a href=...>标题</a></h2> ... <p>摘要</p>
-    let mut hits = extract_bing_algo(&html, limit);
-    if hits.is_empty() {
-        hits = extract_h3_generic(&html, limit, None);
-    }
-    Ok(hits)
-}
-
-/// Bing `b_algo` 块：取 h2 里的锚点 + 首个 `<p>` 摘要。
-fn extract_bing_algo(html: &str, limit: usize) -> Vec<SearchHit> {
-    let mut out = Vec::new();
-    let mut rest = html;
-    while let Some(i) = find_ci(rest, "class=\"b_algo\"") {
-        let seg = &rest[i..];
-        // 在该块内找 h2 锚点
-        if let Some(h2i) = find_ci(seg, "<h2>") {
-            let h2seg = &seg[h2i..];
-            if let Some(h2gt) = h2seg.find('>') {
-                let inner = &h2seg[h2gt..];
-                if let Some((link, title_html, _)) = anchor_in(inner) {
-                    let title = html_to_text(&title_html);
-                    let snippet = first_p_text(inner);
-                    if !title.is_empty() && !link.is_empty() {
-                        out.push(SearchHit { title, url: link, snippet });
-                    }
-                }
-            }
-        }
-        // 前进到本块之后
-        rest = &seg["class=\"b_algo\"".len()..];
-        if out.len() >= limit {
-            break;
-        }
-    }
-    out
-}
-
-/// 取片段里第一个 `<p>...</p>` 的文本（Bing 摘要）。
-fn first_p_text(s: &str) -> String {
-    if let Some(i) = find_ci(s, "<p") {
-        let seg = &s[i..];
-        if let Some(gt) = seg.find('>') {
-            let after = &seg[gt + 1..]; // 跳过 '>'
-            if let Some(e) = find_ci(after, "</p>") {
-                return html_to_text(&after[..e]);
-            }
-        }
-    }
-    String::new()
-}
-
-/// 通用兜底：任意 `<h3>...<a href=...>标题</a>`（可排除某域名标题）。
-fn extract_h3_generic(html: &str, limit: usize, exclude_host: Option<&str>) -> Vec<SearchHit> {
-    let mut out = Vec::new();
-    for (link, inner) in h3_links(html) {
-        let title = html_to_text(&inner);
-        if title.is_empty() || link.is_empty() {
-            continue;
-        }
-        if let Some(h) = exclude_host {
-            if title.contains(h) {
-                continue;
-            }
-        }
-        out.push(SearchHit { title, url: link, snippet: String::new() });
-        if out.len() >= limit {
-            break;
-        }
-    }
-    out
-}
-
-fn search_ddg(query: &str, limit: usize) -> Result<Vec<SearchHit>> {
-    let url = format!("https://html.duckduckgo.com/html/?q={}", url_encode(query));
-    let html = search_get(&url)?;
-    let mut hits = Vec::new();
-    for (raw_link, title_raw) in class_links(&html, "result__a") {
-        let link = extract_uddg(&raw_link).unwrap_or(raw_link);
-        let title = html_to_text(&title_raw);
-        if !title.is_empty() && !link.is_empty() {
-            hits.push(SearchHit { title, url: link, snippet: String::new() });
-        }
-        if hits.len() >= limit {
-            break;
-        }
-    }
-    Ok(hits)
-}
-
-fn extract_uddg(link: &str) -> Option<String> {
-    let i = link.find("uddg=")?;
-    let rest = &link[i + 5..];
-    let end = rest.find('&').unwrap_or(rest.len());
-    Some(url_decode(&rest[..end]))
-}
-
-/// 百分号编码（空格用 `+`，搜索引擎惯例）。
-fn url_encode(s: &str) -> String {
-    let mut out = String::new();
-    for b in s.as_bytes() {
-        match *b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(*b as char)
-            }
-            b' ' => out.push('+'),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
-
-fn url_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'%' if i + 2 < bytes.len() => {
-                if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                    out.push(v);
-                    i += 3;
-                    continue;
-                }
-                out.push(b'%');
-                i += 1;
-            }
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            c => {
-                out.push(c);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).to_string()
-}
-
-/// 抽 `<h3 ...><a href="X">T</a>` 形式的 (link, inner_html) 对（Bing/Baidu 通用）。
-fn h3_links(html: &str) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    let mut rest = html;
-    while let Some(i) = find_ci(rest, "<h3") {
-        let after = &rest[i..];
-        let Some(gt) = after.find('>') else { break };
-        let seg = &after[gt..];
-        if let Some((link, inner, consumed)) = anchor_in(seg) {
-            out.push((link, inner));
-            rest = &seg[consumed..];
-            continue;
-        }
-        rest = &after[gt + 1..];
-    }
-    out
-}
-
-/// 抽 `class="<cls>"` 的 `<a href=X>inner</a>`。
-fn class_links(html: &str, cls: &str) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    let mut rest = html;
-    while let Some(i) = find_ci(rest, "<a") {
-        let after = &rest[i..];
-        let Some(gt) = after.find('>') else { break };
-        let tag = &after[..gt];
-        if tag.to_ascii_lowercase().contains(&cls.to_ascii_lowercase()) {
-            if let Some((link, inner, consumed)) = anchor_in(after) {
-                out.push((link, inner));
-                rest = &after[consumed..];
-                continue;
-            }
-        }
-        rest = &after[gt + 1..];
-    }
-    out
-}
-
-/// 从一个以 `<a` 开头的片段抽 (href, inner, 已消耗长度)。
-fn anchor_in(seg: &str) -> Option<(String, String, usize)> {
-    let href = extract_href(seg)?;
-    let open_gt = seg.find('>')?;
-    let close = "</a>";
-    let ci = find_ci(&seg[open_gt..], close)?;
-    let start = open_gt + 1;
-    let end = open_gt + ci;
-    Some((
-        decode_entities(&href),
-        seg[start..end].to_string(),
-        end + close.len(),
-    ))
-}
-
-fn extract_href(seg: &str) -> Option<String> {
-    let lower = seg.to_ascii_lowercase();
-    let h = lower.find("href=")?;
-    let rest = seg[h + 5..].trim_start();
-    let (quote, body) = if let Some(r) = rest.strip_prefix('"') {
-        ('"', r)
-    } else if let Some(r) = rest.strip_prefix('\'') {
-        ('\'', r)
-    } else {
-        return None;
-    };
-    let end = body.find(quote)?;
-    Some(body[..end].to_string())
 }
 
 #[cfg(test)]
@@ -907,95 +397,14 @@ mod tests {
     }
 
     #[test]
-    fn html_to_text_strips_tags_scripts_and_entities() {
-        let html = r#"<html><head><title>T</title></head>
-            <body><script>var x=1;</script>
-            <h1>标题</h1><p>第一段 &amp; 实体</p>
-            <style>.a{color:red}</style>
-            <p>第二段&nbsp;结尾</p></body></html>"#;
-        let t = html_to_text(html);
-        assert!(t.contains("标题"), "{t}");
-        assert!(t.contains("第一段 & 实体"), "{t}");
-        assert!(t.contains("第二段 结尾"), "{t}");
-        assert!(!t.contains("var x=1"), "script 内容必须去掉：{t}");
-        assert!(!t.contains("color:red"), "style 内容必须去掉：{t}");
-        assert!(!t.contains('<'), "不得残留标签：{t}");
-    }
-
-    #[test]
-    fn html_to_text_numeric_entities() {
-        let t = html_to_text("<p>&#65;&#x4e2d;文</p>");
-        assert!(t.contains("A中文"), "{t}");
-    }
-
-    #[test]
     fn dechunk_basic() {
         let raw = b"5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n";
         assert_eq!(String::from_utf8_lossy(&dechunk(raw)), "hello world");
     }
 
     #[test]
-    fn strip_between_removes_comments() {
-        assert_eq!(strip_between("a<!-- x -->b", "<!--", "-->"), "ab");
-    }
-
-    #[test]
-    fn extract_href_quoted() {
-        assert_eq!(extract_href(r#"<a class="x" href="https://a.com""#).as_deref(), Some("https://a.com"));
-        assert_eq!(extract_href("<a href='https://b.com'>").as_deref(), Some("https://b.com"));
-    }
-
-    #[test]
-    fn anchor_in_gets_href_and_inner() {
-        let (link, inner, _) = anchor_in(r#"<a href="https://a.com"><b>标题</b></a>"#).unwrap();
-        assert_eq!(link, "https://a.com");
-        assert!(inner.contains("标题"));
-    }
-
-    #[test]
-    fn h3_links_finds_result() {
-        let html = r#"<h3 class="t"><a href="https://x.com/p">结果标题</a></h3>"#;
-        let links = h3_links(html);
-        assert_eq!(links.len(), 1);
-        assert_eq!(links[0].0, "https://x.com/p");
-        assert!(links[0].1.contains("结果标题"));
-    }
-
-    #[test]
-    fn url_encode_cjk_and_space() {
-        assert_eq!(url_encode("残响 之河"), "%E6%AE%8B%E5%93%8D+%E4%B9%8B%E6%B2%B3");
-    }
-
-    #[test]
-    fn extract_uddg_decodes() {
-        let s = "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fa.com%2Fx&rut=1";
-        assert_eq!(extract_uddg(s).as_deref(), Some("https://a.com/x"));
-    }
-
-    #[test]
     fn fetch_text_rejects_bad_scheme() {
         assert!(fetch_text("ftp://x", 100).is_err());
-    }
-
-    #[test]
-    fn detect_charset_from_header_and_meta() {
-        assert_eq!(detect_charset("text/html; charset=gbk", b""), "gbk");
-        assert_eq!(detect_charset("text/html; charset=\"GB2312\"", b""), "gb2312");
-        let meta = b"<html><head><meta charset=\"gbk\"></head>";
-        assert_eq!(detect_charset("text/html", meta), "gbk");
-        assert_eq!(detect_charset("text/html", b"<html>"), "utf-8");
-    }
-
-    #[test]
-    fn decode_bytes_handles_gbk() {
-        // "第一章"（GBK 编码）必须能正确解码，而不是乱码
-        let gbk = [
-            0xb5, 0xda, 0xd2, 0xbb, 0xd5, 0xc2, // 第一章
-        ];
-        assert_eq!(decode_bytes(&gbk, "gbk"), "第一章");
-        assert_eq!(decode_bytes(&gbk, "gb2312"), "第一章");
-        // UTF-8 正常路径
-        assert_eq!(decode_bytes("残响".as_bytes(), "utf-8"), "残响");
     }
 
     #[test]
@@ -1008,29 +417,5 @@ mod tests {
             truncated: false,
         };
         assert_eq!(r.text(), "第一章");
-    }
-
-    #[test]
-    fn search_rejects_empty_query() {
-        assert!(search("  ", "baidu", 5).is_err());
-    }
-
-    #[test]
-    fn extract_baidu_cards_matches_h3_class_t() {
-        let html = r#"<div><h3 class="t"><a href="https://x.com/a">结果一</a></h3></div>"#;
-        let hits = extract_baidu_cards(html, 5);
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].title, "结果一");
-        assert_eq!(hits[0].url, "https://x.com/a");
-    }
-
-    #[test]
-    fn extract_bing_algo_gets_title_and_snippet() {
-        let html = r#"<li class="b_algo"><h2><a href="https://y.com/b">标题乙</a></h2>
-                      <div class="b_caption"><p>这是摘要文字</p></div></li>"#;
-        let hits = extract_bing_algo(html, 5);
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].title, "标题乙");
-        assert_eq!(hits[0].snippet, "这是摘要文字");
     }
 }

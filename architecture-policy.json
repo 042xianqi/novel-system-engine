@@ -1,0 +1,89 @@
+{
+  "_doc": [
+    "ne-agent / novel-system 架构治理策略（学太墟 architecture-policy.json）。",
+    "本文件是 scripts/arch-check.sh 的唯一事实源：新增 crate 依赖 / 文件超行必须同步登记，",
+    "否则门禁失败（防止未声明的依赖悄悄混入构建）。",
+    "",
+    "字段说明：",
+    "- crates[].name: crate 名（对应 crates/<name>）",
+    "- crates[].mayDependOn: 允许依赖的 crate 白名单（解析 Cargo.toml 的 path 依赖）",
+    "- crates[].forbidDeps: 依赖里禁止出现的字符串（如 ne-agent 不许直接引 rusqlite 之外的 DB 层）",
+    "- global.maxFileLines: 单文件行数上限（棘轮：存量超限登记在基线，只许下调）",
+    "- global.baselineFile: 棘轮基线；scripts/arch-check.sh --sync-baseline 维护"
+  ],
+  "version": 1,
+  "global": {
+    "maxFileLines": 700,
+    "baselineFile": ".architecture-baseline.json",
+    "root": "."
+  },
+  "crates": [
+    {
+      "name": "ne-core",
+      "mayDependOn": [],
+      "note": "最底层：类型与错误，不依赖任何本项目 crate"
+    },
+    {
+      "name": "ne-db",
+      "mayDependOn": ["ne-core"],
+      "note": "数据库访问层"
+    },
+    {
+      "name": "ne-engine",
+      "mayDependOn": ["ne-core", "ne-db"],
+      "note": "章节目录/门禁/注入/budget 引擎。注：曾声明 ne-funnel 但未使用，已清理（arch-check 揪出）"
+    },
+    {
+      "name": "ne-qc",
+      "mayDependOn": ["ne-core", "ne-engine"],
+      "note": "质检门禁（委托 ne-engine::chapter/gate14 的确定性实现，保证 CLI/MCP 口径一致）"
+    },
+    {
+      "name": "ne-injection",
+      "mayDependOn": ["ne-core"],
+      "note": "注入包组装"
+    },
+    {
+      "name": "ne-funnel",
+      "mayDependOn": ["ne-core"],
+      "note": "漏斗"
+    },
+    {
+      "name": "ne-cardgen",
+      "mayDependOn": ["ne-core", "ne-engine"],
+      "note": "卡片生成（用 ne_engine::keypool 轮转 key）"
+    },
+    {
+      "name": "ne-import",
+      "mayDependOn": ["ne-core", "ne-db"],
+      "note": "导入（用 ne-db 落库）"
+    },
+    {
+      "name": "ne-mcp",
+      "mayDependOn": ["ne-core", "ne-db", "ne-engine", "ne-qc", "ne-injection"],
+      "note": "MCP 服务端（对外暴露既有能力）"
+    },
+    {
+      "name": "ne-agent",
+      "mayDependOn": [
+        "ne-core", "ne-db", "ne-engine", "ne-qc", "ne-injection", "ne-funnel",
+        "ne-cardgen", "ne-import"
+      ],
+      "note": "智能体本体：可调用所有既有能力；不依赖 ne-mcp（那是另一条出口）"
+    }
+  ],
+  "importBans": [
+    {
+      "id": "no-tokio-in-agent",
+      "pattern": "^\\s*(use|extern crate)\\s+tokio",
+      "crates": ["ne-agent"],
+      "message": "ne-agent 是 std 阻塞 IO 单线程运行时（见架构决策），不引入 tokio"
+    },
+    {
+      "id": "no-reqwest-in-agent",
+      "pattern": "^\\s*(use|extern crate)\\s+reqwest",
+      "crates": ["ne-agent"],
+      "message": "ne-agent 用自写 HTTPS 客户端（web.rs），不引入 reqwest（与 ne-engine 保持一致）"
+    }
+  ]
+}

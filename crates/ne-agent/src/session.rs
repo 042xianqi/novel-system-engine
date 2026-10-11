@@ -144,6 +144,20 @@ impl SessionStore {
         Ok(id)
     }
 
+    /// 用**指定 id** 建子会话（子智能体 Lane 用；id 确定 → 可复用以续跑）。
+    ///
+    /// 幂等：已存在则不动（返回 false 表示已存在）。
+    pub fn create_child_session(&self, id: &str, parent: &str, title: &str) -> Result<bool> {
+        let t = now_ms();
+        let n = self.con.execute(
+            "INSERT OR IGNORE INTO sessions
+                (id, title, created_at, updated_at, parent_session_id)
+             VALUES (?1, ?2, ?3, ?3, ?4)",
+            params![id, title, t, parent],
+        )?;
+        Ok(n > 0)
+    }
+
     pub fn get_session(&self, id: &str) -> Result<Option<SessionRow>> {
         let r = self
             .con

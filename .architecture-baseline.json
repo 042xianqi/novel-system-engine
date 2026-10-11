@@ -1,0 +1,12 @@
+{
+  "_doc": "棘轮基线：这些文件行数超上限。只许下调不许上涨。",
+  "files": {
+    "crates/ne-agent/src/main.rs": 1112,
+    "crates/ne-agent/src/tool.rs": 900,
+    "crates/ne-agent/src/web.rs": 1036,
+    "crates/ne-engine/src/gate14.rs": 880,
+    "crates/ne-engine/src/gates.rs": 724,
+    "crates/ne-engine/src/ops.rs": 722,
+    "crates/ne-import/src/renumber.rs": 931
+  }
+}

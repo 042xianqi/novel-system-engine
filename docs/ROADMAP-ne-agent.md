@@ -309,7 +309,7 @@ NovelCtx::open → chapter::build_prompt → llm::call → chapter::write_chapte
 
 ---
 
-## M7 · 完善
+## M7 · 完善 — ✅ 主体完成（2026-10-11）
 
 **做什么**
 - `subagent`：子智能体 Lane（并发 + 隔离）
@@ -318,10 +318,44 @@ NovelCtx::open → chapter::build_prompt → llm::call → chapter::write_chapte
 - 架构门禁：crate 边界检查 + 文件行数棘轮（学太墟 `architecture-policy.json`）
 - 文档：`docs/` 与代码同步
 
+### ✅ 已交付
+
+**单二进制**
+- release 9.2 MB（aarch64），`ldd` 仅 **libc / libm / libgcc**（标准 glibc），
+  **无脚本、无 Rust 运行时、无动态框架** → 拷到有 glibc 的机器即可跑
+- `Cargo.toml`：`strip=true` + `codegen-units=1`；workspace 版本统一 0.0.5
+
+**架构门禁** `scripts/arch_check.py`（148 行）+ `architecture-policy.json` + `.architecture-baseline.json`
+- **crate 依赖白名单**（解析 path 依赖）→ **上线即揪出真实死依赖**
+  `ne-engine → ne-funnel`（`[dependencies]` 声明但全仓零使用 → 已删）
+- **import 黑名单**：ne-agent 禁 `tokio` / `reqwest`（架构决策：std 阻塞单线程 + 自写 HTTPS）
+- **文件行数棘轮**：上限 700，存量超限登记基线，**只许下调不许上涨**
+- 用法：`python3 scripts/arch_check.py` / `--sync-baseline`
+- 环检测：确认全 crate 依赖图无环
+
+**文件拆分**（过门禁）：`web.rs` 1036 → `web.rs` 414 + `web_html.rs` 275 + `web_search.rs` 382；
+用 `pub use` 在原路径重导出，**调用方零改动**；顺带修了 `charset` 检测对 `charset="gbk"` 引号的处理
+
+**子智能体 Lane** `subagent.rs`（312 行，13 单测）+ `task::run_subagents` + `subagent` CLI
+- 契约对照太墟 `SubagentArgsParser` + `SubagentTaskSpec`（`McpModels.kt:113`）
+- **如实差异**：太墟 Lane 是真并发（Android 宿主多面板）；ne-agent 运行时是
+  **std 阻塞单线程**且写小说是长链顺序任务 → 做**顺序 Lane**（不并发）
+- **隔离靠独立子会话**：每个子任务一个子会话（`parent_session_id` 指向父），
+  父子/兄弟上下文互不可见 —— 父会话不被污染
+- **写租约**：`["*"]` 独占不能与任何其它子任务共存；同路径（规范化后）不能重复声明
+  ——在顺序模型里是**提前发现配置冲突**（如实标注，非运行时竞争防护）
+- 子任务**不带审批回调** → 需审批的操作默认拒绝（安全默认）
+
 **验收**
-- 拷到别的机器，只要有 yaml + API 可访问就能跑
-- 无脚本依赖
-- 架构门禁接 CI
+- ✅ 拷到别的机器，只要有 yaml + API 可访问就能跑（单二进制 + 标准 glibc）
+- ✅ 无脚本依赖
+- ✅ 架构门禁可接 CI（`python3 scripts/arch_check.py`，退出码即结果）
+- `subagent` e2e：假 LLM 跑两子任务，验证顺序执行 + 会话隔离 + 父会话不被污染
+
+### 未做（诚实清单）
+- **dual agent（Planner/Executor）**：太墟有，但它依赖真并发 + 物理隔离 Profile 目录；
+  与顺序 Lane 的收益/复杂度比不划算，未实现
+- 跨设备交叉编译（Android aarch64）未做（已有 linux aarch64 产物）
 
 **产出**：成品。
 

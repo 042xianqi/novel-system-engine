@@ -394,3 +394,108 @@ pub fn make_ctx_for_test<'a>(
 pub fn run_one_for_test(h: &HarnessCtx, input: &str) -> Result<String> {
     run_one(h, None, input)
 }
+
+// ───────────────────────────── 子智能体 Lane（M7）
+
+/// 构造一个"父会话"的 HarnessCtx（供 CLI 的 `subagent` 命令调用）。
+///
+/// 与 `chat` 用的同一套装配；`pinned` 传空字符串即可（子任务不依赖父的召回快照）。
+#[allow(clippy::too_many_arguments)]
+pub fn parent_ctx<'a>(
+    store: &'a SessionStore,
+    session: &str,
+    cfg: &'a RuntimeConfig,
+    llm: ne_engine::llm::LlmParams,
+    work_root: PathBuf,
+    prompt_dir: PathBuf,
+    enabled: Vec<Tool>,
+) -> HarnessCtx<'a> {
+    make_ctx(store, session, cfg, llm, work_root, prompt_dir, enabled, String::new())
+}
+
+/// 执行一批子任务 Lane（**顺序**，每个子任务一个隔离子会话）。
+///
+/// 契约对照太墟 `invoke_subagent`（`SubagentArgsParser` + `SubagentTaskSpec`）。
+///
+/// # 为什么是顺序而非并发（如实说明）
+///
+/// 太墟 Lane 真并发（Android 宿主、多面板）。ne-agent 运行时是 **std 阻塞单线程**，
+/// 且写小说是长链顺序任务——并发既无收益又会让"同一章被两个 Lane 写"。
+/// 所以这里**顺序执行**，但保留太墟的**写租约校验**（提前发现配置冲突）与
+/// **独立子会话隔离**（上下文不串）。
+///
+/// # 隔离
+///
+/// 每个子任务在自己的会话里跑（`parent_session_id` 指向父会话），
+/// 记忆召回按子会话走 → 父会话与其它 Lane 都看不到这个 Lane 的中间过程。
+pub fn run_subagents(
+    parent: &HarnessCtx,
+    tasks: &[crate::subagent::SubagentTask],
+    max_tasks: usize,
+) -> Result<Vec<crate::subagent::LaneOutcome>> {
+    use crate::subagent::LaneOutcome;
+    if tasks.is_empty() {
+        return Ok(Vec::new());
+    }
+    // 写租约冲突检查（提前发现，不进入执行）
+    crate::subagent::check_write_leases(tasks)?;
+
+    let mut outcomes = Vec::new();
+    for (i, t) in tasks.iter().take(max_tasks).enumerate() {
+        let sid = crate::subagent::lane_session_id(&parent.session, i, &t.task_name);
+        // 建/复用子会话（隔离单元）
+        if parent.store.get_session(&sid)?.is_none() {
+            parent.store.create_child_session(&sid, &parent.session, &t.task_name)?;
+        }
+        // 组装子任务的 HarnessCtx：同配置、同工作区，但**换会话**
+        let mut sub = build_sub_ctx(parent, &sid);
+        // 子任务不带审批回调（继承父的策略；非交互 → 需审批的默认拒绝，安全）
+        let input = if t.write_paths.is_empty() {
+            t.prompt.clone()
+        } else {
+            format!(
+                "{}\n\n（本子任务声明的写目标：{}）",
+                t.prompt,
+                t.write_paths.join(", ")
+            )
+        };
+        match run_one(&sub, None, &input) {
+            Ok(text) => outcomes.push(LaneOutcome {
+                task_name: t.task_name.clone(),
+                session_id: sid,
+                ok: true,
+                output: text,
+            }),
+            Err(e) => outcomes.push(LaneOutcome {
+                task_name: t.task_name.clone(),
+                session_id: sid,
+                ok: false,
+                output: format!("执行失败：{e}"),
+            }),
+        }
+        // sub 借用结束
+        let _ = &mut sub;
+    }
+    Ok(outcomes)
+}
+
+/// 从父 ctx 派生一个"换会话"的子 ctx（其余配置继承）。
+fn build_sub_ctx<'a>(parent: &HarnessCtx<'a>, session: &str) -> HarnessCtx<'a> {
+    HarnessCtx {
+        store: parent.store,
+        session: session.to_string(),
+        cfg: parent.cfg,
+        llm: parent.llm.clone(),
+        work_root: parent.work_root.clone(),
+        prompt_dir: parent.prompt_dir.clone(),
+        enabled: parent.enabled.clone(),
+        max_tool_calls_per_turn: parent.max_tool_calls_per_turn,
+        max_rounds: parent.max_rounds,
+        max_consecutive_failures: parent.max_consecutive_failures,
+        pinned_section: parent.pinned_section.clone(),
+        mcp_servers: parent.mcp_servers.clone(),
+        approval_mode: parent.approval_mode,
+        plan_only: parent.plan_only,
+        approver: None, // 子任务不带交互回调（非交互 → 需审批默认拒绝）
+    }
+}

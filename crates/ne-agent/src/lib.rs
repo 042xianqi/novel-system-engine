@@ -22,11 +22,14 @@ pub mod memory;
 pub mod novel_ctx;
 pub mod prompt;
 pub mod session;
+pub mod subagent;
 pub mod task;
 pub mod task_state;
 pub mod tool;
 pub mod vault;
 pub mod web;
+pub mod web_html;
+pub mod web_search;
 
 pub use config::RuntimeConfig;
 pub use vault::Vault;

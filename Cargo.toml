@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.1"
+version = "0.0.4"
 edition = "2021"
 license = "MIT"
 publish = false
@@ -23,3 +23,5 @@ repository = "https://github.com/042xianqi/novel-system"
 [profile.release]
 opt-level = 3
 lto = "thin"
+strip = true          # 单二进制分发：剥符号，减小体积
+codegen-units = 1     # 更好的 LTO 效果（编译慢些，分发快）

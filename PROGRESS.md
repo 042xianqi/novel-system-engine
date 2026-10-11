@@ -76,7 +76,33 @@
 3. `ContextSection` 已有 `max_prompt_tokens`/`reserve_tokens` → 接入 `folding_limit`
 4. 后台跑 `cargo test --workspace`，提交推送（v0.0.3）
 
-## 已完成待提交：M5 + M6
+## 进行中：M7 完善
+
+### 已完成（未验证编译/未提交）
+
+- **单二进制确认**：release 9.2 MB（aarch64），`ldd` 仅 libc/libm/libgcc，无脚本/无 Rust 运行时；
+  `Cargo.toml` 加 `strip=true` + `codegen-units=1`；版本统一到 0.0.4
+- **架构门禁** `scripts/arch_check.py`（148 行）+ `architecture-policy.json` + `.architecture-baseline.json`
+  - crate 依赖白名单（解析 path 依赖）→ **立刻揪出真实死依赖** `ne-engine → ne-funnel`（声明但零使用，已删）
+  - import 黑名单（ne-agent 禁 tokio/reqwest）
+  - 文件行数棘轮（上限 700，存量登记基线，只许下调）
+  - 用法：`python3 scripts/arch_check.py`（检查）/ `--sync-baseline`（维护）
+- **文件拆分**（过门禁）：`web.rs` 1036→414 行，拆出 `web_html.rs`（275）+ `web_search.rs`（382）；
+  用 `pub use` 在原路径重导出，调用方零改动
+- **子智能体** `subagent.rs`（312 行，13 单测）+ `task::run_subagents` + `subagent` CLI
+  - 契约对照太墟 `SubagentArgsParser` + `SubagentTaskSpec`
+  - **如实差异**：太墟 Lane 真并发；ne-agent 是 std 阻塞单线程 → 做**顺序 Lane**
+    （每个子任务一个独立子会话隔离上下文 + 写租约**提前**校验冲突，非运行时竞争）
+  - 写租约：`["*"]` 独占不能与其它共存；同路径（规范化后）不能重复声明
+
+### 待办（M7 收尾）
+
+1. **验证编译**：刚去掉 `web.rs` 里重复的 `body_to_text` 定义（`use` + `pub use` 冲突），需重跑
+2. 加 subagent e2e 测试（假 LLM 跑两个子任务）
+3. 全量测试 + 提交推送（v0.0.5）
+4. 文档：ROADMAP M7 章节、CHANGELOG
+
+## 已完成待提交：M5 + M6 —— 已推送 848ea86
 
 ### M5 长大（上下文预算 + 会话树 rewind）
 - `context.rs`（13 单测）：token 估算 **CJK 分桶**（全角标点按 CJK 价）、

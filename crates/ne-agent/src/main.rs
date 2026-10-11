@@ -54,6 +54,29 @@ fn run() -> Result<()> {
             cli.json,
         ),
         Cmd::Session { cmd } => cmds::run_session(&vault, cmd, cli.json),
+        Cmd::Context { window, reserve, auto_compact, auto_threshold, keep_recent, dry_run } => {
+            cmds::run_context(
+                &vault,
+                *window,
+                *reserve,
+                *auto_compact,
+                *auto_threshold,
+                *keep_recent,
+                *dry_run,
+                cli.json,
+            )
+        }
+        Cmd::Compress { id, mode, anchor, mechanical, show, clear } => cmds::run_compress(
+            &vault,
+            id.as_deref(),
+            mode,
+            anchor.as_deref(),
+            *mechanical,
+            *show,
+            *clear,
+            cli.json,
+        ),
+        Cmd::History { cmd } => cmds::run_history(&vault, cmd, cli.json),
         Cmd::Memory { cmd } => cmds::run_memory(&vault, cmd, cli.json),
         Cmd::Novel { chap_id, volume, lib, dry_run, prompt_only } => {
             run_novel(&vault, *chap_id, volume, lib.as_deref(), *dry_run, *prompt_only, cli.json)

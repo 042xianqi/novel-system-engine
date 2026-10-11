@@ -28,7 +28,10 @@ mod tests;
 
 use external_io::{mcp_call, web_fetch, web_search};
 use fs::{base, edit, ls, read, write};
-use session_local::{ask_user, dual_agent_tool, load_rule_tool, load_skill_tool, plan_tool, scratchpad_tool, subagents_tool};
+use session_local::{
+    ask_user, compress_tool, dual_agent_tool, history_read_tool, history_search_tool,
+    load_rule_tool, load_skill_tool, plan_tool, scratchpad_tool, subagents_tool,
+};
 
 /// 工具权限档（M6 会接审批策略；M1 只做标注 + exec 类拒绝写盘外）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +98,12 @@ pub enum Tool {
     Subagents,
     /// 双智能体（Planner→Executor，顺序版）
     DualAgent,
+    /// 压缩会话上下文（折叠早期历史为摘要；原文可回读）
+    Compress,
+    /// 按 id 回读一条历史消息原文（含被折叠的）
+    HistoryRead,
+    /// 模糊搜索本会话全部消息（含被折叠的原文）
+    HistorySearch,
 }
 
 impl Tool {
@@ -115,6 +124,9 @@ impl Tool {
             Tool::LoadSkill => "load_skill",
             Tool::Subagents => "subagents",
             Tool::DualAgent => "dual_agent",
+            Tool::Compress => "compress",
+            Tool::HistoryRead => "history_read",
+            Tool::HistorySearch => "history_search",
         }
     }
 
@@ -132,6 +144,8 @@ impl Tool {
             Tool::AskUser | Tool::LoadRule | Tool::LoadSkill => Tier::Read,
             // 子智能体/双智能体：内部会起隔离子会话并可能执行工具 → 保守按 Exec
             Tool::Subagents | Tool::DualAgent => Tier::Exec,
+            // 压缩/历史回读：只改会话局部压缩记录、读会话历史，无文件/外部副作用
+            Tool::Compress | Tool::HistoryRead | Tool::HistorySearch => Tier::Read,
         }
     }
 
@@ -152,6 +166,9 @@ impl Tool {
             Tool::LoadSkill => "按需加载技能的完整指导（name，可选 path 读技能内子资源）",
             Tool::Subagents => "派发隔离子智能体执行独立子任务（顺序执行，写租约校验）",
             Tool::DualAgent => "用 Planner→Executor 顺序双智能体执行复杂多步骤任务",
+            Tool::Compress => "压缩会话上下文：把早期历史折叠为结构化摘要（mode: before/after + anchor；原文仍可按需回读）",
+            Tool::HistoryRead => "按消息 id 回读历史原文（被压缩折叠的内容也能读到）",
+            Tool::HistorySearch => "在本会话全部消息中模糊搜索（含被折叠的原文）",
         }
     }
 
@@ -175,6 +192,9 @@ impl Tool {
             "load_skill" => Tool::LoadSkill,
             "subagents" | "subagent" | "invoke_subagent" => Tool::Subagents,
             "dual_agent" | "invoke_dual_agent" => Tool::DualAgent,
+            "compress" | "compact" => Tool::Compress,
+            "history_read" => Tool::HistoryRead,
+            "history_search" => Tool::HistorySearch,
             _ => return None,
         })
     }
@@ -195,6 +215,9 @@ impl Tool {
             Tool::LoadSkill,
             Tool::Subagents,
             Tool::DualAgent,
+            Tool::Compress,
+            Tool::HistoryRead,
+            Tool::HistorySearch,
         ]
     }
 
@@ -216,6 +239,9 @@ impl Tool {
             Tool::LoadSkill => &["name", "path"],
             Tool::Subagents => &["subagents", "max_tasks"],
             Tool::DualAgent => &["prompt", "max_steps"],
+            Tool::Compress => &["mode", "anchor"],
+            Tool::HistoryRead => &["id"],
+            Tool::HistorySearch => &["query", "limit"],
         }
     }
 
@@ -228,7 +254,17 @@ impl Tool {
     ///
     /// 依据：它们只改会话自己的计划/草稿，不碰文件、不跑命令、不出网。
     pub fn is_session_local(&self) -> bool {
-        matches!(self, Tool::Plan | Tool::Scratchpad | Tool::AskUser | Tool::LoadRule | Tool::LoadSkill)
+        matches!(
+            self,
+            Tool::Plan
+                | Tool::Scratchpad
+                | Tool::AskUser
+                | Tool::LoadRule
+                | Tool::LoadSkill
+                | Tool::Compress
+                | Tool::HistoryRead
+                | Tool::HistorySearch
+        )
     }
 }
 
@@ -408,6 +444,9 @@ impl ToolCtx {
         Tool::LoadSkill => load_skill_tool(ctx, args),
         Tool::Subagents => subagents_tool(ctx, args),
         Tool::DualAgent => dual_agent_tool(ctx, args),
+        Tool::Compress => compress_tool(ctx, args),
+        Tool::HistoryRead => history_read_tool(ctx, args),
+        Tool::HistorySearch => history_search_tool(ctx, args),
     })
 }
 

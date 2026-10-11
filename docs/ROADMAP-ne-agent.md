@@ -251,7 +251,7 @@ NovelCtx::open → chapter::build_prompt → llm::call → chapter::write_chapte
 **CLI**：`estimate [FILE]`（token 估算调试）
 
 ### 待办
-- `compaction`（摘要下沉）：当前只有"截断/折叠"，无 LLM 摘要
+- ~~`compaction`（摘要下沉）~~ → **M9 已补**（LLM/机械摘要 + 投影 + 原文可回读）
 - prefix cache 字节戳驱动：待确认模型是否支持 prompt caching（太墟是 Anthropic 专属
   `cache_control` 断点，ne-agent 走 OpenAI 兼容接口 → 需按实际 provider 决定）
 
@@ -323,7 +323,7 @@ NovelCtx::open → chapter::build_prompt → llm::call → chapter::write_chapte
 **单二进制**
 - release 9.2 MB（aarch64），`ldd` 仅 **libc / libm / libgcc**（标准 glibc），
   **无脚本、无 Rust 运行时、无动态框架** → 拷到有 glibc 的机器即可跑
-- `Cargo.toml`：`strip=true` + `codegen-units=1`；workspace 版本统一 0.0.6
+- `Cargo.toml`：`strip=true` + `codegen-units=1`；workspace 版本统一 0.0.7
 
 **架构门禁** `scripts/arch_check.py`（148 行）+ `architecture-policy.json` + `.architecture-baseline.json`
 - **crate 依赖白名单**（解析 path 依赖）→ **上线即揪出真实死依赖**
@@ -398,6 +398,48 @@ NovelCtx::open → chapter::build_prompt → llm::call → chapter::write_chapte
 ——全绿。全工作区 `cargo test` 32 套件 0 失败；门禁通过。
 
 **产出**：成品（v0.0.6）。
+
+---
+
+## M9 · 上下文可设置 + 压缩 — ✅ 已完成（2026-10-11）
+
+**做什么**（用户原话：「上下文需要可以设置，压缩可以发命令，也可以手动压缩。为以后做 ui 铺垫」）
+
+### ✅ 交付
+
+**① 上下文可设置**（`context` 段扩展 + `ne-agent context` 命令）
+- `runtime.yaml` 的 `context` 段新增 `auto_compaction` / `auto_threshold_percent` /
+  `keep_recent_tool_results`；`ne-agent context` 查看、`--window/--reserve/--auto-compact/
+  --auto-threshold/--keep-recent` 设置，`--json` 供 UI 读。
+- **写回保留注释**：只做按键逐行替换，不做整体序列化（后者会抹掉用户手写的注释）。
+
+**② 压缩可发命令**（`compress` 工具 + `ne-agent compress` 命令）
+- 契约对齐太墟 `harness/compaction/`：`mode` = `before`（锚点轮之前）/`after`（当前轮之前），
+  `anchor` 必须**原样、唯一**地摘自某条用户消息（≥8 字符），越界/歧义/无匹配各有明确报错。
+- 摘要两条路：`LlmSummarizer`（模型重写成结构化摘要）/ `MechanicalSummarizer`（降级：保骨架
+  不丢用户要点）。模型不可用时**自动降级且如实标注**。
+
+**③ 手动压缩（人可操作）**
+- `ne-agent compress`：`--show`（只看投影）/`--clear`（还原原始上下文）/`--mechanical`（离线）。
+- **原文永不删除**：压缩只写一条 `compactions` 记录（折叠边界 + 摘要 + 计数 + token 估算），
+  `messages` 表保持完整。
+
+**④ 为 UI 铺垫：投影（projection）**
+- `compaction::project()` 是"实际上下文"的**唯一读口径**——`build_messages`（发模型）与 CLI/UI
+  走同一函数。UI 只要调它就能拿到"折叠了几条、摘要是什么、保留区有哪些、token 用量"。
+- 全部 CLI 支持 `--json`，形状即 UI 消费契约（`estTokens`/`foldedCount`/`retained`…）。
+
+**⑤ 压缩后可回读**（`history_read` / `history_search` 工具 + `ne-agent history` 命令）
+- 被折叠的原文仍可**按 id 回读**、**按内容模糊搜索**（含跨分支），闭环"压了不丢"。
+
+**模块**：`compaction.rs`（新，投影/摘要/锚点）、`ctx_window.rs`（新，从 harness 拆出的窗口策略
++ 自动压缩判定）、`cmds/cmds_ctx.rs`（新，context/compress/history 命令）；`session.rs` 加
+`compactions` 表与 6 个方法；工具 14 → 17。
+
+**测试**：`compaction_tests.rs`（9）+ `tests/m9_compaction_e2e.rs`（6，真实工具总线）。
+全工作区 33 套件 0 失败；门禁通过。
+
+**产出**：成品（v0.0.7）。
 
 ---
 

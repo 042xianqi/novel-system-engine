@@ -14,9 +14,11 @@
 
 pub mod approval;
 pub mod ask_user;
+pub mod compaction;
 pub mod config;
 pub mod context;
 pub mod context_tools;
+pub mod ctx_window;
 pub mod dual_agent;
 pub mod harness;
 pub mod mcp;
@@ -42,7 +44,7 @@ pub use vault::Vault;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// 当前开发阶段（随路线图里程碑更新，便于 `--version` 自证进度）。
-pub const STAGE: &str = "M7 完善";
+pub const STAGE: &str = "M9 上下文压缩";
 
 /// 从 `runtime.yaml` 的 `tools.enabled` 解析出启用工具列表。
 ///

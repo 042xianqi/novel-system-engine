@@ -162,6 +162,8 @@ pub fn decide(
         Tool::Plan | Tool::Scratchpad | Tool::AskUser | Tool::LoadRule | Tool::LoadSkill => {
             Decision::allow()
         }
+        // 压缩/历史回读：只改会话局部压缩记录、读会话历史，无副作用
+        Tool::Compress | Tool::HistoryRead | Tool::HistorySearch => Decision::allow(),
     }
 }
 
@@ -180,6 +182,8 @@ pub fn plan_block(tool: Tool, _args: &crate::tool::ToolArgs) -> Option<String> {
         Tool::Plan | Tool::Scratchpad => None,
         // 提问 / 按需加载只读资源：无副作用，只读规划下放行
         Tool::AskUser | Tool::LoadRule | Tool::LoadSkill => None,
+        // 压缩/历史回读：无文件与外部副作用，只读规划下放行
+        Tool::Compress | Tool::HistoryRead | Tool::HistorySearch => None,
         // 写 / 执行 / 外部调用：只读规划下硬拒
         Tool::Write | Tool::Edit => Some("只读规划模式：不允许写文件".into()),
         Tool::Base => Some("只读规划模式：不允许执行命令（含构建/测试，它们会写产物）".into()),

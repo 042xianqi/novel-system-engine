@@ -81,8 +81,19 @@ pub struct ModelSection {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ContextSection {
+    /// 上下文窗口上限（tokens）。
     pub max_prompt_tokens: u32,
+    /// 为模型输出预留的 tokens（从窗口中扣除）。
     pub reserve_tokens: u32,
+    /// 是否允许**自动**压缩（超阈值时把早期历史折叠成摘要）。
+    ///
+    /// 与"手动/命令压缩"正交：这里是策略开关，手动压缩不受它约束
+    /// （对齐太墟：`compress` 工具只在用户明确要求时调用）。
+    pub auto_compaction: bool,
+    /// 自动压缩触发阈值：当投影估算 tokens 超过折叠线的此百分比时触发（1~100）。
+    pub auto_threshold_percent: u32,
+    /// 保留最近 N 条工具结果不被机械截断（M5）。
+    pub keep_recent_tool_results: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,7 +136,13 @@ impl Default for ModelSection {
 
 impl Default for ContextSection {
     fn default() -> Self {
-        ContextSection { max_prompt_tokens: 32000, reserve_tokens: 4096 }
+        ContextSection {
+            max_prompt_tokens: 32000,
+            reserve_tokens: 4096,
+            auto_compaction: false,
+            auto_threshold_percent: 90,
+            keep_recent_tool_results: crate::context::KEEP_RECENT_TOOL_RESULTS,
+        }
     }
 }
 

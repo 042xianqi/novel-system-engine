@@ -267,3 +267,29 @@ git push origin main
 **M8 交付物**：ask_user.rs / resources.rs(+rules/*.md) / dual_agent.rs(+tests) / subagent_runner.rs /
 tool/ 拆分 / scripts/cross-build-android.sh / workflows/（太墟工作流 6 个 + 安装器）/
 tests/m8_tools_e2e.rs / tests/dual_agent_e2e.rs。工具数 10→14。
+
+### M9 · 上下文可设置 + 压缩（为 UI 铺垫）—— 进行中（续跑 4）
+用户需求原话：「上下文需要可以设置，压缩可以发命令，也可以手动压缩。为以后做 ui 铺垫」
+
+**已完成（代码就位，编译通过、门禁绿、旧测试全绿）**
+- `session.rs`：新增 `compactions` 表（**不删原文**，记折叠边界 keep_from_msg_id + 摘要 + 计数 + token 估算 + mode）；
+  新方法 insert_compaction / latest_compaction / list_compactions / clear_compactions /
+  message_by_id / search_messages(+snippet)。测试外置 `session_tests.rs`（session.rs 降到 592 行）。
+- `compaction.rs`（401 行，**新**）：CompressMode(before/after) + resolve_compress_anchor（原样唯一锚点，
+  对齐太墟 CompactionManager）+ Summarizer trait（LlmSummarizer / MechanicalSummarizer 降级）+
+  **project() 投影**（摘要条 + 保留区；发模型与 UI 同口径）+ compact() + CompactionOutcome/Projection。
+- `ctx_window.rs`（**新**）：从 harness.rs 拆出 truncate_context + maybe_auto_compact（门禁 ≤700；harness.rs 回到 650）。
+- `harness.rs::build_messages`：改为经 `compaction::project` 装配（会话未压缩时行为与 M8 完全一致）。
+- `config.rs` ContextSection 扩：auto_compaction / auto_threshold_percent / keep_recent_tool_results + 默认值。
+- `vault.rs` DEFAULT_RUNTIME_YAML context 段补三项。
+- `tool/mod.rs`：新增 3 工具 Compress/HistoryRead/HistorySearch（14→17），schema/tier/from_name/all/
+  session_local/approval 白名单 + plan_block 全同步；`tool/session_local.rs` 实现三 handler。
+- `cli.rs` + `cmds/cmds_ctx.rs`（**新**）：`context`（查看/设置，--json）、`compress`（--show/--clear/
+  --mode/--anchor/--mechanical）、`history read|search`；JSON 形状即 UI 消费契约。
+- 修 session_tests.rs 抽取遗留的多余大括号。
+
+**未完成（下一步）**
+- [ ] **挂载 `compaction_tests.rs`**：在 compaction.rs 末尾加 `#[cfg(test)] #[path="compaction_tests.rs"] mod tests;`（已写好 9 项单测，未接上）。
+- [ ] `cargo test` 全量 + 门禁 + clippy（清理新引入警告）。
+- [ ] 补 `tests/` 端到端：compress 走真实工具总线 + CLI `context --json` 形状。
+- [ ] 文档 ROADMAP 追加 M9；版本 0.0.6 → 0.0.7；提交推送。

@@ -244,3 +244,98 @@ fn run_dual_agent(ctx: &ToolCtx, prompt: &str, max_steps: usize) -> anyhow::Resu
         )),
     }
 }
+
+// ───────────────────────────── M9 新增：compress / history_read / history_search
+
+/// 打开会话库（compress / history_* 共用）。
+fn open_store(ctx: &ToolCtx) -> Result<crate::session::SessionStore, ToolResult> {
+    match &ctx.db_path {
+        Some(p) => crate::session::SessionStore::open(p)
+            .map_err(|e| ToolResult::err(format!("打开会话库失败：{e}"))),
+        None => Err(ToolResult::err("该工具需要会话库上下文（未装配 db_path）")),
+    }
+}
+
+/// `compress`：压缩上下文。**原文不删**，只记"折叠边界 + 摘要"。
+///
+/// 契约对齐太墟 `ToolExecutor.executeCompress`：`mode` = before/after，
+/// `anchor` 必须原样、唯一地摘自某条用户消息（before 模式下定位边界）。
+pub(super) fn compress_tool(ctx: &ToolCtx, a: &ToolArgs) -> ToolResult {
+    let store = match open_store(ctx) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let mode = match a.get("mode") {
+        Some(m) => match crate::compaction::CompressMode::parse(m) {
+            Some(m) => m,
+            None => {
+                return ToolResult::err(
+                    "mode 必须是 before（压缩锚点轮之前）或 after（压缩除当前轮外的全部已完成历史）",
+                )
+            }
+        },
+        None => crate::compaction::CompressMode::After,
+    };
+    let anchor = a.get("anchor").unwrap_or("");
+
+    // 摘要器：有 LLM 上下文 → 用模型摘要；否则机械降级
+    let llm = ctx.llm.clone();
+    let outcome = match &llm {
+        Some(p) => {
+            let s = crate::compaction::LlmSummarizer { llm: p.clone() };
+            crate::compaction::compact(&store, &ctx.session, mode, anchor, Some(&s))
+        }
+        None => crate::compaction::compact(&store, &ctx.session, mode, anchor, None),
+    };
+    match outcome {
+        Ok(outcome) => ToolResult::ok(outcome.render(mode)),
+        Err(e) => ToolResult::err(e.to_string()),
+    }
+}
+
+/// `history_read`：按 id 回读一条历史原文（被折叠的内容也能读到）。
+pub(super) fn history_read_tool(ctx: &ToolCtx, a: &ToolArgs) -> ToolResult {
+    let store = match open_store(ctx) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let Some(id) = a.get("id").and_then(|s| s.trim().parse::<i64>().ok()) else {
+        return ToolResult::err("history_read 必须提供数字 id");
+    };
+    match store.message_by_id(id) {
+        Ok(Some(m)) => ToolResult::ok(format!(
+            "【消息 #{id}】role={} 时间={}\n{}",
+            m.role, m.created_at, m.content
+        )),
+        Ok(None) => ToolResult::err(format!("消息 #{id} 不存在")),
+        Err(e) => ToolResult::err(format!("读取消息失败：{e}")),
+    }
+}
+
+/// `history_search`：在本会话全部消息中模糊搜索（含被折叠的原文）。
+pub(super) fn history_search_tool(ctx: &ToolCtx, a: &ToolArgs) -> ToolResult {
+    let store = match open_store(ctx) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let Some(q) = a.get("query").filter(|s| !s.trim().is_empty()) else {
+        return ToolResult::err("history_search 必须提供 query");
+    };
+    let limit = a
+        .get("limit")
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(20)
+        .clamp(1, 100);
+    match store.search_messages(&ctx.session, q, limit) {
+        Ok(hits) if hits.is_empty() => ToolResult::ok(format!("没有匹配「{q}」的消息")),
+        Ok(hits) => {
+            let mut s = format!("找到 {} 条匹配「{q}」的消息（含被压缩折叠的原文）：\n", hits.len());
+            for (id, role, snip) in hits {
+                s.push_str(&format!("- #{id} [{role}] {snip}\n"));
+            }
+            s.push_str("\n用 history_read(id=...) 读取完整原文。");
+            ToolResult::ok(s)
+        }
+        Err(e) => ToolResult::err(format!("搜索失败：{e}")),
+    }
+}

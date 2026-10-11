@@ -38,7 +38,6 @@
 //! 这正是太墟 `sanitizeApiTranscript` 的思路。
 
 use crate::config::RuntimeConfig;
-use crate::context;
 use crate::prompt::{self, TurnPrefix};
 use crate::session::{MsgRow, SessionStore};
 use crate::tool::{self, Tool, ToolArgs, ToolCtx};
@@ -253,11 +252,31 @@ pub fn sanitize_for_provider(msgs: &[ne_engine::llm::Message]) -> Vec<ne_engine:
     out
 }
 
-/// 从会话树取出要发给模型的完整消息序列（已出口修复）。
+/// 从会话树取出要发给模型的完整消息序列（已应用压缩投影 + 出口修复）。
+///
+/// 装配顺序（M9 起）：
+///   1. system（稳定字节）
+///   2. **压缩投影**（摘要条 + 保留区；见 [`crate::compaction`]）—— 会话若从未压缩过，
+///      投影等同于全量历史，行为与 M8 完全一致
+///   3. 逐轮变化前缀只挂最新 user 轮
+///   4. 老工具结果截断 + 预算折叠（M5）
+///   5. 出口修复（tool→user 转写）
 pub fn build_messages(h: &HarnessCtx, turn_prefix: &TurnPrefix) -> Result<Vec<ne_engine::llm::Message>> {
     let mut out = Vec::new();
     out.push(ne_engine::llm::Message { role: "system".into(), content: system_prompt_text(h)? });
-    let hist: Vec<MsgRow> = h.store.history(&h.session)?;
+
+    // M9：压缩投影是"实际上下文"的唯一来源（发模型与 UI 同口径）
+    let proj = crate::compaction::project(h.store, &h.session)?;
+    let hist: Vec<MsgRow> = proj.retained;
+
+    // 摘要条本身是 user 角色；逐轮前缀必须挂在**最新 user 轮**，不能挂到摘要上 →
+    // 先推摘要条，再对保留区定位最后一条 user。
+    if let Some(s) = &proj.summary {
+        out.push(ne_engine::llm::Message {
+            role: "user".into(),
+            content: format!("{}\n{s}", crate::compaction::SUMMARY_HEADER),
+        });
+    }
     let last_user_idx = hist.iter().rposition(|m| m.role == "user");
     for (i, m) in hist.iter().enumerate() {
         // 逐轮变化的前缀只挂在**最新** user 轮上（不污染 system，也不改历史轮）
@@ -272,59 +291,9 @@ pub fn build_messages(h: &HarnessCtx, turn_prefix: &TurnPrefix) -> Result<Vec<ne
     }
 
     // ── M5：老轮次工具结果截断（预算线**之前**就生效）
-    out = truncate_context(h, out);
+    out = crate::ctx_window::truncate_context(&h.cfg.context, out);
 
     Ok(sanitize_for_provider(&out))
-}
-
-/// 应用上下文策略：老轮次工具结果截断 + 按预算折叠最早整轮。
-///
-/// 顺序（太墟同序）：
-///   1. **截断老工具结果**（保护当前轮 + 最近 N 条）—— 不改条数，只压正文
-///   2. **按折叠线丢最早整轮**（只在仍超限时）—— 保 tool_call⇄result 配对，至少留一轮
-///
-/// system 消息（首条）永不动。
-fn truncate_context(h: &HarnessCtx, msgs: Vec<ne_engine::llm::Message>) -> Vec<ne_engine::llm::Message> {
-    if msgs.is_empty() {
-        return msgs;
-    }
-    // 转成可截断视图（system 标为非工具结果、不可删）
-    let mut hist: Vec<context::HistMsg> = msgs
-        .iter()
-        .map(|m| context::HistMsg {
-            role: m.role.clone(),
-            content: m.content.clone(),
-            is_tool_result: m.role == "tool",
-        })
-        .collect();
-
-    // 1) 老轮次工具结果截断
-    let (truncated, changed) = context::truncate_stale_tool_results(&hist, context::KEEP_RECENT_TOOL_RESULTS);
-    hist = truncated;
-    let _ = changed;
-
-    // 2) 预算折叠：先估总 token，超折叠线才丢最早整轮
-    let window = h.cfg.context.max_prompt_tokens;
-    let reserve = h.cfg.context.reserve_tokens;
-    let limit = context::folding_limit(window, reserve, context::TOOL_SCHEMA_RESERVE_TOKENS);
-    let est: usize = hist
-        .iter()
-        .map(|m| context::estimate_tokens(&m.content) + 64)
-        .sum();
-    if est > limit && hist.len() > 1 {
-        // 首条是 system，永不折叠 → 从第 2 条起找轮边界
-        let body = &hist[1..];
-        let start = context::keep_from_index(body, limit.saturating_sub(
-            context::estimate_tokens(&hist[0].content) + 64,
-        ));
-        let mut kept = vec![hist[0].clone()];
-        kept.extend(body[start..].iter().cloned());
-        hist = kept;
-    }
-
-    hist.into_iter()
-        .map(|m| ne_engine::llm::Message { role: m.role, content: m.content })
-        .collect()
 }
 
 /// 解析模型输出中的工具调用（M1 文本协议）。
@@ -488,6 +457,9 @@ pub fn run_session(h: &HarnessCtx, turn_prefix: &TurnPrefix) -> Result<RunOutcom
     let mut consecutive_failures = 0usize;
     let mut last_text = String::new();
     let mut rounds = 0usize;
+
+    // M9：自动压缩（策略开关；手动/命令压缩不受此约束）
+    crate::ctx_window::maybe_auto_compact(&h.cfg.context, h.store, &h.session, &h.llm);
 
     while rounds < h.max_rounds() {
         rounds += 1;

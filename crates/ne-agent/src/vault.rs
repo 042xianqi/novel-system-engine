@@ -165,6 +165,11 @@ context:
   # 上下文窗口策略（M5 落地，先留参数）
   max_prompt_tokens: 32000
   reserve_tokens: 4096
+  # 自动压缩（M9）：超阈值时把早期历史折叠成摘要；手动 `ne-agent compress` 不受此开关约束
+  auto_compaction: false
+  auto_threshold_percent: 90
+  # 保留最近 N 条工具结果不被机械截断（M5）
+  keep_recent_tool_results: 4
 
 tools:
   # 内置工具开关（名字见 `ne-agent tools`）

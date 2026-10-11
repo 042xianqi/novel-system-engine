@@ -106,13 +106,18 @@
         assert_eq!(Tool::from_name("invoke_subagent"), Some(Tool::Subagents));
         assert_eq!(Tool::from_name("dual_agent"), Some(Tool::DualAgent));
         assert_eq!(Tool::from_name("invoke_dual_agent"), Some(Tool::DualAgent));
+        assert_eq!(Tool::from_name("compress"), Some(Tool::Compress));
+        assert_eq!(Tool::from_name("compact"), Some(Tool::Compress));
+        assert_eq!(Tool::from_name("history_read"), Some(Tool::HistoryRead));
+        assert_eq!(Tool::from_name("history_search"), Some(Tool::HistorySearch));
         assert_eq!(Tool::from_name("nope"), None);
         let names: Vec<&str> = Tool::all().iter().map(|t| t.name()).collect();
         assert_eq!(
             names,
             vec![
                 "read", "write", "edit", "ls", "base", "web_fetch", "web_search", "plan",
-                "scratchpad", "ask_user", "load_rule", "load_skill", "subagents", "dual_agent"
+                "scratchpad", "ask_user", "load_rule", "load_skill", "subagents", "dual_agent",
+                "compress", "history_read", "history_search"
             ]
         );
     }
@@ -122,8 +127,12 @@
         // plan/scratchpad 只改会话局部状态
         assert!(Tool::Plan.is_session_local());
         assert!(Tool::Scratchpad.is_session_local());
+        assert!(Tool::Compress.is_session_local());
+        assert!(Tool::HistoryRead.is_session_local());
+        assert!(Tool::HistorySearch.is_session_local());
         assert_eq!(Tool::Plan.tier(), Tier::Read);
         assert_eq!(Tool::Scratchpad.tier(), Tier::Read);
+        assert_eq!(Tool::Compress.tier(), Tier::Read);
         assert!(!Tool::Plan.is_network());
     }
 

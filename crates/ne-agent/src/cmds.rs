@@ -9,6 +9,9 @@ use std::path::Path;
 use crate::cli::{MemoryCmd, SessionCmd, TaskCmd};
 use crate::{build_runtime, truncate};
 
+mod cmds_ctx;
+pub(crate) use cmds_ctx::{run_compress, run_context, run_history};
+
 /// 运行子智能体 Lane。
 pub(crate) fn run_subagent(
     vault: &Vault,

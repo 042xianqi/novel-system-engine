@@ -64,6 +64,55 @@ pub enum Cmd {
         #[command(subcommand)]
         cmd: SessionCmd,
     },
+    /// 查看/设置上下文预算（runtime.yaml 的 context 段）
+    ///
+    /// 不带参数 = 查看；带 --window/--reserve/--keep-recent 等 = 写回 runtime.yaml
+    Context {
+        /// 上下文窗口上限（tokens）
+        #[arg(long)]
+        window: Option<u32>,
+        /// 为模型输出预留的 tokens（从窗口中扣除）
+        #[arg(long)]
+        reserve: Option<u32>,
+        /// 自动压缩开关（--auto-compact 视为 true；也可 --auto-compact false）
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+        auto_compact: Option<bool>,
+        /// 自动压缩触发阈值（占折叠线的百分比，1~100）
+        #[arg(long)]
+        auto_threshold: Option<u32>,
+        /// 保留最近 N 条工具结果不被截断
+        #[arg(long)]
+        keep_recent: Option<usize>,
+        /// 仅打印最终配置，不写文件（配合 --json 供 UI 读）
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// 压缩会话上下文（把早期历史折叠成摘要；原文可回读）
+    Compress {
+        /// 会话 id（缺省用最新）
+        #[arg(long)]
+        id: Option<String>,
+        /// 模式：after（默认，压当前轮之前）/ before（压锚点轮之前）
+        #[arg(long, default_value = "after")]
+        mode: String,
+        /// 锚点：before 模式下必须原样摘自某条用户消息
+        #[arg(long)]
+        anchor: Option<String>,
+        /// 用机械摘要（不调模型；离线/调试用）
+        #[arg(long)]
+        mechanical: bool,
+        /// 查看当前压缩状态（不发压缩）
+        #[arg(long)]
+        show: bool,
+        /// 清除本会话全部压缩记录（还原原始上下文；不删消息）
+        #[arg(long)]
+        clear: bool,
+    },
+    /// 按 id 读历史原文（含被压缩折叠的内容）
+    History {
+        #[command(subcommand)]
+        cmd: HistoryCmd,
+    },
     /// 列出内置工具
     Tools,
     /// 显示版本
@@ -231,6 +280,29 @@ pub enum SessionCmd {
         /// 撤掉最后一轮 user（重来这一轮）
         #[arg(long = "last-turn", conflicts_with_all = ["to", "back"])]
         last_turn: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum HistoryCmd {
+    /// 按 id 读取一条历史原文（含被压缩折叠的内容）
+    Read {
+        /// 消息 id
+        id: i64,
+        /// 会话 id（缺省用最新）
+        #[arg(long, alias = "id")]
+        session: Option<String>,
+    },
+    /// 在会话全部消息中模糊搜索（含被压缩折叠的原文）
+    Search {
+        /// 搜索词
+        query: String,
+        /// 会话 id（缺省用最新）
+        #[arg(long, alias = "id")]
+        session: Option<String>,
+        /// 最多返回条数
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
     },
 }
 

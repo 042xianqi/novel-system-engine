@@ -68,6 +68,21 @@ CREATE TABLE IF NOT EXISTS compactions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_compactions_session ON compactions(session_id, id);
+
+-- 检查点（S3-a）：turn-based 文件快照 + 字节预算裁剪。
+-- 对齐太墟 checkpoint/CheckpointStore.kt：每个用户轮次记该轮触碰文件的轮初内容；
+-- files_json 为 Vec<FileSnap> 的 JSON；bytes 为该轮快照近似字节数（预算裁剪依据）。
+CREATE TABLE IF NOT EXISTS checkpoints (
+  session_id        TEXT    NOT NULL,
+  turn              INTEGER NOT NULL,
+  time              INTEGER NOT NULL,
+  prompt            TEXT    NOT NULL DEFAULT '',
+  files_json        TEXT    NOT NULL DEFAULT '[]',
+  anchor_message_id TEXT,
+  bytes             INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (session_id, turn)
+);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_session ON checkpoints(session_id, turn);
 "#;
 
 /// 一条会话的元信息。

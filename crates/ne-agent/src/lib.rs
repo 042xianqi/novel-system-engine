@@ -14,6 +14,7 @@
 
 pub mod approval;
 pub mod ask_user;
+pub mod checkpoint;
 pub mod compaction;
 pub mod config;
 pub mod context;
@@ -27,6 +28,7 @@ pub mod novel_ctx;
 pub mod prompt;
 pub mod protocol;
 pub mod resources;
+pub mod rewind;
 pub mod session;
 pub mod subagent;
 pub mod subagent_runner;

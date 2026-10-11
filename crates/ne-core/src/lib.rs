@@ -303,7 +303,14 @@ pub fn rank_cards(
 ) -> (Vec<String>, Vec<String>) {
     let mut codes: Vec<String> = outline_refs.to_vec();
     for u in usage {
-        if !codes.contains(&u.code) {
+        // 只纳入「确曾在已生成章节用过」（last_chapter > 0）或「伏笔待收」的卡。
+        //
+        // last_chapter == 0 表示从未在任何已生成章节出现——该行多半是从
+        // `materials.refs/ref_by` 静态回填的图权重（见 ne-db::backfill_card_usage_from_legacy），
+        // **不代表真实用量**。若照单全收，第 1 章会被全库 ref_count 最高的卡挤满，
+        // 注入后期剧情（实测：第1章注入包混入 EVT-141「第七次共振·裂河」、
+        // CAS-014「残响归流」等终局卡）→ 剧透穿帮。
+        if (u.last_chapter > 0 || u.foreshadow_due) && !codes.contains(&u.code) {
             codes.push(u.code.clone());
         }
     }
@@ -441,6 +448,28 @@ mod tests {
         assert_eq!(full[2], "REL-99-004");
         // 第 4 名落摘要层
         assert_eq!(summary[0], "SYS-99-001");
+    }
+
+    #[test]
+    fn rank_cards_ignores_never_used_cards() {
+        // 回归：last_chapter==0 的卡（静态回填的图权重）不得进候选。
+        // 否则第1章会被全库 ref_count 最高的后期卡挤满（实测混入 EVT-141 等终局卡）。
+        let refs = vec!["EVT-99-005".to_string()];
+        let usage = vec![
+            // 从没在任何已生成章节出现过，仅图权重高
+            UsageStat { code: "EVT-141".into(), ref_count: 7, last_chapter: 0, foreshadow_due: false },
+            UsageStat { code: "CAS-014".into(), ref_count: 7, last_chapter: 0, foreshadow_due: false },
+            // 真实用过
+            UsageStat { code: "CHAR-99-001".into(), ref_count: 3, last_chapter: 3, foreshadow_due: false },
+            // 伏笔待收：即便没用过也要注入
+            UsageStat { code: "FORE-1".into(), ref_count: 0, last_chapter: 0, foreshadow_due: true },
+        ];
+        let (full, summary) = rank_cards(&refs, &usage, 1);
+        let all: Vec<String> = full.iter().chain(summary.iter()).cloned().collect();
+        assert!(!all.contains(&"EVT-141".to_string()), "未用过的卡不得进候选: {all:?}");
+        assert!(!all.contains(&"CAS-014".to_string()), "未用过的卡不得进候选: {all:?}");
+        assert!(all.contains(&"CHAR-99-001".to_string()), "用过的卡应保留: {all:?}");
+        assert!(all.contains(&"FORE-1".to_string()), "伏笔待收应保留: {all:?}");
     }
 
     #[test]

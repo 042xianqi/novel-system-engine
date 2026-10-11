@@ -274,6 +274,16 @@ pub fn g06_character_consistency(text: &str, ctx: &dyn GateCtx) -> GateResult {
 }
 
 // ───────────────────────────── G09
+/// G09 信息密度：**只测「说明词密度」与「章长硬上限」**，不以 cap 封顶总字数。
+///
+/// 语义修正（2026-10-11）：旧实现把 `rhythm.info_density_max`(=1000) 当作**总字数**上限，
+/// `字数 > cap×1.5` 即报 P1（≈ 总字数封顶 1500）。这与该值本义（「每实质剧情点字数」的
+/// 代理刻度，见 `dynamics_config.json` 注释）不符，且与 G13 的 `chapter_word_min`(=2500)
+/// **直接互斥**——1500 < 2500，任何章节都无法同时过 G09 与 G13（实测：1492 字过 G09 挂
+/// G13，2528 字过 G13 挂 G09）。
+/// 现改为：`cap` 仅作说明词密度的参考刻度上报；字数只受 `gates.chapter_word_max`(4000)
+/// 硬上限约束，超出 → P0。信息密度（说明词占比 ratio）继续测量并上报，P1 阈值待 L4 正文
+/// 回读标定后再接（当前不触发）。
 pub fn g09_info_density(text: &str, _chapter: u32, cfg: &Config) -> GateResult {
     let cap = cfg.info_density_max() as usize;
     let w = words(text);
@@ -282,19 +292,16 @@ pub fn g09_info_density(text: &str, _chapter: u32, cfg: &Config) -> GateResult {
         .map(|k| text.matches(k).count())
         .sum::<usize>();
     let ratio = expl as f64 / w.max(1) as f64;
-    let mut out = GateResult::ok(format!("字数={w} cap={cap} 说明词密度={ratio:.4}"));
+    let mut out = GateResult::ok(format!(
+        "字数={w} 说明词密度={:.4}（cap={cap} 为密度参考刻度，非字数上限）",
+        ratio
+    ));
     let word_max = cfg.word_max() as usize;
     if w > word_max {
         out.p0(
             "G09_info_density",
             format!("字数{w}>硬上限{word_max}"),
             "砍字/分章（gates.chapter_word_max）",
-        );
-    } else if w > cap * 3 / 2 {
-        out.p1(
-            "G09_info_density",
-            format!("字数{w}>cap×1.5（信息密度软提示）"),
-            "压缩说明密度（<800优秀口径）",
         );
     }
     out
@@ -381,11 +388,14 @@ pub fn g12_naming_tier(text: &str, volume: &str, cfg: &Config) -> GateResult {
 }
 
 // ───────────────────────────── G13
-pub fn g13_scoring_67dim(text: &str, cfg: &Config, ctx: &dyn GateCtx) -> GateResult {
+pub fn g13_scoring_67dim(text: &str, volume: &str, cfg: &Config, ctx: &dyn GateCtx) -> GateResult {
     let dims_total = ctx.scoring_dims_total();
     let w = words(text);
     let det: Vec<(&str, bool)> = vec![
-        ("字数", cfg.word_min() as usize <= w && w <= cfg.word_max() as usize),
+        (
+            "字数",
+            cfg.word_min_for_volume(volume) as usize <= w && w <= cfg.word_max() as usize,
+        ),
         ("禁词", !G13_STOP_WORDS.iter().any(|k| text.contains(*k))),
         ("AI词", !G13_AI_WORDS.iter().any(|k| text.contains(*k))),
         (
@@ -662,7 +672,7 @@ pub fn run_all(text: &str, chapter: u32, volume: &str, cfg: &Config, ctx: &dyn G
     run!("G10_horror_chapter", g10_horror_chapter(text, chapter, volume, ctx));
     run!("G11_vol9_reversal", g11_vol9_reversal(text, volume));
     run!("G12_naming_tier", g12_naming_tier(text, volume, cfg));
-    run!("G13_scoring_67dim", g13_scoring_67dim(text, cfg, ctx));
+    run!("G13_scoring_67dim", g13_scoring_67dim(text, volume, cfg, ctx));
     run!("G14_world_consistency", g14_world_consistency(text, ctx));
     run!("G15_family_consistency", g15_family_consistency(text));
     run!("G16_leak_words", g16_leak_words(text));
@@ -682,5 +692,33 @@ pub fn run_all(text: &str, chapter: u32, volume: &str, cfg: &Config, ctx: &dyn G
         p1,
         gates,
         stats: GateStats { words: words(text), gates_run: 16 },
+    }
+}
+
+#[cfg(test)]
+mod tests_g09_semantics {
+    use super::*;
+
+    /// 回归：G09 不得把 `info_density_max`(cap) 当总字数上限。
+    /// 语义修正 2026-10-11：G09=信息密度 ≠ 总字数封顶；字数只受 word_max 硬上限约束。
+    /// 否则 G09(≤cap×1.5=1500) 与 G13(≥word_min=2500) 互斥，任何章节无法 pass。
+    #[test]
+    fn g09_does_not_cap_total_words_at_cap() {
+        let cfg = Config::default(); // cap=1000, word_max=4000
+        // 2000 字（>cap×1.5=1500，<word_max=4000）：旧实现报 P1，现应 pass
+        let text: String = std::iter::repeat('字').take(2000).collect();
+        let r = g09_info_density(&text, 1, &cfg);
+        assert!(r.pass, "2000 字应过 G09（cap 不再当字数上限）: {:?}", r.p1);
+        assert!(r.p1.is_empty(), "不应再有 cap×1.5 字数 P1: {:?}", r.p1);
+    }
+
+    /// 超过 word_max(4000) 仍须 P0 拦截。
+    #[test]
+    fn g09_still_p0_over_hard_max() {
+        let cfg = Config::default();
+        let text: String = std::iter::repeat('字').take(4001).collect();
+        let r = g09_info_density(&text, 1, &cfg);
+        assert!(!r.pass, ">word_max 必须 P0");
+        assert_eq!(r.p0.len(), 1);
     }
 }

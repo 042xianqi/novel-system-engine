@@ -162,3 +162,48 @@ basis TEXT,        -- '实值' | '推测' | '待核'
 - **WAL 三文件**：`novel.db` / `novel.db-wal` / `novel.db-shm` —— **备份必须三个一起**
 - 改现有表结构前必须备份
 - 新增表用 `CREATE TABLE IF NOT EXISTS`，可重复执行
+
+---
+
+## 七、2026-10-11 追加：G09/G13 字数门禁互斥修复（已实现）
+
+### 🔴 F4 G09 与 G13 字数口径互斥 —— 任何章节都无法 pass
+
+```
+G09_info_density:  旧实现 `字数 > info_density_max(1000) × 1.5` → P1   ⇒ 实质上封顶 1500 字
+G13_scoring_67dim: `2500 ≤ 字数 ≤ 4000`                                ⇒ 下限 2500 字
+```
+
+**1500 < 2500，两门禁交集为空**。实测冻结：1492 字过 G09 挂 G13；2528 字过 G13 挂 G09。
+`verdict=pass` 在旧规则下**不可达**，L5「校验全绿才入库」永远卡死。
+
+Rust 忠实移植自 `09_冷备份/.../engine/gate14.py`，**Python 原版同样存在**（`gate14_notes.rs` 已锁死 16 门禁为逐条对齐移植）。
+
+补证：配置本身三方打架 —— `structure.chapter_beat` 4 段合计 2000 字/章；
+`volume_macro_beat` 定「卷01=第1–18章」；但细纲 `卷01.md` 实为 **180 章**（5 章/节拍微切分，10 卷共 1800 章）。
+
+### 决策：修正 G09 语义（不粗暴降数字）
+
+| 项 | 旧 | 新 |
+|---|---|---|
+| `G09_info_density` 判据 | `字数 ≤ cap×1.5`(1500) | 只测**说明词密度**（即/又称/所谓/设定/规则 占比）+ 章长**硬上限** `word_max`(4000) |
+| `cap`(info_density_max=1000) | 总字数上限 | 「每实质剧情点字数」密度参考刻度（仅在 detail 上报，不再封顶） |
+| 章长下限 | `G13` 硬编码 2500 | 分卷 ramp：卷01=1200、卷02+=2500 |
+| 章长硬上限 | `word_max`=4000 | 不变 |
+
+理由：`cap` 本义是信息密度指标（配置注释原文：「≤1000字/实质剧情点」），移植时被误当总字数上限；
+G13 保留 2500 长期导向；硬上限统一 `word_max=4000`；卷01 微章落 1200–2499，不强制注水。
+
+### 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `crates/ne-engine/src/gates.rs` | `g09_info_density` 去除 cap×1.5 字数 P1；`g13_scoring_67dim` 增 `volume` 形参、字数下限走 `word_min_for_volume`；新增 2 条回归测试 |
+| `crates/ne-engine/src/config.rs` | 新增 `GatesCfg.chapter_word_min_ramp` + `WordMinRamp` + `Config::word_min_for_volume()` + `parse_volume_no()`；新增 2 条回归测试 |
+| `05_管线框架/data/dynamics_config.json` | **从冷备份恢复到 live 根**（此前缺失→门禁回落默认值）；写入 `chapter_word_min_ramp` 与语义注释 |
+
+### 待办
+
+- ⚠ 细纲 10 卷**全部** 180 章微结构。若后续卷也按微章写，需把 ramp 的 `from_volume:2` 后移或删 ramp。
+- 六维 AI 味附加维度（`ne-qc`，**不参与 verdict**）的 `MIN_WORDS=2500` 仍是旧口径，暂未同步。
+- `experimental ne-engine::gate14.rs`（`GateCfg`，2500 硬编码、字数失败报 P0/reject）是死路径，无生产调用；未同步。

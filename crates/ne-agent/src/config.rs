@@ -20,6 +20,23 @@ pub struct RuntimeConfig {
     pub tools: ToolsSection,
     pub memory: MemorySection,
     pub mcp: McpSection,
+    pub approval: ApprovalSection,
+}
+
+/// 审批策略（M6）。契约见 `crate::approval`。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ApprovalSection {
+    /// 审批模式：request / assisted / full_access（未知值→assisted）
+    pub mode: String,
+    /// 只读规划模式：true 时禁止一切副作用工具（与 mode **正交**）
+    pub plan_only: bool,
+}
+
+impl Default for ApprovalSection {
+    fn default() -> Self {
+        ApprovalSection { mode: "assisted".into(), plan_only: false }
+    }
 }
 
 /// MCP 外部服务清单（太墟命名法：工具暴露为 `mcp__<name>__<tool>`）。
@@ -90,6 +107,7 @@ impl Default for RuntimeConfig {
             tools: ToolsSection::default(),
             memory: MemorySection::default(),
             mcp: McpSection::default(),
+            approval: ApprovalSection::default(),
         }
     }
 }
@@ -120,6 +138,8 @@ impl Default for ToolsSection {
                 "edit".into(),
                 "ls".into(),
                 "base".into(),
+                "plan".into(),
+                "scratchpad".into(),
             ],
         }
     }

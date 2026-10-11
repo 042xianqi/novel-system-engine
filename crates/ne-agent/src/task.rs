@@ -44,6 +44,22 @@ fn make_ctx<'a>(
         } else {
             Some(cfg.mcp.servers.clone())
         },
+        approval_mode: crate::approval::ApprovalMode::from_id(&cfg.approval.mode),
+        plan_only: cfg.approval.plan_only,
+        // 默认无审批回调 = 非交互式 → 需审批的操作会被拒（安全默认）。
+        // 交互式入口（chat）会自行 .with_approver(...) 覆盖。
+        approver: None,
+    }
+}
+
+impl<'a> HarnessCtx<'a> {
+    /// 挂上审批回调（交互式入口用）。
+    pub fn with_approver(
+        mut self,
+        f: Box<dyn Fn(&crate::approval::Decision) -> bool + 'a>,
+    ) -> Self {
+        self.approver = Some(f);
+        self
     }
 }
 
@@ -118,6 +134,8 @@ pub fn chat_interactive(
     let workspace = work_root.display().to_string();
     let pinned = pinned_snapshot(mem, &workspace, session);
     let h = make_ctx(store, session, cfg, llm, work_root, prompt_dir, enabled, pinned);
+    // 交互式 → 挂审批回调（在 stdin 上问 y/N）
+    let h = h.with_approver(Box::new(interactive_approver));
     let hist = store.history(session)?;
     println!("ne-agent 对话 · 会话 {session}");
     println!("  已有 {} 条历史 · /exit 退出 · /history 历史 · /tools 工具 · /memory 记忆", hist.len());
@@ -174,6 +192,24 @@ pub fn chat_interactive(
 
 /// 单次（非交互）对话：脚本 / 调试用。
 #[allow(clippy::too_many_arguments)]
+/// 交互式审批：在 stdin 上问 y/N（默认否）。
+///
+/// 安全默认：无法读取输入（EOF）→ 拒绝。
+fn interactive_approver(d: &crate::approval::Decision) -> bool {
+    eprint!(
+        "\n⚠ 需要批准（风险 {}）\n  {}\n  原因：{}\n批准执行？[y/N] ",
+        d.risk, d.summary, d.reason
+    );
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line).unwrap_or(0) == 0 {
+        eprintln!("（无法读取输入 → 拒绝）");
+        return false;
+    }
+    let a = line.trim().to_ascii_lowercase();
+    a == "y" || a == "yes" || a == "是"
+}
+
 pub fn chat_once(
     store: &SessionStore,
     mem: &MemoryStore,
@@ -329,4 +365,32 @@ pub fn novel_chapter(
         p1: report.p1.len(),
         notes,
     })
+}
+
+// ───────────────────────────── 测试辅助（供 tests/approval_e2e.rs 用）
+//
+// 这些是 `pub` 的薄包装，仅用于端到端测试装配 HarnessCtx + 跑一轮，
+// 不改变生产路径。放在 task.rs（已依赖 harness/session/config）避免测试重复装配逻辑。
+
+/// 装配一个 HarnessCtx（测试用，可挂审批回调）。
+#[allow(clippy::too_many_arguments)]
+pub fn make_ctx_for_test<'a>(
+    store: &'a SessionStore,
+    session: &str,
+    cfg: &'a RuntimeConfig,
+    llm: ne_engine::llm::LlmParams,
+    work_root: PathBuf,
+    prompt_dir: PathBuf,
+    enabled: Vec<Tool>,
+    pinned: String,
+    approver: Option<Box<dyn Fn(&crate::approval::Decision) -> bool + 'a>>,
+) -> HarnessCtx<'a> {
+    let mut h = make_ctx(store, session, cfg, llm, work_root, prompt_dir, enabled, pinned);
+    h.approver = approver;
+    h
+}
+
+/// 跑一轮（测试用，不带记忆召回）。
+pub fn run_one_for_test(h: &HarnessCtx, input: &str) -> Result<String> {
+    run_one(h, None, input)
 }

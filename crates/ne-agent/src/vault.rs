@@ -166,7 +166,8 @@ tools:
   # 内置工具开关（名字见 `ne-agent tools`）
   # 网络工具（web_fetch/web_search）默认**关闭**，需显式打开（M6 会接审批策略）
   # 启用 MCP 服务后，其工具以 `mcp__<服务>__<工具>` 暴露给模型
-  enabled: [read, write, edit, ls, base]
+  # plan/scratchpad：会话局部协作状态（持久化到 agent.db），建议常开
+  enabled: [read, write, edit, ls, base, plan, scratchpad]
 
 memory:
   # 记忆策略（M2 落地）
@@ -183,6 +184,13 @@ memory:
 #       args: ["/opt/taixu/scripts/websearch_mcp_server.py"]
 mcp:
   servers: []
+
+# 审批策略（M6）
+approval:
+  # request（全问）/ assisted（默认，危险才问）/ full_access（全放行）
+  mode: assisted
+  # 只读规划：true 时禁止一切写/执行/外部调用（与 mode 正交）
+  plan_only: false
 "#;
 
 /// 空 models.yml（结构注释，实际内容由用户填或导入全局配置）。

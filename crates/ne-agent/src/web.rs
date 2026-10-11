@@ -522,8 +522,6 @@ fn body_to_text(content_type: &str, bytes: &[u8]) -> String {
     decode_bytes(bytes, &cs)
 }
 
-#[cfg(test)]
-fn decode_for_test() {}
 
 pub fn fetch_text(url: &str, max_chars: usize) -> Result<String> {
     let r = get(url, DEFAULT_MAX_BYTES, Duration::from_secs(DEFAULT_TIMEOUT_SECS))?;

@@ -61,6 +61,12 @@ enum Cmd {
         /// 新建会话
         #[arg(long)]
         new: bool,
+        /// 只读规划模式：禁止一切写/执行/外部调用（覆盖 runtime.yaml）
+        #[arg(long)]
+        plan: bool,
+        /// 审批模式：request / assisted / full_access（覆盖 runtime.yaml）
+        #[arg(long, value_name = "MODE")]
+        approval: Option<String>,
     },
     /// 管理会话
     Session {
@@ -71,6 +77,12 @@ enum Cmd {
     Tools,
     /// 显示版本
     Version,
+    /// 估算文本/文件的 token（调试上下文预算）
+    Estimate {
+        /// 文件路径（省略则从 stdin 读）
+        #[arg(value_name = "FILE")]
+        file: Option<PathBuf>,
+    },
     /// 管理长期记忆（pinned 常驻 / recall 按需）
     Memory {
         #[command(subcommand)]
@@ -98,6 +110,42 @@ enum Cmd {
     Mcp {
         #[command(subcommand)]
         cmd: McpCmd,
+    },
+    /// 管理持久化任务（状态机 + CAS）
+    Task {
+        #[command(subcommand)]
+        cmd: TaskCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum TaskCmd {
+    /// 列出所有任务
+    List,
+    /// 新建一个 queued 任务
+    New {
+        /// 会话 id
+        #[arg(long)]
+        session: String,
+        /// 任务描述（必填）
+        description: String,
+        /// 标题（缺省取描述首行）
+        #[arg(long)]
+        title: Option<String>,
+        /// 是否允许进程重启后自动恢复
+        #[arg(long, default_value_t = true)]
+        auto_resume: bool,
+        /// 最大尝试次数
+        #[arg(long, default_value_t = 2)]
+        max_attempts: i64,
+    },
+    /// 查看一个任务
+    Show { id: String },
+    /// 手动转移任务状态（调试/运维）
+    Set {
+        id: String,
+        /// 目标状态：running/waiting_approval/recovering/suspended/failed/completed/cancelled
+        status: String,
     },
 }
 
@@ -166,6 +214,21 @@ enum SessionCmd {
         /// 会话 id（缺省用最新）
         id: Option<String>,
     },
+    /// 回退会话分支（不删消息，只移动 head）
+    Rewind {
+        /// 会话 id（缺省用最新）
+        #[arg(long)]
+        id: Option<String>,
+        /// 回退到指定消息 id
+        #[arg(long, conflicts_with_all = ["back", "last_turn"])]
+        to: Option<i64>,
+        /// 往回退 N 条消息
+        #[arg(long, conflicts_with_all = ["to", "last_turn"])]
+        back: Option<usize>,
+        /// 撤掉最后一轮 user（重来这一轮）
+        #[arg(long = "last-turn", conflicts_with_all = ["to", "back"])]
+        last_turn: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -209,15 +272,23 @@ fn run() -> Result<()> {
     match &cli.cmd {
         Cmd::Vault { cmd } => run_vault(&vault, cmd, cli.json),
         Cmd::Models { cmd } => run_models(&vault, cmd, cli.json),
-        Cmd::Chat { message, resume, session, new } => {
-            run_chat(&vault, message.as_deref(), *resume, session.as_deref(), *new, cli.json)
-        }
+        Cmd::Chat { message, resume, session, new, plan, approval } => run_chat(
+            &vault,
+            message.as_deref(),
+            *resume,
+            session.as_deref(),
+            *new,
+            *plan,
+            approval.as_deref(),
+            cli.json,
+        ),
         Cmd::Session { cmd } => run_session(&vault, cmd, cli.json),
         Cmd::Memory { cmd } => run_memory(&vault, cmd, cli.json),
         Cmd::Novel { chap_id, volume, lib, dry_run, prompt_only } => {
             run_novel(&vault, *chap_id, volume, lib.as_deref(), *dry_run, *prompt_only, cli.json)
         }
         Cmd::Mcp { cmd } => run_mcp(&vault, cmd, cli.json),
+        Cmd::Task { cmd } => run_task(&vault, cmd, cli.json),
         Cmd::Tools => {
             for t in ne_agent::tool::Tool::all() {
                 if cli.json {
@@ -253,7 +324,37 @@ fn run() -> Result<()> {
             }
             Ok(())
         }
+        Cmd::Estimate { file } => run_estimate(file.as_deref(), cli.json),
     }
+}
+
+/// 估算 token（上下文预算调试用）。
+fn run_estimate(file: Option<&Path>, json: bool) -> Result<()> {
+    use std::io::Read;
+    let text = match file {
+        Some(p) => std::fs::read_to_string(p)
+            .with_context(|| format!("读文件失败：{}", p.display()))?,
+        None => {
+            let mut s = String::new();
+            std::io::stdin()
+                .read_to_string(&mut s)
+                .context("从 stdin 读取失败")?;
+            s
+        }
+    };
+    let tokens = ne_agent::context::estimate_tokens(&text);
+    let chars = text.chars().count();
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({ "chars": chars, "tokens": tokens,
+                "ratio": if tokens == 0 { 0.0 } else { chars as f64 / tokens as f64 } })
+        );
+    } else {
+        let ratio = if tokens == 0 { 0.0 } else { chars as f64 / tokens as f64 };
+        println!("{chars} 字 → {tokens} token（{ratio:.2} 字/token）");
+    }
+    Ok(())
 }
 
 fn run_vault(vault: &Vault, cmd: &VaultCmd, json: bool) -> Result<()> {
@@ -381,6 +482,8 @@ fn pick_session(
     resume: bool,
     new: bool,
     auto_title: &str,
+    // 本次是否带消息（带消息时默认续接，符合"连续对话"直觉）
+    has_message: bool,
 ) -> Result<String> {
     if let Some(id) = explicit {
         if store.get_session(id)?.is_none() {
@@ -388,7 +491,12 @@ fn pick_session(
         }
         return Ok(id.to_string());
     }
-    if resume && !new {
+    if new {
+        return store.create_session(auto_title);
+    }
+    // 续接条件：显式 --resume，**或**本次带消息（`chat -m` 默认接上一个会话，
+    // 避免每问一句就散成新会话——那正是"松散"的根源）
+    if resume || has_message {
         if let Some(s) = store.latest_session()? {
             return Ok(s.id);
         }
@@ -402,14 +510,24 @@ fn run_chat(
     resume: bool,
     session: Option<&str>,
     new: bool,
+    plan: bool,
+    approval: Option<&str>,
     json: bool,
 ) -> Result<()> {
-    let h = build_runtime(vault)?;
+    let mut h = build_runtime(vault)?;
+    // CLI 覆盖 runtime.yaml 的审批设置
+    if plan {
+        h.cfg.approval.plan_only = true;
+    }
+    if let Some(m) = approval {
+        let parsed = ne_agent::approval::ApprovalMode::from_id(m);
+        h.cfg.approval.mode = parsed.id().to_string();
+    }
     let title = match message {
         Some(m) => format!("cli: {}", truncate(m, 30)),
         None => "交互对话".to_string(),
     };
-    let sid = pick_session(&h.store, session, resume, new, &title)?;
+    let sid = pick_session(&h.store, session, resume, new, &title, message.is_some())?;
 
     if let Some(msg) = message {
         let out = ne_agent::task::chat_once(
@@ -601,6 +719,47 @@ fn run_session(vault: &Vault, cmd: &SessionCmd, json: bool) -> Result<()> {
             }
             Ok(())
         }
+        SessionCmd::Rewind { id, to, back, last_turn } => {
+            let sid = match id {
+                Some(i) => i.clone(),
+                None => match store.latest_session()? {
+                    Some(s) => s.id,
+                    None => {
+                        println!("（无会话可回退）");
+                        return Ok(());
+                    }
+                },
+            };
+            let before = store.history(&sid)?.len();
+            let new_head = if let Some(m) = to {
+                store.rewind_to(&sid, *m)?;
+                Some(*m)
+            } else if let Some(n) = back {
+                store.rewind_back(&sid, *n)?
+            } else if *last_turn {
+                store.rewind_last_turn(&sid)?
+            } else {
+                anyhow::bail!("需指定 --to <消息id> / --back <N> / --last-turn 之一");
+            };
+            let after = store.history(&sid)?.len();
+            let total = store.message_count(&sid)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "session": sid, "before": before, "after": after,
+                        "headId": new_head, "totalMessages": total,
+                    }))?
+                );
+            } else {
+                println!("会话 {sid} 已回退：分支 {before} → {after} 条（库中共 {total} 条，未删）");
+                match new_head {
+                    Some(h) => println!("  head = 消息 #{h}"),
+                    None => println!("  head = 空分支"),
+                }
+            }
+            Ok(())
+        }
     }
 }
 
@@ -610,6 +769,128 @@ fn truncate(s: &str, n: usize) -> String {
         format!("{}…", one_line.chars().take(n).collect::<String>())
     } else {
         one_line.to_string()
+    }
+}
+
+/// 管理持久化任务。
+fn run_task(vault: &Vault, cmd: &TaskCmd, json: bool) -> Result<()> {
+    vault.init()?;
+    let store = ne_agent::task_state::TaskStore::open(vault.agent_db())?;
+    match cmd {
+        TaskCmd::List => {
+            let tasks = store.list_all()?;
+            if json {
+                let v: Vec<serde_json::Value> = tasks
+                    .iter()
+                    .map(|t| serde_json::json!({
+                        "id": t.id, "session": t.session_id, "title": t.title,
+                        "status": t.status, "detail": t.status_detail,
+                        "attempts": t.attempt_count, "maxAttempts": t.max_attempts,
+                        "progress": t.progress,
+                    }))
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            } else if tasks.is_empty() {
+                println!("（没有任务）");
+            } else {
+                for t in tasks {
+                    println!(
+                        "  {:<14} {:<17} {:>5.1}%  {}",
+                        t.id,
+                        t.status,
+                        t.progress * 100.0,
+                        truncate(&t.title, 40)
+                    );
+                }
+            }
+            Ok(())
+        }
+        TaskCmd::New { session, description, title, auto_resume, max_attempts } => {
+            let id = format!("task-{}", ne_agent::session::now_ms());
+            let t = store.create_queued(
+                &id,
+                session,
+                title.as_deref().unwrap_or(""),
+                description,
+                *auto_resume,
+                *max_attempts,
+                ne_agent::session::now_ms(),
+            )?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "id": t.id, "status": t.status,
+                }))?);
+            } else {
+                println!("已创建任务 {}（{}）", t.id, t.status);
+            }
+            Ok(())
+        }
+        TaskCmd::Show { id } => {
+            let t = store.get(id)?.ok_or_else(|| anyhow::anyhow!("任务不存在：{id}"))?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "id": t.id, "session": t.session_id, "title": t.title,
+                    "description": t.description, "status": t.status,
+                    "detail": t.status_detail, "attempts": t.attempt_count,
+                    "maxAttempts": t.max_attempts, "progress": t.progress,
+                    "lastRound": t.last_round, "maxRounds": t.max_rounds,
+                    "error": t.error_message,
+                }))?);
+            } else {
+                println!("任务 {}", t.id);
+                println!("  标题     : {}", t.title);
+                println!("  会话     : {}", t.session_id);
+                println!("  状态     : {}（{}）", t.status, t.status_detail);
+                println!("  尝试     : {}/{}", t.attempt_count, t.max_attempts);
+                println!("  进度     : {:.1}%（第 {}/{} 轮）", t.progress * 100.0, t.last_round, t.max_rounds);
+                if let Some(e) = &t.error_message {
+                    println!("  错误     : {e}");
+                }
+            }
+            Ok(())
+        }
+        TaskCmd::Set { id, status } => {
+            // 手动转移：把任意"非终态"作为期望集（运维手势，宽松但走同一张表）
+            let cur = store.get(id)?.ok_or_else(|| anyhow::anyhow!("任务不存在：{id}"))?;
+            let next: &'static str = match status.as_str() {
+                "running" => ne_agent::task_state::status::RUNNING,
+                "waiting_approval" => ne_agent::task_state::status::WAITING_APPROVAL,
+                "recovering" => ne_agent::task_state::status::RECOVERING,
+                "suspended" => ne_agent::task_state::status::SUSPENDED,
+                "failed" => ne_agent::task_state::status::FAILED,
+                "completed" => ne_agent::task_state::status::COMPLETED,
+                "cancelled" => ne_agent::task_state::status::CANCELLED,
+                other => anyhow::bail!("未知状态：{other}"),
+            };
+            // 期望集 = 当前状态（CAS 语义：只有还是当前状态才转）
+            let cur_static: &'static str = match cur.status.as_str() {
+                "queued" => ne_agent::task_state::status::QUEUED,
+                "running" => ne_agent::task_state::status::RUNNING,
+                "waiting_approval" => ne_agent::task_state::status::WAITING_APPROVAL,
+                "recovering" => ne_agent::task_state::status::RECOVERING,
+                "suspended" => ne_agent::task_state::status::SUSPENDED,
+                "failed" => ne_agent::task_state::status::FAILED,
+                "completed" => ne_agent::task_state::status::COMPLETED,
+                "cancelled" => ne_agent::task_state::status::CANCELLED,
+                other => anyhow::bail!("库中出现未知状态：{other}"),
+            };
+            let ok = store.transition(&ne_agent::task_state::Transition {
+                id: id.clone(),
+                expected_statuses: vec![cur_static],
+                next_status: next,
+                status_detail: Some("手动设置".into()),
+                updated_at: ne_agent::session::now_ms(),
+                ..Default::default()
+            })?;
+            if json {
+                println!("{}", serde_json::json!({"id": id, "changed": ok, "status": next}));
+            } else if ok {
+                println!("任务 {id} → {next}");
+            } else {
+                println!("任务 {id} 状态未变（CAS 拒绝：当前已不是 {}）", cur.status);
+            }
+            Ok(())
+        }
     }
 }
 

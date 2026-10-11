@@ -38,6 +38,7 @@
 //! 这正是太墟 `sanitizeApiTranscript` 的思路。
 
 use crate::config::RuntimeConfig;
+use crate::context;
 use crate::prompt::{self, TurnPrefix};
 use crate::session::{MsgRow, SessionStore};
 use crate::tool::{self, Tool, ToolArgs, ToolCtx};
@@ -106,6 +107,13 @@ pub struct HarnessCtx<'a> {
     pub pinned_section: String,
     /// 外部 MCP 服务清单（None = 未配置；有则惰性连接）。
     pub mcp_servers: Option<Vec<crate::config::McpServerCfg>>,
+    /// 审批模式（M6）。默认 `Assisted`。
+    pub approval_mode: crate::approval::ApprovalMode,
+    /// 只读规划模式（M6）：与审批模式**正交**，为真时禁止一切副作用工具。
+    pub plan_only: bool,
+    /// 审批回调：返回 true = 批准执行。`None` = 无法交互（非交互式 CLI），
+    /// 此时需审批的调用**默认拒绝**（安全默认，不静默放行）。
+    pub approver: Option<Box<dyn Fn(&crate::approval::Decision) -> bool + 'a>>,
 }
 
 impl<'a> HarnessCtx<'a> {
@@ -207,7 +215,61 @@ pub fn build_messages(h: &HarnessCtx, turn_prefix: &TurnPrefix) -> Result<Vec<ne
             out.push(m.to_llm());
         }
     }
+
+    // ── M5：老轮次工具结果截断（预算线**之前**就生效）
+    out = truncate_context(h, out);
+
     Ok(sanitize_for_provider(&out))
+}
+
+/// 应用上下文策略：老轮次工具结果截断 + 按预算折叠最早整轮。
+///
+/// 顺序（太墟同序）：
+///   1. **截断老工具结果**（保护当前轮 + 最近 N 条）—— 不改条数，只压正文
+///   2. **按折叠线丢最早整轮**（只在仍超限时）—— 保 tool_call⇄result 配对，至少留一轮
+///
+/// system 消息（首条）永不动。
+fn truncate_context(h: &HarnessCtx, msgs: Vec<ne_engine::llm::Message>) -> Vec<ne_engine::llm::Message> {
+    if msgs.is_empty() {
+        return msgs;
+    }
+    // 转成可截断视图（system 标为非工具结果、不可删）
+    let mut hist: Vec<context::HistMsg> = msgs
+        .iter()
+        .map(|m| context::HistMsg {
+            role: m.role.clone(),
+            content: m.content.clone(),
+            is_tool_result: m.role == "tool",
+        })
+        .collect();
+
+    // 1) 老轮次工具结果截断
+    let (truncated, changed) = context::truncate_stale_tool_results(&hist, context::KEEP_RECENT_TOOL_RESULTS);
+    hist = truncated;
+    let _ = changed;
+
+    // 2) 预算折叠：先估总 token，超折叠线才丢最早整轮
+    let window = h.cfg.context.max_prompt_tokens;
+    let reserve = h.cfg.context.reserve_tokens;
+    let limit = context::folding_limit(window, reserve, context::TOOL_SCHEMA_RESERVE_TOKENS);
+    let est: usize = hist
+        .iter()
+        .map(|m| context::estimate_tokens(&m.content) + 64)
+        .sum();
+    if est > limit && hist.len() > 1 {
+        // 首条是 system，永不折叠 → 从第 2 条起找轮边界
+        let body = &hist[1..];
+        let start = context::keep_from_index(body, limit.saturating_sub(
+            context::estimate_tokens(&hist[0].content) + 64,
+        ));
+        let mut kept = vec![hist[0].clone()];
+        kept.extend(body[start..].iter().cloned());
+        hist = kept;
+    }
+
+    hist.into_iter()
+        .map(|m| ne_engine::llm::Message { role: m.role, content: m.content })
+        .collect()
 }
 
 /// 解析模型输出中的工具调用（M1 文本协议）。
@@ -295,6 +357,46 @@ fn run_calls(h: &HarnessCtx, ctx: &ToolCtx, calls: &[Call]) -> Vec<tool::ToolRes
             results.push(tool::ToolResult::err(format!("工具 `{}` 未启用", c.name)));
             continue;
         }
+
+        // ── M6 审批门禁（在只读规划之上，两层都过才执行）
+        // 1) 只读规划：硬拒（不进审批队列，弹审批卡只是噪音）
+        if h.plan_only {
+            if let Some(reason) = crate::approval::plan_block(t, &c.args) {
+                results.push(tool::ToolResult::err(format!(
+                    "已被只读规划模式拦截：{reason}（工具 `{}`）",
+                    c.name
+                )));
+                continue;
+            }
+        }
+        // 2) 审批策略：需要批准时问用户；无法交互则**默认拒绝**（安全默认）
+        let raw_mcp = if t == Tool::Mcp {
+            c.args.get(tool::MCP_TOOL_KEY)
+        } else {
+            None
+        };
+        let decision =
+            crate::approval::decide(h.approval_mode, t, &c.args, &h.work_root, raw_mcp);
+        if decision.required {
+            let approved = match &h.approver {
+                Some(f) => f(&decision),
+                None => false, // 非交互式：默认拒绝，绝不静默放行
+            };
+            if !approved {
+                results.push(tool::ToolResult::err(format!(
+                    "审批未通过（风险 {}）：{}{}",
+                    decision.risk,
+                    decision.summary,
+                    if h.approver.is_none() {
+                        "　[非交互环境，需审批的操作默认拒绝]"
+                    } else {
+                        "　[用户拒绝]"
+                    }
+                )));
+                continue;
+            }
+        }
+
         match tool::execute(ctx, t, &c.args) {
             Ok(r) => results.push(r),
             Err(e) => results.push(tool::ToolResult::err(format!("执行 `{}` 内部错误：{e}", c.name))),
@@ -310,6 +412,10 @@ pub fn run_session(h: &HarnessCtx, turn_prefix: &TurnPrefix) -> Result<RunOutcom
     let mut ctx = ToolCtx::new(&h.work_root);
     if let Some(specs) = &h.mcp_servers {
         ctx = ctx.with_mcp(crate::mcp::McpRegistry::new(specs.clone()));
+    }
+    // plan/scratchpad 需要会话 id + 存储（与记忆库同文件）
+    if let Ok(cs) = crate::context_tools::ContextStore::open(h.store.path()) {
+        ctx = ctx.with_session(h.session.clone(), cs);
     }
     let mut all_results = Vec::new();
     let mut consecutive_failures = 0usize;

@@ -70,6 +70,10 @@ pub enum Tool {
     WebSearch,
     /// 调用外部 MCP 服务（名字形如 `mcp__<server>__<tool>`）
     Mcp,
+    /// 多步骤计划管理（持久化到会话库）
+    Plan,
+    /// 会话局部工作草稿（持久化到会话库）
+    Scratchpad,
 }
 
 impl Tool {
@@ -83,6 +87,8 @@ impl Tool {
             Tool::WebFetch => "web_fetch",
             Tool::WebSearch => "web_search",
             Tool::Mcp => "mcp",
+            Tool::Plan => "plan",
+            Tool::Scratchpad => "scratchpad",
         }
     }
 
@@ -94,6 +100,8 @@ impl Tool {
             Tool::WebFetch | Tool::WebSearch => Tier::Read,
             // MCP 外部服务能力未知 → 按"有副作用"算，保守
             Tool::Mcp => Tier::Exec,
+            // 计划/草稿：只改会话局部状态，无文件/外部副作用
+            Tool::Plan | Tool::Scratchpad => Tier::Read,
         }
     }
 
@@ -107,6 +115,8 @@ impl Tool {
             Tool::WebFetch => "抓取网页并转为纯文本（http/https；自动跟随重定向）",
             Tool::WebSearch => "联网搜索（返回标题/摘要/链接）",
             Tool::Mcp => "调用外部 MCP 服务（工具名形如 mcp__<服务>__<工具>）",
+            Tool::Plan => "多步骤任务计划管理（action: replace_active/get_active/advance/clear_active）",
+            Tool::Scratchpad => "会话局部工作草稿（action: save/get/list/delete/clear）",
         }
     }
 
@@ -123,6 +133,8 @@ impl Tool {
             "base" => Tool::Base,
             "web_fetch" => Tool::WebFetch,
             "web_search" => Tool::WebSearch,
+            "plan" => Tool::Plan,
+            "scratchpad" => Tool::Scratchpad,
             _ => return None,
         })
     }
@@ -136,6 +148,8 @@ impl Tool {
             Tool::Base,
             Tool::WebFetch,
             Tool::WebSearch,
+            Tool::Plan,
+            Tool::Scratchpad,
         ]
     }
 
@@ -150,12 +164,21 @@ impl Tool {
             Tool::WebFetch => &["url", "max_chars"],
             Tool::WebSearch => &["query", "engine", "limit"],
             Tool::Mcp => &["（由具体 MCP 工具定义）"],
+            Tool::Plan => &["action", "goal", "steps", "status"],
+            Tool::Scratchpad => &["action", "key", "value"],
         }
     }
 
     /// 是否走网络（需要联网工具开关；M6 审批会用）。
     pub fn is_network(&self) -> bool {
         matches!(self, Tool::WebFetch | Tool::WebSearch | Tool::Mcp)
+    }
+
+    /// 是否属于"会话局部协作状态"（不需要审批、不受只读规划限制）。
+    ///
+    /// 依据：它们只改会话自己的计划/草稿，不碰文件、不跑命令、不出网。
+    pub fn is_session_local(&self) -> bool {
+        matches!(self, Tool::Plan | Tool::Scratchpad)
     }
 }
 
@@ -171,16 +194,36 @@ pub struct ToolCtx {
     /// 不与会话状态纠缠），而 MCP 连接是有状态、需惰性建立的。
     /// ne-agent 是单线程（std 阻塞 IO，无 tokio），RefCell 无并发风险。
     pub mcp: Option<std::cell::RefCell<crate::mcp::McpRegistry>>,
+    /// 当前会话 id（plan/scratchpad 按会话隔离）。
+    pub session: String,
+    /// 计划/草稿存储（None = 未装配 → 相关工具报错，不 panic）。
+    pub context: Option<std::cell::RefCell<crate::context_tools::ContextStore>>,
 }
 
 impl ToolCtx {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        ToolCtx { root: root.into(), mcp: None }
+        ToolCtx {
+            root: root.into(),
+            mcp: None,
+            session: String::new(),
+            context: None,
+        }
     }
 
     /// 附加 MCP 注册表。
     pub fn with_mcp(mut self, reg: crate::mcp::McpRegistry) -> Self {
         self.mcp = Some(std::cell::RefCell::new(reg));
+        self
+    }
+
+    /// 附加会话 id + 计划/草稿存储。
+    pub fn with_session(
+        mut self,
+        session: impl Into<String>,
+        ctx: crate::context_tools::ContextStore,
+    ) -> Self {
+        self.session = session.into();
+        self.context = Some(std::cell::RefCell::new(ctx));
         self
     }
 
@@ -241,7 +284,7 @@ impl ToolCtx {
 ///
 /// 返回 `Ok(ToolResult)` 表示"工具跑了"（成功或失败都在 output 里）；
 /// 只有框架级故障才返回 `Err`。
-pub fn execute(ctx: &ToolCtx, tool: Tool, args: &ToolArgs) -> Result<ToolResult> {
+    pub fn execute(ctx: &ToolCtx, tool: Tool, args: &ToolArgs) -> Result<ToolResult> {
     Ok(match tool {
         Tool::Read => read(ctx, args),
         Tool::Write => write(ctx, args),
@@ -251,7 +294,126 @@ pub fn execute(ctx: &ToolCtx, tool: Tool, args: &ToolArgs) -> Result<ToolResult>
         Tool::WebFetch => web_fetch(args),
         Tool::WebSearch => web_search(args),
         Tool::Mcp => mcp_call(ctx, args),
+        Tool::Plan => plan_tool(ctx, args),
+        Tool::Scratchpad => scratchpad_tool(ctx, args),
     })
+}
+
+/// `plan`：多步骤计划管理（持久化）。契约对齐太墟 `AgentContextExecutor.executePlan`。
+fn plan_tool(ctx: &ToolCtx, a: &ToolArgs) -> ToolResult {
+    let Some(cs) = ctx.context.as_ref() else {
+        return ToolResult::err("plan 需要会话上下文（未装配 ContextStore）");
+    };
+    let session = &ctx.session;
+    let action = a.get("action").unwrap_or("get_active").to_ascii_lowercase();
+    let now = crate::session::now_ms();
+    let cs = cs.borrow();
+    match action.as_str() {
+        "replace_active" | "set_active" | "create" => {
+            let Some(goal) = a.get("goal") else {
+                return ToolResult::err("plan replace_active 必须提供 goal 目标描述");
+            };
+            let steps = a.get("steps").unwrap_or("[]");
+            match cs.save_plan(session, goal, steps, crate::context_tools::PlanStatus::Active, now) {
+                Ok(p) => ToolResult::ok(format!(
+                    "已创建/更新任务规划：\n目标：{}\n步骤：{}\n\n提示：用 plan(action=\"advance\", steps=...) 更新进度；\
+                     遇阻用 replace_active 调整；完成时 clear_active。",
+                    p.goal, p.steps_json
+                )),
+                Err(e) => ToolResult::err(format!("保存计划失败：{e}")),
+            }
+        }
+        "get_active" | "get" => match cs.get_plan(session) {
+            Ok(Some(p)) => ToolResult::ok(format!(
+                "当前活跃计划：\n目标：{}\n步骤：{}\n状态：{}",
+                p.goal, p.steps_json, p.status
+            )),
+            Ok(None) => ToolResult::ok("当前会话暂无活跃任务计划"),
+            Err(e) => ToolResult::err(format!("读取计划失败：{e}")),
+        },
+        "advance" | "update_steps" => {
+            let steps = a.get("steps");
+            // ⚠ 只接受生命周期枚举；模型传了阶段说明 → 保留原状态（太墟教训）
+            let new_status = a.get("status").and_then(crate::context_tools::PlanStatus::parse);
+            match cs.advance_plan(session, steps, new_status, now) {
+                Ok(Some(p)) => ToolResult::ok(format!(
+                    "【规划进度已同步更新】\n目标：{}\n状态：{}\n当前步骤：{}",
+                    p.goal, p.status, p.steps_json
+                )),
+                Ok(None) => ToolResult::err(
+                    "当前会话没有可推进的活跃计划，请先用 plan(action=\"replace_active\", goal=...) 创建",
+                ),
+                Err(e) => ToolResult::err(format!("更新计划失败：{e}")),
+            }
+        }
+        "clear_active" | "clear" => match cs.clear_plan(session) {
+            Ok(()) => ToolResult::ok("已清空当前会话的任务规划"),
+            Err(e) => ToolResult::err(format!("清空计划失败：{e}")),
+        },
+        other => ToolResult::err(format!(
+            "未知的 plan 动作：{other}（可用：replace_active/get_active/advance/clear_active）"
+        )),
+    }
+}
+
+/// `scratchpad`：会话局部草稿（持久化）。对齐太墟 `executeScratchpad`。
+fn scratchpad_tool(ctx: &ToolCtx, a: &ToolArgs) -> ToolResult {
+    let Some(cs) = ctx.context.as_ref() else {
+        return ToolResult::err("scratchpad 需要会话上下文（未装配 ContextStore）");
+    };
+    let session = &ctx.session;
+    let action = a.get("action").unwrap_or("list").to_ascii_lowercase();
+    let now = crate::session::now_ms();
+    let cs = cs.borrow();
+    match action.as_str() {
+        "save" | "set" => {
+            let (Some(k), Some(v)) = (a.get("key"), a.get("value")) else {
+                return ToolResult::err("scratchpad save 必须提供 key 与 value");
+            };
+            match cs.save_scratch(session, k, v, now) {
+                Ok(()) => ToolResult::ok(format!("已记录工作草稿 [{k}] = {v}")),
+                Err(e) => ToolResult::err(format!("保存草稿失败：{e}")),
+            }
+        }
+        "get" => {
+            let Some(k) = a.get("key") else {
+                return ToolResult::err("scratchpad get 必须提供 key");
+            };
+            match cs.get_scratch(session, k) {
+                Ok(Some(s)) => ToolResult::ok(format!("草稿 [{k}]：{}", s.value)),
+                Ok(None) => ToolResult::ok(format!("草稿 [{k}] 不存在")),
+                Err(e) => ToolResult::err(format!("读取草稿失败：{e}")),
+            }
+        }
+        "list" => match cs.list_scratch(session) {
+            Ok(list) if list.is_empty() => ToolResult::ok("当前无工作草稿记录"),
+            Ok(list) => {
+                let s = list
+                    .iter()
+                    .map(|x| format!("- [{}]: {}", x.key, x.value))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                ToolResult::ok(format!("当前工作草稿：\n{s}"))
+            }
+            Err(e) => ToolResult::err(format!("列出草稿失败：{e}")),
+        },
+        "delete" => {
+            let Some(k) = a.get("key") else {
+                return ToolResult::err("scratchpad delete 必须提供 key");
+            };
+            match cs.delete_scratch(session, k) {
+                Ok(()) => ToolResult::ok(format!("已删除草稿 [{k}]")),
+                Err(e) => ToolResult::err(format!("删除草稿失败：{e}")),
+            }
+        }
+        "clear" => match cs.clear_scratch(session) {
+            Ok(()) => ToolResult::ok("已清空当前会话的所有工作草稿"),
+            Err(e) => ToolResult::err(format!("清空草稿失败：{e}")),
+        },
+        other => ToolResult::err(format!(
+            "未知的 scratchpad 动作：{other}（可用：save/get/list/delete/clear）"
+        )),
+    }
 }
 
 /// `mcp__<server>__<tool>`：路由到外部 MCP 服务。
@@ -601,12 +763,120 @@ mod tests {
     fn registry_names_are_stable() {
         assert_eq!(Tool::from_name("read"), Some(Tool::Read));
         assert_eq!(Tool::from_name("web_fetch"), Some(Tool::WebFetch));
+        assert_eq!(Tool::from_name("plan"), Some(Tool::Plan));
+        assert_eq!(Tool::from_name("scratchpad"), Some(Tool::Scratchpad));
         assert_eq!(Tool::from_name("nope"), None);
         let names: Vec<&str> = Tool::all().iter().map(|t| t.name()).collect();
         assert_eq!(
             names,
-            vec!["read", "write", "edit", "ls", "base", "web_fetch", "web_search"]
+            vec![
+                "read", "write", "edit", "ls", "base", "web_fetch", "web_search", "plan",
+                "scratchpad"
+            ]
         );
+    }
+
+    #[test]
+    fn session_local_tools_need_no_approval() {
+        // plan/scratchpad 只改会话局部状态
+        assert!(Tool::Plan.is_session_local());
+        assert!(Tool::Scratchpad.is_session_local());
+        assert_eq!(Tool::Plan.tier(), Tier::Read);
+        assert_eq!(Tool::Scratchpad.tier(), Tier::Read);
+        assert!(!Tool::Plan.is_network());
+    }
+
+    #[test]
+    fn plan_tool_roundtrip() {
+        let (c, _d) = ctx("plan");
+        let cs = crate::context_tools::ContextStore::open(std::env::temp_dir().join(format!(
+            "ne-agent-plan-tool-{}.db",
+            std::process::id()
+        )))
+        .unwrap();
+        let c = c.with_session("S-plan", cs);
+        // 创建
+        let a = ToolArgs::new()
+            .set("action", "replace_active")
+            .set("goal", "写完整卷")
+            .set("steps", r#"[{"id":"1"}]"#);
+        let r = execute(&c, Tool::Plan, &a).unwrap();
+        assert!(r.ok, "{}", r.output);
+        assert!(r.output.contains("写完整卷"), "{}", r.output);
+        // 读回
+        let r = execute(&c, Tool::Plan, &ToolArgs::new().set("action", "get_active")).unwrap();
+        assert!(r.ok);
+        assert!(r.output.contains("写完整卷"), "{}", r.output);
+        // 非法状态不写坏
+        let a = ToolArgs::new().set("action", "advance").set("status", "第一阶段完成");
+        let r = execute(&c, Tool::Plan, &a).unwrap();
+        assert!(r.ok, "{}", r.output);
+        assert!(r.output.contains("active"), "非法状态应保留 active：{}", r.output);
+        // 清空
+        let r = execute(&c, Tool::Plan, &ToolArgs::new().set("action", "clear_active")).unwrap();
+        assert!(r.ok);
+        let r = execute(&c, Tool::Plan, &ToolArgs::new().set("action", "get_active")).unwrap();
+        assert!(r.output.contains("暂无"), "{}", r.output);
+    }
+
+    #[test]
+    fn plan_tool_without_context_errors_cleanly() {
+        let (c, _d) = ctx("plan-noctx");
+        let a = ToolArgs::new().set("action", "get_active");
+        let r = execute(&c, Tool::Plan, &a).unwrap();
+        assert!(!r.ok);
+        assert!(r.output.contains("plan"), "{}", r.output);
+    }
+
+    #[test]
+    fn scratchpad_tool_roundtrip() {
+        let (c, _d) = ctx("scratch");
+        let cs = crate::context_tools::ContextStore::open(std::env::temp_dir().join(format!(
+            "ne-agent-scratch-tool-{}.db",
+            std::process::id()
+        )))
+        .unwrap();
+        let c = c.with_session("S-scratch", cs);
+        let r = execute(
+            &c,
+            Tool::Scratchpad,
+            &ToolArgs::new().set("action", "save").set("key", "假说").set("value", "DNS 坏了"),
+        )
+        .unwrap();
+        assert!(r.ok, "{}", r.output);
+        let r = execute(
+            &c,
+            Tool::Scratchpad,
+            &ToolArgs::new().set("action", "get").set("key", "假说"),
+        )
+        .unwrap();
+        assert!(r.output.contains("DNS 坏了"), "{}", r.output);
+        let r = execute(
+            &c,
+            Tool::Scratchpad,
+            &ToolArgs::new().set("action", "list"),
+        )
+        .unwrap();
+        assert!(r.output.contains("假说"), "{}", r.output);
+    }
+
+    #[test]
+    fn scratchpad_missing_key_is_clear_error() {
+        let (c, _d) = ctx("scratch-bad");
+        let cs = crate::context_tools::ContextStore::open(std::env::temp_dir().join(format!(
+            "ne-agent-scratch-bad-{}.db",
+            std::process::id()
+        )))
+        .unwrap();
+        let c = c.with_session("S", cs);
+        let r = execute(
+            &c,
+            Tool::Scratchpad,
+            &ToolArgs::new().set("action", "save").set("value", "v"),
+        )
+        .unwrap();
+        assert!(!r.ok);
+        assert!(r.output.contains("key"), "{}", r.output);
     }
 
     #[test]

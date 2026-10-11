@@ -12,7 +12,10 @@
 //!
 //! 阶段进度见 `docs/ROADMAP-ne-agent.md`。当前：**M1（它自己）**。
 
+pub mod approval;
 pub mod config;
+pub mod context;
+pub mod context_tools;
 pub mod harness;
 pub mod mcp;
 pub mod memory;
@@ -20,6 +23,7 @@ pub mod novel_ctx;
 pub mod prompt;
 pub mod session;
 pub mod task;
+pub mod task_state;
 pub mod tool;
 pub mod vault;
 pub mod web;
@@ -31,7 +35,7 @@ pub use vault::Vault;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// 当前开发阶段（随路线图里程碑更新，便于 `--version` 自证进度）。
-pub const STAGE: &str = "M3 小说任务";
+pub const STAGE: &str = "M6 安全协作";
 
 /// 从 `runtime.yaml` 的 `tools.enabled` 解析出启用工具列表。
 ///

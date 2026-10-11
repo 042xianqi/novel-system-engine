@@ -216,24 +216,50 @@ NovelCtx::open → chapter::build_prompt → llm::call → chapter::write_chapte
 
 ---
 
-## M5 · 长大（Runtime 硬骨头）
+## M5 · 长大（Runtime 硬骨头）— 🟡 主体完成（2026-10-11）
 
 **做什么**
 - `ContextWindowPolicy`：token 估算 + 输出预算（太墟 1074 行，最难的一块）
 - `compaction`：超限时摘要下沉
 - **prefix cache 契约落实**：工作区段用文件字节戳驱动（不用目录 mtime）
-- `session` 树真正用起来：分支 / rewind（`ne-agent session branch / rewind`）
+- `session` 树真正用起来：分支 / rewind（`ne-agent session rewind`）
 
-**验收**
-- 长对话不崩、token 可控
-- rewind 到某轮后重跑，结果自洽
-- 相邻两轮 system prompt 字节级一致（除显式事件）
+### ✅ 已交付
 
-**产出**：从"能用"到"能长跑"。
+**`crates/ne-agent/src/context.rs`（13 单测）** —— 逐条对照太墟 `ContextWindowPolicy.kt`
+- `estimate_tokens`：**CJK 单独分桶**（全角标点按 CJK 价）—— 否则系统性低估中文，
+  真实请求比估算大一截，悄悄吃掉折叠余量，最终 400/413 溢出
+- `truncate_stale_tool_results`：老轮次长工具结果压缩为「头 + 省略 + 尾」，
+  **保护当前轮 + 最近 4 条**，**不增删消息**（NATIVE 协议下丢消息 = 非法 transcript）
+- `folding_limit(window, reserve_output, tool_schema_reserve)`：折叠线
+  （tools 数组不在 messages 里，**必须显式预留** 7200 token）
+- `keep_from_index`：按预算丢弃最早**完整轮次**（保 tool_call⇄result 配对），至少留一轮
+
+**接线**：`harness::build_messages` → `truncate_context`（先截断老结果，再预算折叠）
+→ `sanitize_for_provider`；用 `runtime.yaml` 的 `context.max_prompt_tokens/reserve_tokens`
+
+**会话树 rewind**（`session.rs`）
+- 发现 M1 缺陷：`head = MAX(id)` 在 rewind 后会指错 → 加**显式 `head_id` 列** + 幂等迁移
+  （`ensure_column`，老库自动补列）
+- `rewind_to(session, msg_id)`：改指针**不删数据**（对齐太墟 `rewindBefore`），
+  校验消息属本会话（防跨会话串改）
+- `rewind_back(session, n)` / `rewind_last_turn(session)`（撤掉最后一条 user）
+- `head_id = -1` 哨兵表示"分支已清空"（撤销首条 user 时）
+- CLI：`session rewind [--to <id> | --back <N> | --last-turn]`
+- 7 个单测（含跨重开持久化、跨会话拒绝、分叉共存）
+
+**CLI**：`estimate [FILE]`（token 估算调试）
+
+### 待办
+- `compaction`（摘要下沉）：当前只有"截断/折叠"，无 LLM 摘要
+- prefix cache 字节戳驱动：待确认模型是否支持 prompt caching（太墟是 Anthropic 专属
+  `cache_control` 断点，ne-agent 走 OpenAI 兼容接口 → 需按实际 provider 决定）
+
+**产出**：从"能用"到"能长跑"（主体成立）。
 
 ---
 
-## M6 · 安全与协作
+## M6 · 安全与协作 — ✅ 主体完成（2026-10-11）
 
 **做什么**
 - `approval`：工具三档（normal / high / critical），PLAN 模式硬拦截
@@ -241,10 +267,43 @@ NovelCtx::open → chapter::build_prompt → llm::call → chapter::write_chapte
 - 协作工具：`plan` / `scratchpad` / `ask_user`
 - 按需加载：`load_rule` / `load_skill`
 
-**验收**
-- 危险操作被拦，需显式批准
-- 进程中断后恢复不误报成功（CAS 测试）
-- 规则/技能不常驻也能被取到
+### ✅ 已交付
+
+**`crates/ne-agent/src/approval.rs`（~470 行，14 单测 + 4 e2e）** —— 对照太墟 `ApprovalPolicyEngine.kt`
+- **审批三档** `ApprovalMode::{Request, Assisted, FullAccess}`（未知值→assisted）
+- **正交的只读规划** `plan_block`：`full_access + plan_only` **仍然只读**
+  （刻意不复用 `is_routine_command`——它放行 `cargo build` 这类会写产物的命令）
+- **决策不依赖模型措辞**（太墟原话："prompt 不参与决策"）
+- shell 反混淆（去引号/反斜杠/压空白）+ 危险模式 + 例常白名单 + 安全读管道 +
+  「下载 | 交给 shell」模式（`curl <url> | sh`，URL 在中间，固定子串匹配不到）
+- **接进 harness 工具循环**：plan_only 硬拒 → 审批 →（**无回调默认拒绝**，安全默认，绝不静默放行）
+- CLI：`chat --plan/--approval`；`runtime.yaml` 加 `approval:` 段
+
+**`crates/ne-agent/src/task_state.rs`（~660 行，13 单测）** —— 对照太墟 `AgentStateMachine`
+- **纯转移表** `TransitionPolicy`（8 状态，穷举单测，终态无出口）
+- **CAS 转移**：`UPDATE ... WHERE id=? AND status IN (...)`，影响行数 0 → 陈旧转移被拒
+  （太墟注释：*防进程恢复报出"幻觉的成功"*）
+- `create_queued` / `checkpoint`（进度上限 0.99，未完成不显示 100%）/
+  `active_for_session`（按状态优先级 running<recovering<waiting_approval<queued）/
+  `recoverable`（auto_resume + 重试额度）
+- CLI：`task list/new/show/set`
+
+**`crates/ne-agent/src/context_tools.rs`（~380 行，11 单测）** —— 对照太墟 `AgentContextExecutor`
+- `plan`：replace_active/get_active/advance/clear_active
+- `scratchpad`：save/get/list/delete/clear（限额 128/8192/200）
+- **关键教训**（太墟注释）：`plan.status` 是生命周期枚举（active/completed/cancelled），
+  模型常塞阶段说明 → `PlanStatus::parse` 失败时**保留原状态**，不写坏记录
+  （否则 `getActivePlan` 永久找不到记录）
+- 为什么值得有：长任务跨多轮，历史会被折叠（M5），状态就丢了 → 持久化到库不受折叠影响
+
+**工具面**：新增 `Tool::Plan`/`Tool::Scratchpad`（tier=Read，免审，会话局部，plan_only 下也放行
+——拦 plan 工具等于自相矛盾）；默认 `tools.enabled` 加入二者
+
+**测试**：全 workspace **346 通过 0 失败**
+
+### 待办（非核心，可后置）
+- `ask_user` 工具（需要交互通道，当前 chat 已有 approver 回调，可复用）
+- `load_rule`/`load_skill` 按需加载
 
 **产出**：可以放心交给它做事。
 

@@ -243,14 +243,26 @@ fn main() -> Result<()> {
         }
         "verify" => {
             let con = ne_db::connect(&root.join("novel.db").to_string_lossy())?;
-            let bad = ne_import::verify_import(&con, &lib)?;
-            if bad.is_empty() {
-                println!("✅ 对账通过：磁盘与 DB 字数一致");
+            let rep = ne_import::verify_import(&con, &lib)?;
+            if rep.compared == 0 && rep.skipped > 0 {
+                // ⚠ 不能报"通过"：源目录不存在/为空，一行都没比对
+                println!(
+                    "⚠ 未比对：源目录 {} 不存在或为空，{} 行全部跳过 —— 这是「无法对账」，不是「对账通过」",
+                    lib.display(),
+                    rep.skipped
+                );
+                std::process::exit(3);
+            }
+            if rep.diffs.is_empty() {
+                println!("✅ 对账通过：磁盘与 DB 字数一致（比对 {} 行，跳过 {} 行）",
+                    rep.compared, rep.skipped);
             } else {
-                println!("❌ 对账差异 {} 条：", bad.len());
-                for (p, s, d) in bad.iter().take(20) {
+                println!("❌ 对账差异 {} 条（比对 {} 行，跳过 {} 行）：",
+                    rep.diffs.len(), rep.compared, rep.skipped);
+                for (p, s, d) in rep.diffs.iter().take(20) {
                     println!("  {p}  源{s} vs DB{d}");
                 }
+                std::process::exit(1);
             }
         }
         _ => {

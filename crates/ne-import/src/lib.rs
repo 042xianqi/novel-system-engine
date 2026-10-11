@@ -233,33 +233,51 @@ pub fn record_ledger(con: &Connection, scan: &ScanResult) -> Result<usize> {
     Ok(n)
 }
 
-/// 对账：**磁盘源文件字数** vs **DB 实际存储字数**，返回不一致清单。
+/// 对账结果。
 ///
-/// 返回 `(src_path, 源字数, DB字数)`。
+/// ⚠ **`skipped` 必须暴露出来**：源目录不存在时早期实现会把 959/959 全部
+/// `continue` 跳过、然后打印"✅ 对账通过"——**假阳性**。
+/// 调用方必须检查 `compared`：`compared == 0 && skipped > 0` 说明「一个都没比对」，
+/// 不能当通过。
+#[derive(Debug, Default, PartialEq)]
+pub struct VerifyReport {
+    /// `(src_path, 源字数, DB字数)` —— 字数不一致的行。
+    pub diffs: Vec<(String, i64, i64)>,
+    /// 真正比对过的行数。
+    pub compared: usize,
+    /// 源文件不在（已删/已移）而跳过的行数。
+    pub skipped: usize,
+}
+
+/// 对账：**磁盘源文件字数** vs **DB 实际存储字数**，返回不一致清单。
 ///
 /// ⚠ 早期实现错查了 `import_ledger.content_chars`（该表无此列）——
 /// 对账必须落到 `materials.content_chars` 才有意义：
 /// 台账只记「导入时源有多少字」，真正要验的是「DB 里现在有多少字」。
-pub fn verify_import(con: &Connection, lib_root: &Path) -> Result<Vec<(String, i64, i64)>> {
+pub fn verify_import(con: &Connection, lib_root: &Path) -> Result<VerifyReport> {
     let mut st = con.prepare(
         "SELECT file_path, COALESCE(content_chars, -1) FROM materials WHERE file_path IS NOT NULL",
     )?;
     let rows = st.query_map([], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
     })?;
-    let mut bad = Vec::new();
+    let mut rep = VerifyReport::default();
     for r in rows.flatten() {
         let (rel, db_chars) = r;
         let p = lib_root.join(&rel);
         let src_chars = match std::fs::read_to_string(&p) {
             Ok(t) => net_chars(&t) as i64,
-            Err(_) => continue, // 源不在（已删/已移）：跳过
+            Err(_) => {
+                rep.skipped += 1; // 源不在（已删/已移）：跳过，但计数
+                continue;
+            }
         };
+        rep.compared += 1;
         if src_chars != db_chars {
-            bad.push((rel, src_chars, db_chars));
+            rep.diffs.push((rel, src_chars, db_chars));
         }
     }
-    Ok(bad)
+    Ok(rep)
 }
 
 /// 类别 → 新前缀（v3 规范），需结合目录判定。
@@ -392,11 +410,13 @@ mod tests {
         assert_eq!(n, 2);
         record_ledger(&con, &scan).unwrap();
         let bad = verify_import(&con, &dir).unwrap();
-        assert!(bad.is_empty(), "对账不应有差异：{bad:?}");
+        assert!(bad.diffs.is_empty(), "对账不应有差异：{bad:?}");
+        assert_eq!(bad.compared, 2, "两行都应被比对：{bad:?}");
+        assert_eq!(bad.skipped, 0);
         // 故意改坏 DB 字数 → 对账必须检出
         con.execute("UPDATE materials SET content_chars=1 WHERE code='CHAR-99-001'", []).unwrap();
         let bad2 = verify_import(&con, &dir).unwrap();
-        assert_eq!(bad2.len(), 1, "改坏后必须检出：{bad2:?}");
+        assert_eq!(bad2.diffs.len(), 1, "改坏后必须检出：{bad2:?}");
 
         // 全文真的进去了（不是摘要）
         let got: String = con
@@ -405,6 +425,32 @@ mod tests {
         assert!(got.contains("详细信息"), "必须是全文：{got}");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 回归：源目录**不存在**时，绝不能报"对账通过"。
+    /// 早期实现把读不到源的行全部 `continue`，导致 959/959 全跳过 → 假阳性。
+    #[test]
+    fn verify_import_does_not_pass_when_source_missing() {
+        let con = Connection::open_in_memory().unwrap();
+        con.execute_batch(
+            "CREATE TABLE materials(id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL,
+               name TEXT, category TEXT NOT NULL, file_path TEXT, content_chars INTEGER,
+               UNIQUE(code, category));",
+        ).unwrap();
+        con.execute(
+            "INSERT INTO materials(code, category, file_path, content_chars) VALUES
+             ('CHAR-99-001','角色','角色/主角/CHAR-99-001.md', 100),
+             ('CHAR-99-002','角色','角色/主角/CHAR-99-002.md', 200)",
+            [],
+        ).unwrap();
+
+        let missing = Path::new("/definitely/not/here/资料库");
+        let rep = verify_import(&con, &missing).unwrap();
+        assert_eq!(rep.compared, 0, "不应比对任何一行");
+        assert_eq!(rep.skipped, 2, "两行都应计入 skipped");
+        assert!(rep.diffs.is_empty());
+        // 关键断言：调用方必须能据此判断"没比过"，而不是"通过"
+        assert!(rep.compared == 0 && rep.skipped > 0, "必须能识别未比对状态");
     }
 }
 

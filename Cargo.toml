@@ -10,6 +10,7 @@ members = [
     "crates/ne-cardgen",
     "crates/ne-import",
     "crates/ne-mcp",
+    "crates/ne-agent",
 ]
 
 [workspace.package]

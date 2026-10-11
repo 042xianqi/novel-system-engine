@@ -1,0 +1,27 @@
+[package]
+name = "ne-agent"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "《残响之河》Agent Runtime —— 单二进制智能体（会话/记忆/工具/任务），小说流水线的统一入口"
+
+[[bin]]
+name = "ne-agent"
+path = "src/main.rs"
+
+[dependencies]
+ne-core = { path = "../ne-core" }
+ne-engine = { path = "../ne-engine" }
+ne-funnel = { path = "../ne-funnel" }
+ne-db = { path = "../ne-db" }
+ne-qc = { path = "../ne-qc" }
+ne-injection = { path = "../ne-injection" }
+
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+anyhow = "1"
+regex = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }

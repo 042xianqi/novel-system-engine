@@ -257,3 +257,13 @@ git push origin main
 - [ ] 文档：ROADMAP-ne-agent.md 追加 M8 段；若有 CHANGELOG 同步。
 - [ ] 版本号 Cargo.toml 0.0.5 → 0.0.6（workspace）。
 - [ ] 提交 + 推送（gh-push.sh，见本文件顶部命令速查）。
+
+### ✅ M8 全部完成（续跑 3 收尾）
+- 3 处 clippy 已清（redundant_closure / collapsible_if / type_complexity→AskerFn）。
+- ROADMAP-ne-agent.md 追加 M8 段；版本 0.0.5 → 0.0.6（Cargo.toml + 文档）。
+- 全量验证：`cargo test` 32 套件 0 失败；arch_check 通过；Android aarch64 release 重建成功（6.4M，仅 bionic 库）。
+- 提交 bab41f2，已推送 origin/main（bffde39..bab41f2）。工作树干净、与远端同步。
+
+**M8 交付物**：ask_user.rs / resources.rs(+rules/*.md) / dual_agent.rs(+tests) / subagent_runner.rs /
+tool/ 拆分 / scripts/cross-build-android.sh / workflows/（太墟工作流 6 个 + 安装器）/
+tests/m8_tools_e2e.rs / tests/dual_agent_e2e.rs。工具数 10→14。

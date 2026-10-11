@@ -194,3 +194,134 @@ fn first_line(s: &str) -> String {
         l.to_string()
     }
 }
+
+// ───────────────────────────── 小说任务（M3）
+
+/// 一章生成的产物与结果。
+#[derive(Debug, Clone)]
+pub struct NovelOutcome {
+    pub chapter: u32,
+    pub volume: String,
+    /// 正文文本
+    pub text: String,
+    /// 落盘路径（dry-run 时为空）
+    pub written_to: Option<String>,
+    /// 门禁判决：pass | fix | fail
+    pub verdict: String,
+    /// P0/P1 计数
+    pub p0: usize,
+    pub p1: usize,
+    /// 门禁明细（P1 前若干条）
+    pub notes: Vec<String>,
+}
+
+impl NovelOutcome {
+    pub fn render(&self) -> String {
+        let mut s = format!(
+            "第 {} 章（{}） {} 字 · 门禁 {}\n",
+            self.chapter,
+            self.volume,
+            self.text.chars().count(),
+            self.verdict.to_uppercase()
+        );
+        if let Some(p) = &self.written_to {
+            s.push_str(&format!("  已落盘：{p}\n"));
+        } else {
+            s.push_str("  （dry-run，未落盘）\n");
+        }
+        s.push_str(&format!("  P0 {} · P1 {}\n", self.p0, self.p1));
+        for n in &self.notes {
+            s.push_str(&format!("  · {n}\n"));
+        }
+        s
+    }
+}
+
+/// 生成一章。**这是 M3 的主干：把既有 ne-engine 能力接成一个任务。**
+///
+/// 流程（每一步都用现成能力，不重写业务）：
+///   1. `NovelCtx::open(lib_root)` —— 只读绑定库
+///   2. `chapter::build_prompt` —— 细纲 + 注入包 + 模板 → 完整正文 prompt
+///   3. `ne_engine::llm::call` —— 生成正文
+///   4. `chapter::write_chapter` —— 落盘（`dry_run` 时跳过）
+///   5. `gates::run_all` —— 16 门禁校验
+///
+/// 与既有口径一致：`RepoCtx` 负责 GateCtx（与 `ne-engine check-file` 同源），
+/// `NovelCtx` 负责 BudgetCtx/ChapterCtx（生成侧）。
+#[allow(clippy::too_many_arguments)]
+pub fn novel_chapter(
+    lib_root: &std::path::Path,
+    volume: &str,
+    chapter: u32,
+    llm: &ne_engine::llm::LlmParams,
+    work_root: &std::path::Path,
+    prompt_dir: &std::path::Path,
+    dry_run: bool,
+) -> Result<NovelOutcome> {
+    if !lib_root.join("novel.db").exists() && !lib_root.join("03_叙事规划").exists() {
+        anyhow::bail!(
+            "库根不像小说资料库（既无 novel.db 也无 03_叙事规划）：{}",
+            lib_root.display()
+        );
+    }
+
+    let ctx = crate::novel_ctx::NovelCtx::open(lib_root)?;
+    // prompt 模板可被 vault 的 prompts/ 覆盖（双层资源）
+    let ctx = ctx.with_prompt_fallback(prompt_dir);
+
+    // 1) 组装 prompt
+    let prompt = ne_engine::chapter::build_prompt(&ctx, chapter, volume)
+        .map_err(|e| anyhow::anyhow!("组装正文 prompt 失败：{e}"))?;
+
+    // 2) 调模型
+    let msgs = vec![
+        ne_engine::llm::Message {
+            role: "system".into(),
+            content: "你是《残响之河》的小说撰稿者。严格按用户给出的写作指令输出正文，不要复述指令。".into(),
+        },
+        ne_engine::llm::Message { role: "user".into(), content: prompt },
+    ];
+    let out = ne_engine::llm::call(llm, &msgs)
+        .map_err(|e| anyhow::anyhow!("模型调用失败：{e}"))?;
+    let text = out.content.trim().to_string();
+    if text.is_empty() {
+        anyhow::bail!("模型返回空正文");
+    }
+
+    // 3) 落盘
+    let written_to = if dry_run {
+        None
+    } else {
+        Some(
+            ne_engine::chapter::write_chapter(lib_root, &text, chapter, volume)
+                .map_err(|e| anyhow::anyhow!("落盘失败：{e}"))?,
+        )
+    };
+
+    // 4) 门禁（与 ne-engine check-file 同源：RepoCtx 实现 GateCtx）
+    let cfg = ne_engine::config::load(lib_root)
+        .map_err(|e| anyhow::anyhow!("读库配置失败（库根 {}）：{e}", lib_root.display()))?;
+    let repo_ctx = ne_engine::ctx::RepoCtx::open(lib_root)
+        .map_err(|e| anyhow::anyhow!("打开门禁上下文失败：{e}"))?;
+    let report = ne_engine::gates::run_all(&text, chapter, volume, &cfg, &repo_ctx);
+
+    let mut notes = Vec::new();
+    for f in report.p0.iter().take(5) {
+        notes.push(format!("P0 {}: {}", f.gate, first_line(&f.issue)));
+    }
+    for f in report.p1.iter().take(5) {
+        notes.push(format!("P1 {}: {}", f.gate, first_line(&f.issue)));
+    }
+
+    let _ = work_root;
+    Ok(NovelOutcome {
+        chapter,
+        volume: volume.to_string(),
+        text,
+        written_to,
+        verdict: report.verdict,
+        p0: report.p0.len(),
+        p1: report.p1.len(),
+        notes,
+    })
+}

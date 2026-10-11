@@ -134,19 +134,43 @@ crates/ne-agent/src/
 
 ---
 
-## M3 · 小说任务（把现有资产接进来）
+## M3 · 小说任务（把现有资产接进来）— ✅ 已完成（2026-10-11）
 
 **做什么**
 - `task::narrative`：包装现有 `ne-engine` + `ne-qc` + `ne-injection` + `ne-funnel`
   - 流程：细纲 → 注入包 → LLM 生成 → 门禁 → 入库（**不改业务，只包一层**）
 - `ne-agent novel --chap-id N` 跑通
-- 每章前后 `recall` / `consolidate` 接记忆
 
-**验收**
-- `ne-agent novel --chap-id 1` 产出正文并过门禁
-- 与原 `ne-engine check-file` 结果一致（口径统一，别再出现 CLI/MCP 不一致那种 bug）
+### ✅ 交付 —— 补上了全仓库缺失的半条链
 
-**产出**：**这才是你要的"整体"成立**——小说流水线不再是脚本，是一个主体的一项任务。
+**核心发现**：`ne_engine::budget::build_injection` 与 `ne_engine::chapter::build_prompt`
+早已写好，但它们依赖的 `BudgetCtx` / `ChapterCtx` trait **全仓库只有测试里的 mock，
+没有真实现** → **半条生成链是断的**（能力在，没人接上）。
+
+`crates/ne-agent/src/novel_ctx.rs`（425 行，7 单测）就是那一半：
+- `NovelCtx::open(root)` —— **只读**打开 `novel.db`（`SQLITE_OPEN_READ_ONLY`，与 ne-mcp/RepoCtx 同口径）
+- `impl BudgetCtx for NovelCtx`：8 个方法（outline/material/read_lib_file/role_rows/
+  char_card_rows/foreshadow_rows/event_rows/prev_tail）
+- `impl ChapterCtx for NovelCtx`：4 个方法（injection 委托 budget、prompt_file 库根优先、
+  kb_rules 无表如实返空、material_content）
+- 兼容 `old_code`/`new_code` 兜底；`02_资料库` 已删 → 卡片走 DB content 回退；
+  缺库优雅降级不 panic
+
+`task::novel_chapter()` —— 主干串接（每步用现成能力，不重写业务）：
+```
+NovelCtx::open → chapter::build_prompt → llm::call → chapter::write_chapter → gates::run_all
+```
+门禁复用 `ne_engine::ctx::RepoCtx`（它已实现只读 `GateCtx`）→ **与 `ne-engine check-file` 同源，口径一致**。
+
+**CLI**：`ne-agent novel --chap-id N [--volume 卷01] [--lib DIR] [--dry-run] [--prompt-only] [--json]`
+（`--lib` 缺省用 vault 的 `workspace/`；`$NE_AGENT_LIB` 可指定）
+
+**真机验收**（对真实资料库副本，非单测）：
+- `--prompt-only`：第 1 章 prompt 3789 字，含细纲「目标/在场/阻碍/选择/钩子」——断链已接通。
+- 完整生成：细纲 → 注入包 → prompt → 模型 → **落盘**（13501 字节）→ 门禁返回真实判决
+  （`REJECT`，P0 `G09_info_density` 4500>4000 硬上限 —— 因假正文是循环文本，判决正确）。
+- 全 workspace **250 测试 0 失败**。
+
 
 ---
 

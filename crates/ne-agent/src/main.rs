@@ -13,7 +13,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use ne_agent::{RuntimeConfig, Vault};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -73,6 +73,24 @@ enum Cmd {
     Memory {
         #[command(subcommand)]
         cmd: MemoryCmd,
+    },
+    /// 生成一章正文（细纲 → 注入包 → 模型 → 门禁）
+    Novel {
+        /// 章号（第几章）
+        #[arg(long, default_value_t = 1)]
+        chap_id: u32,
+        /// 卷号
+        #[arg(long, default_value = "卷01")]
+        volume: String,
+        /// 资料库根（默认：vault 的 workspace 或 $NE_AGENT_LIB）
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+        /// 只生成不落盘
+        #[arg(long)]
+        dry_run: bool,
+        /// 只组装 prompt，不调模型（调试用；打印 prompt 长度与前 500 字）
+        #[arg(long)]
+        prompt_only: bool,
     },
 }
 
@@ -170,6 +188,9 @@ fn run() -> Result<()> {
         }
         Cmd::Session { cmd } => run_session(&vault, cmd, cli.json),
         Cmd::Memory { cmd } => run_memory(&vault, cmd, cli.json),
+        Cmd::Novel { chap_id, volume, lib, dry_run, prompt_only } => {
+            run_novel(&vault, *chap_id, volume, lib.as_deref(), *dry_run, *prompt_only, cli.json)
+        }
         Cmd::Tools => {
             for t in ne_agent::tool::Tool::all() {
                 if cli.json {
@@ -547,6 +568,80 @@ fn truncate(s: &str, n: usize) -> String {
     } else {
         one_line.to_string()
     }
+}
+
+/// 生成一章。
+///
+/// 库根解析顺序：显式 `--lib` / `$NE_AGENT_LIB` → vault 的 `workspace/`
+/// （vault 里放一份库，或软链指向真实资料库）。
+fn run_novel(
+    vault: &Vault,
+    chap_id: u32,
+    volume: &str,
+    lib: Option<&Path>,
+    dry_run: bool,
+    prompt_only: bool,
+    json: bool,
+) -> Result<()> {
+    vault.init()?;
+    let lib_root = match lib {
+        Some(p) => p.to_path_buf(),
+        None => vault.workspace(),
+    };
+    if !lib_root.exists() {
+        anyhow::bail!(
+            "库根不存在：{}\n提示：用 `--lib <资料库根>` 指定，或把它放到 vault 的 workspace/ 下",
+            lib_root.display()
+        );
+    }
+
+    let cfg = RuntimeConfig::load(vault.root())?;
+    let prompt_dir = vault.path(ne_agent::vault::PROMPTS_DIR);
+
+    if prompt_only {
+        // 只组装 prompt，不调模型 → 不需要模型配置
+        let ctx = ne_agent::novel_ctx::NovelCtx::open(&lib_root)?
+            .with_prompt_fallback(&prompt_dir);
+        let prompt = ne_engine::chapter::build_prompt(&ctx, chap_id, volume)
+            .map_err(|e| anyhow::anyhow!("组装第 {chap_id} 章 prompt 失败（卷 {volume}）：{e}"))?;
+        if json {
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                "chapter": chap_id, "volume": volume,
+                "promptChars": prompt.chars().count(),
+                "prompt": prompt,
+            }))?);
+        } else {
+            println!("第 {chap_id} 章（{volume}）prompt 已组装：{} 字", prompt.chars().count());
+            println!("── 前 800 字 ──");
+            println!("{}", prompt.chars().take(800).collect::<String>());
+        }
+        return Ok(());
+    }
+
+    let llm = cfg.llm_params(&vault.llm_dir())?;
+
+    let out = ne_agent::task::novel_chapter(
+        &lib_root,
+        volume,
+        chap_id,
+        &llm,
+        &vault.workspace(),
+        &prompt_dir,
+        dry_run,
+    )?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "chapter": out.chapter, "volume": out.volume,
+            "chars": out.text.chars().count(),
+            "writtenTo": out.written_to,
+            "verdict": out.verdict, "p0": out.p0, "p1": out.p1,
+            "notes": out.notes,
+        }))?);
+    } else {
+        print!("{}", out.render());
+    }
+    Ok(())
 }
 
 fn run_models(vault: &Vault, cmd: &ModelsCmd, json: bool) -> Result<()> {

@@ -4,7 +4,11 @@ use std::time::Duration;
 fn main() {
     let dir = providers::agent_dir();
     let (provs, roles) = providers::load_from_dir(&dir).expect("load providers");
-    let mut p = providers::build_params(&provs, &roles, Some(&["agens"]));
+    let mut p = providers::build_params(&provs, &roles, None);
+    if p.keys.is_empty() {
+        eprintln!("models.yml 未配置任何 provider/key，退出。");
+        std::process::exit(1);
+    }
     p.max_tokens = 512;
     p.timeout = Duration::from_secs(60);
     p.retries = 1;

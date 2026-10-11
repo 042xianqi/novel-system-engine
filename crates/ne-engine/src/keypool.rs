@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 /// 并发 lane 上限（沿用 7k 的 7）。
 pub const MAX_PARALLEL_KEYS: usize = 7;
-/// 单 key 每分钟请求上限（Agnes 免费账号实测）。
+/// 单 key 每分钟请求上限（OMP 实测）。
 pub const DEFAULT_RATE_LIMIT_RPM: u32 = 10;
 /// 单 key 同时在途请求上限（实测并发顶 ≈ 5）。
 pub const DEFAULT_MAX_INFLIGHT: u32 = 5;
@@ -251,7 +251,7 @@ mod tests {
             KeyProbeResult { key: "y".into(), ok: true, latency_ms: 50 },
             KeyProbeResult { key: "z".into(), ok: true, latency_ms: 20 },
         ];
-        let pool = build_ranked_pool("agens", &probed).unwrap();
+        let pool = build_ranked_pool("test-provider", &probed).unwrap();
         assert_eq!(pool.keys, vec!["z", "y", "x"]);
         assert_eq!(bind_fastest_key_as_brain(&pool), Some("z"));
     }

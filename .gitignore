@@ -1,2 +1,15 @@
 target/
 *.bak
+
+# ne-agent vault 产物（每个项目一个自包含库，不入版本库）
+.neagent/
+agent.db
+agent.db-wal
+agent.db-shm
+
+# 运行时覆盖层（外部热调，不入版本库）
+agent_override/
+
+# 编辑器/系统
+.DS_Store
+*.swp

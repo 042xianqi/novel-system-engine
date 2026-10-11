@@ -29,7 +29,9 @@ pub struct LlmParams {
 impl Default for LlmParams {
     fn default() -> Self {
         LlmParams {
-            base_url: "https://api.agnes-ai.cn/v1".into(),
+            // 占位默认值：实际参数一律由 providers::build_params 从 models.yml 填充，
+            // 此处留空以免把任何具体端点/模型名写死进代码。
+            base_url: String::new(),
             model: String::new(),
             keys: vec![],
             max_tokens: 4096,

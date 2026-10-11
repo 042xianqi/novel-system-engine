@@ -90,7 +90,7 @@ pub fn agent_dir() -> PathBuf {
 }
 
 /// 判断一个列表项是否像 API key（而非模型名等其它列表项）。
-/// 依据：实测 key 形如 `sk-...`（51 字符）；模型名形如 `agnes-3.0-flash`。
+/// 依据：实测 key 形如 `sk-...`（51 字符）；模型名形如 `glm-5.3-flash`。
 /// 保守策略：认 `sk-` 前缀，或长度 ≥ 32 且不含 `/`/空格 的裸串。
 fn is_likely_key(s: &str) -> bool {
     if s.starts_with("sk-") {
@@ -163,7 +163,7 @@ pub fn parse_models_yml(text: &str) -> Providers {
             continue;
         }
 
-        // provider 名（缩进 2，形如 `agens:`）
+        // provider 名（缩进 2，形如 `workbuddy:`）
         if n == 2 && t.ends_with(':') && !t.contains(' ') {
             let name = t.trim_end_matches(':').to_string();
             out.entry(name.clone()).or_insert_with(|| Provider {
@@ -335,7 +335,7 @@ pub fn load_from_dir(dir: &Path) -> Result<(Providers, BTreeMap<String, String>)
 ///   2. `prefer` 显式指定的 provider
 ///   3. 其余所有 provider（按名字序，作兜底）
 ///
-/// ⚠ 旧版硬编码 `["agens","gcmod"]` —— 用户自定义 provider 名会被完全忽略。
+/// ⚠ 旧版硬编码 provider 白名单 —— 用户自定义 provider 名会被完全忽略。
 pub fn build_params(
     provs: &Providers,
     roles: &BTreeMap<String, String>,

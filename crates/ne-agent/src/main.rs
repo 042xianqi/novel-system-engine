@@ -314,6 +314,7 @@ fn run_chat(
             vault.path(ne_agent::vault::PROMPTS_DIR),
             h.enabled,
             msg,
+            vault.root().to_path_buf(),  // vault 根（M8：load_rule/load_skill 用）
         )?;
         if json {
             println!("{}", serde_json::to_string_pretty(&serde_json::json!({
@@ -334,6 +335,7 @@ fn run_chat(
         vault.workspace(),
         vault.path(ne_agent::vault::PROMPTS_DIR),
         h.enabled,
+        vault.root().to_path_buf(),
     )
 }
 

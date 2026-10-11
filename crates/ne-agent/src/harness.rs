@@ -114,6 +114,15 @@ pub struct HarnessCtx<'a> {
     /// 审批回调：返回 true = 批准执行。`None` = 无法交互（非交互式 CLI），
     /// 此时需审批的调用**默认拒绝**（安全默认，不静默放行）。
     pub approver: Option<Box<dyn Fn(&crate::approval::Decision) -> bool + 'a>>,
+    /// system prompt 覆盖（双智能体的 Planner 用专用规划提示词）。
+    ///
+    /// `None` = 走平常的 [`system_prompt_text`] 组装；`Some` = 直接用给定文本作 system
+    /// （仍拼 pinned_section）。用于 Planner 这类需要**纯规划人格**的子智能体。
+    pub system_override: Option<String>,
+    /// vault 根（load_rule/load_skill 读 `<vault>/rules`、`<vault>/skills`）。
+    pub vault_root: std::path::PathBuf,
+    /// ask_user 的交互回调（`None` = 非交互 → ask_user 明确报错）。
+    pub asker: Option<crate::tool::AskerFn>,
 }
 
 impl<'a> HarnessCtx<'a> {
@@ -133,6 +142,14 @@ impl<'a> HarnessCtx<'a> {
 /// pinned 记忆段拼在末尾——它同样是**稳定**的（排序内容确定，见 memory.rs），
 /// 因此可以安全地进 system prompt；逐轮变的 recall 走 [`TurnPrefix`]。
 pub fn system_prompt_text(h: &HarnessCtx) -> Result<String> {
+    if let Some(ov) = &h.system_override {
+        // 覆盖模式（如双智能体 Planner）：直接用既定文本，仅拼 pinned 段
+        let mut s = ov.clone();
+        if !h.pinned_section.is_empty() {
+            s.push_str(&h.pinned_section);
+        }
+        return Ok(s);
+    }
     let tools_desc = h
         .enabled
         .iter()
@@ -143,10 +160,48 @@ pub fn system_prompt_text(h: &HarnessCtx) -> Result<String> {
     let vars = agent_vars(&tools_desc, &h.work_root);
     prompt::validate_vars(&vars)?;
     let mut s = prompt::build_system_prompt(&h.prompt_dir, &vars)?.text;
+    s.push_str(&resources_catalog(h));
     if !h.pinned_section.is_empty() {
         s.push_str(&h.pinned_section);
     }
     Ok(s)
+}
+
+/// 按需资源的**目录段**（只列名，正文靠 load_rule/load_skill 拉）。
+///
+/// 与 tools 清单同理：常驻的只有"存在什么"，不是"内容是什么"——避免正文常驻
+/// 击穿 KV cache 并挤压真实上下文（见 [crate::resources] 的模块说明）。
+///
+/// 仅当对应工具**已启用**时才列出，避免模型看到用不了的能力。
+fn resources_catalog(h: &HarnessCtx) -> String {
+    let has_rule = h.enabled.contains(&Tool::LoadRule);
+    let has_skill = h.enabled.contains(&Tool::LoadSkill);
+    if !has_rule && !has_skill {
+        return String::new();
+    }
+    let mut out = String::new();
+    if has_rule {
+        let names = crate::resources::available_rule_names(&h.vault_root);
+        if !names.is_empty() {
+            out.push_str(&format!(
+                "\n## 可加载的规则块（用 `load_rule` 取正文）\n- {names}\n"
+            ));
+        }
+    }
+    if has_skill {
+        let catalog = crate::resources::skill_catalog(&h.vault_root);
+        if !catalog.is_empty() {
+            out.push_str("\n## 可加载的技能（用 `load_skill` 取正文）\n");
+            for s in &catalog {
+                if s.description.is_empty() {
+                    out.push_str(&format!("- `{}`\n", s.name));
+                } else {
+                    out.push_str(&format!("- `{}`：{}\n", s.name, s.description));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// MCP 工具清单行（供 prompt 告知模型）。**已连接的**才列出（避免启动全部服务）。
@@ -416,6 +471,18 @@ pub fn run_session(h: &HarnessCtx, turn_prefix: &TurnPrefix) -> Result<RunOutcom
     // plan/scratchpad 需要会话 id + 存储（与记忆库同文件）
     if let Ok(cs) = crate::context_tools::ContextStore::open(h.store.path()) {
         ctx = ctx.with_session(h.session.clone(), cs);
+    }
+    // M8：load_rule/load_skill 需要 vault 根；ask_user 需要交互回调；双智能体需要运行时上下文
+    ctx = ctx.with_vault_root(h.vault_root.clone());
+    ctx = ctx.with_runtime(
+        h.store.path().to_path_buf(),
+        std::sync::Arc::new(h.cfg.clone()),
+        h.prompt_dir.clone(),
+        h.enabled.clone(),
+    );
+    ctx = ctx.with_llm(h.llm.clone());
+    if let Some(asker) = h.asker {
+        ctx = ctx.with_asker(asker);
     }
     let mut all_results = Vec::new();
     let mut consecutive_failures = 0usize;

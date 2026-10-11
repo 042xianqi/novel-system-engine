@@ -323,7 +323,7 @@ NovelCtx::open → chapter::build_prompt → llm::call → chapter::write_chapte
 **单二进制**
 - release 9.2 MB（aarch64），`ldd` 仅 **libc / libm / libgcc**（标准 glibc），
   **无脚本、无 Rust 运行时、无动态框架** → 拷到有 glibc 的机器即可跑
-- `Cargo.toml`：`strip=true` + `codegen-units=1`；workspace 版本统一 0.0.5
+- `Cargo.toml`：`strip=true` + `codegen-units=1`；workspace 版本统一 0.0.6
 
 **架构门禁** `scripts/arch_check.py`（148 行）+ `architecture-policy.json` + `.architecture-baseline.json`
 - **crate 依赖白名单**（解析 path 依赖）→ **上线即揪出真实死依赖**
@@ -353,11 +353,51 @@ NovelCtx::open → chapter::build_prompt → llm::call → chapter::write_chapte
 - `subagent` e2e：假 LLM 跑两子任务，验证顺序执行 + 会话隔离 + 父会话不被污染
 
 ### 未做（诚实清单）
-- **dual agent（Planner/Executor）**：太墟有，但它依赖真并发 + 物理隔离 Profile 目录；
-  与顺序 Lane 的收益/复杂度比不划算，未实现
-- 跨设备交叉编译（Android aarch64）未做（已有 linux aarch64 产物）
+- ~~**dual agent（Planner/Executor）**~~ → **M8 已补**（顺序版，见下）
+- ~~跨设备交叉编译（Android aarch64）未做~~ → **M8 已补**（见下）
 
 **产出**：成品。
+
+---
+
+## M8 · 补齐旧待办 — ✅ 已完成（2026-10-11）
+
+**做什么**：把 M5/M6/M7 里挂着的四项"旧待办"补完，并把太墟的协作原语按需接进 ne-agent。
+
+### ✅ 交付
+
+**① `ask_user` 工具**（`ask_user.rs`，195 行；对齐太墟 `AskUserModels.kt`）
+- 一次 1~4 问，每题可带候选项（label + 说明）+ 允许自定义输入；重复选项拒收
+- **不是裸提问**：解析/校验/渲染与"谁提供答案"分离——`ToolExecutor` 只落 pending 请求，
+  答案由外部交互回调（[`ToolCtx::asker`]）回填。非交互环境（子智能体 Lane / 脚本）
+  明确报错并**交回主智能体**，不静默返回空答案。
+
+**② `load_rule` / `load_skill` 按需加载**（`resources.rs`，372 行；`rules/*.md` 内置三块）
+- system prompt 只放**目录元数据**（规则名清单 + 技能名/一句话），正文靠工具主动拉取
+  ——与 prompt 分层同一理由：避免正文常驻击穿 KV cache、挤压真实上下文
+- 双层资源：vault `<rules|skills>/` override 优先，编译内置回退
+- `load_skill` 支持子资源（`references/…`）**越界防护**：拒 `..`/绝对路径/软链逃逸；
+  技能名匹配**精确优先、模糊多命中即报错**（对齐太墟，防"选错技能"）
+
+**③ 顺序版 dual agent**（`dual_agent.rs` 650 行 + `dual_agent_tests.rs`；对齐太墟 `harness/dual/`）
+- Planner（纯规划人格，`system_override`）→ Executor（隔离子会话真跑工具）→ 精炼汇报回注 → 下一轮
+- **如实差异**：太墟 Executor 按 DAG **并发**就绪步骤（`MAX_CONCURRENT_STEPS=3`）；
+  ne-agent 运行时是 std 阻塞单线程、写小说是长链顺序任务，故**顺序执行**——保留 DAG 拓扑
+  （`dependencies` 就绪判定）、每轮只跑一个就绪步。其余语义全部对齐：REPLAN 保留 COMPLETED、
+  FAILED 可重试、级联失败、FINISH 前校验（未完成即打回）。
+- 切断 `task → tool → task` 循环：`subagent_runner.rs` 单独承担"从 ToolCtx 重建 HarnessCtx"
+
+**④ Android aarch64 交叉编译**（`scripts/cross-build-android.sh`）
+- NDK clang + API24；产 ELF 仅依赖 **bionic 标准库**（libc/libm/libdl），单二进制可跑
+- 坑：连字符环境变量（`CC_aarch64-linux-android`）不能 `export`，须用 `env` 传
+
+**架构门禁**：`tool.rs` 900 行（顶格）→ 拆 `tool/{mod,fs,external_io,session_local,tests}.rs`；
+`harness.rs`/`dual_agent.rs` 测试外置到 `*_tests.rs` 以免超 700。
+
+**测试**：`tests/m8_tools_e2e.rs`（7 项，走真实工具总线）+ `tests/dual_agent_e2e.rs`（2 项，脚本化假 LLM）
+——全绿。全工作区 `cargo test` 32 套件 0 失败；门禁通过。
+
+**产出**：成品（v0.0.6）。
 
 ---
 

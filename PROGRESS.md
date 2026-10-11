@@ -182,3 +182,78 @@ target/debug/ne-agent --vault $V session list
 source /attachments/skills/github-upload/scripts/gh-push.sh && gh_fix_dns
 git push origin main
 ```
+
+---
+
+## M8 进行中（2026-10-11，跨段续跑）
+
+### 已完成
+1. **太墟工作流交付**（6 个 ne-agent 工作流装进太墟 App）
+   - 定义：`workflows/taixu/ne_{build,test,gate,commit,push,verify}.json`
+   - 安装器：`workflows/install_taixu_workflows.py`（`--emit-sql` / `--list` / `--uninstall` / 自动备份）
+   - 真机通路（**关键，勿忘**）：App 在跑时无法停（`am force-stop` 会杀掉会话自身）。
+     解法：host root → `chroot /data/data/top.wkbin.taixu/files/linux-runtime/distros/ubuntu/rootfs`
+     → `mount --bind .../databases $R/tmp/appdb` → rootfs 内 `/usr/bin/sqlite3` 就地 upsert。
+     sqlite3 支持 WAL 并发写，无需停 App。已验：完整性 ok / 会话·记忆·任务行数未变 / JSON 与内置 golden 同构 / 6 节点命令端到端实测通过。
+2. **Android 交叉编译**：`scripts/cross-build-android.sh`（NDK clang + API24；坑：连字符 env 不能用
+   `export`，改用 `env` 传 CC_aarch64-linux-android 等）。后台验证中。
+3. **tool.rs 拆分**（架构门禁 900 行顶格）：拆为 `crates/ne-agent/src/tool/{mod,fs,external_io,session_local,tests}.rs`，
+   已切分 + 设 `pub(super)` 可见性，**编译验证未做**。
+
+### 未完成（续跑从这里接）
+- [ ] tool 拆分编译验证（`cargo test -p ne-agent`）
+- [ ] A1 `ask_user` 工具（复用 approver 回调通道，参考太墟 HarnessTool.ASK_USER）
+- [ ] A2 `load_rule` / `load_skill` 按需加载（参考太墟 ToolExecutor LOAD_SKILL 400-480 行 + PromptRouter）
+- [ ] A3 顺序版 dual agent（Planner→Executor，不并发）
+- [ ] A4 Android 交叉编译产物验证通过
+- [ ] A5 全量测试 + 门禁 + 文档/版本 → v0.0.6
+- [ ] A6 提交推送
+
+### 工具集清单（当前）
+`read/write/edit/ls/base/plan/scratchpad/mcp__*/web_fetch/web_search`
+
+
+### S1-S3 收尾（续跑 2 起）
+- **A4 交叉编译：已完成**（scripts/cross-build-android.sh，产 aarch64 ELF 仅依赖 bionic libc/libm/libdl）。
+- **tool.rs 拆分：已完成**（tool/{mod,fs,external_io,session_local,tests}.rs；157 测试 + 门禁通过。
+  坑：拆分后必须 `rm tool.rs`，否则 Rust 优先单文件忽略目录）。
+- **S2 resources.rs（新）：已完成**（load_rule/load_skill/strip_frontmatter/skill_catalog + 越界防护 + 8 单测）；
+  `crates/ne-agent/rules/{workflow,security,tools}.md` 内置规则；vault.rs 加 RULES_DIR/SKILLS_DIR。
+- **ask_user.rs（新）：已完成**（AskQuestion/AskOption + parse/render + 6 单测，对齐太墟 AskUserModels）。
+- **tool/mod.rs：枚举/schema/分派/权限档 已扩到 14 个工具**；approval.rs 白名单+plan_block 已同步。
+- **HarnessCtx 加 `system_override`/`vault_root`/`asker`；ToolCtx 加 `vault_root`/`llm`/`asker`/运行时字段**；
+  harness.rs::run_session 已装配 ctx；task.rs make_ctx/chat_once/chat_interactive 签名已改。
+
+### 未完成（下一步，注意：当前**未编译**）
+- [ ] **新建 `crates/ne-agent/src/subagent_runner.rs`**：`run_subagents_in_ctx(ctx, tasks, max)` —— 从 ToolCtx
+      装配子 ctx 并调用 subagent::run_subagents（现 task.rs 里已有 run_subagents/parent_ctx，但 session_local 调的是 subagent_runner）。
+- [ ] **subagent.rs 需补 `pub const DEFAULT_MAX_TASKS` + `pub fn parse_subagents(&Value,usize)` + `pub fn render_outcomes`**（若缺）。
+- [ ] **新建 `crates/ne-agent/src/dual_agent.rs`**：DualAgentParams/DualAgentOutcome/StepStatus/DEFAULT_MAX_STEPS/
+      `from_ctx`/`run`（顺序版 Planner→Executor，参考 /workspace/taixu-ref/.../dual/）。
+- [ ] lib.rs 注册新模块（ask_user、subagent_runner、dual_agent 若尚未注册）。
+- [ ] task.rs 其余 make_ctx 调用点（parent_ctx / make_ctx_for_test / run_subagents / novel 任务）+ 测试补参数。
+- [ ] main.rs 调用点补 vault_root / asker 实参；chat_interactive 挂 interactive_asker。
+- [ ] **编译 + `cargo test -p ne-agent` + `python3 scripts/arch_check.py` 全绿**。
+- [ ] 文档/版本 → v0.0.6，提交推送。
+
+### S2-S6 完成情况（续跑 3）
+- **S2 resources.rs**：✅（load_rule/load_skill/skill_catalog + 越界防护，单测通过）
+- **S3 tool 枚举+schema+分派+审批**：✅（14 工具；approval 白名单 + plan_block 同步；tool/tests.rs 更新）
+- **S4 dual agent 顺序版**：✅ `crates/ne-agent/src/dual_agent.rs`（+ dual_agent_tests.rs）+ `subagent_runner.rs`（切断 tool→task 循环）
+- **S5 运行时装配**：✅（ToolCtx vroot/llm/asker/运行时字段；HarnessCtx system_override/vault_root/asker；
+  harness::run_session 装配 + system prompt 资源目录段 resources_catalog；task.rs make_ctx/chat_once/chat_interactive
+  + interactive_asker；main.rs 两处调用点补 vault 根；vault.rs 默认 enabled 加 ask_user/load_rule/load_skill + RULES/SKILLS 目录）
+- **e2e 新增**：tests/m8_tools_e2e.rs（7 项）、tests/dual_agent_e2e.rs（2 项，脚本化假 LLM）——全绿。
+
+### 全绿证据（续跑 3）
+- `cargo test`（全工作区）32 个 test result，0 failed。
+- `python3 scripts/arch_check.py` → 通过（10 crate，≤700 行）。
+- `cargo clippy -p ne-agent`：**新增 3 处提示待清**：
+  dual_agent.rs:491 redundant_closure（parse_step 闭包）、dual_agent.rs:507 collapsible_if、
+  tool/mod.rs:264 type_complexity（asker 函数指针，可加 type alias）。
+
+### 剩余（下一步）
+- [ ] 清掉上述 3 处 clippy（或确认为既有风格可忽略）。
+- [ ] 文档：ROADMAP-ne-agent.md 追加 M8 段；若有 CHANGELOG 同步。
+- [ ] 版本号 Cargo.toml 0.0.5 → 0.0.6（workspace）。
+- [ ] 提交 + 推送（gh-push.sh，见本文件顶部命令速查）。

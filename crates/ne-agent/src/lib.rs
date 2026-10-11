@@ -13,16 +13,20 @@
 //! 阶段进度见 `docs/ROADMAP-ne-agent.md`。当前：**M1（它自己）**。
 
 pub mod approval;
+pub mod ask_user;
 pub mod config;
 pub mod context;
 pub mod context_tools;
+pub mod dual_agent;
 pub mod harness;
 pub mod mcp;
 pub mod memory;
 pub mod novel_ctx;
 pub mod prompt;
+pub mod resources;
 pub mod session;
 pub mod subagent;
+pub mod subagent_runner;
 pub mod task;
 pub mod task_state;
 pub mod tool;

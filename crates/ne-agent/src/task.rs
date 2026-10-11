@@ -26,6 +26,7 @@ fn make_ctx<'a>(
     prompt_dir: PathBuf,
     enabled: Vec<Tool>,
     pinned_section: String,
+    vault_root: PathBuf,
 ) -> HarnessCtx<'a> {
     HarnessCtx {
         store,
@@ -49,6 +50,9 @@ fn make_ctx<'a>(
         // 默认无审批回调 = 非交互式 → 需审批的操作会被拒（安全默认）。
         // 交互式入口（chat）会自行 .with_approver(...) 覆盖。
         approver: None,
+        system_override: None,
+        vault_root,
+        asker: None,
     }
 }
 
@@ -130,12 +134,14 @@ pub fn chat_interactive(
     work_root: PathBuf,
     prompt_dir: PathBuf,
     enabled: Vec<Tool>,
+    vault_root: PathBuf,
 ) -> Result<()> {
     let workspace = work_root.display().to_string();
     let pinned = pinned_snapshot(mem, &workspace, session);
-    let h = make_ctx(store, session, cfg, llm, work_root, prompt_dir, enabled, pinned);
-    // 交互式 → 挂审批回调（在 stdin 上问 y/N）
-    let h = h.with_approver(Box::new(interactive_approver));
+    let h = make_ctx(store, session, cfg, llm, work_root, prompt_dir, enabled, pinned, vault_root);
+    // 交互式 → 挂审批回调（在 stdin 上问 y/N）+ ask_user 回调
+    let mut h = h.with_approver(Box::new(interactive_approver));
+    h.asker = Some(interactive_asker);
     let hist = store.history(session)?;
     println!("ne-agent 对话 · 会话 {session}");
     println!("  已有 {} 条历史 · /exit 退出 · /history 历史 · /tools 工具 · /memory 记忆", hist.len());
@@ -210,6 +216,22 @@ fn interactive_approver(d: &crate::approval::Decision) -> bool {
     a == "y" || a == "yes" || a == "是"
 }
 
+/// 交互式 ask_user：把问题打到 stderr，从 stdin 读一行回答。
+///
+/// 与审批同通道（都是 stdin 交互）。非交互环境（EOF）→ 返回 Err，
+/// 工具层会把错误明确回写模型（而非静默返回空答案）。
+fn interactive_asker(questions: &str) -> Result<String, String> {
+    eprintln!("\n❓ 需要你的回答：\n{questions}");
+    eprint!("回答 > ");
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    match std::io::stdin().read_line(&mut line) {
+        Ok(0) => Err("无法读取输入（EOF）：当前为非交互环境".into()),
+        Ok(_) => Ok(line.trim().to_string()),
+        Err(e) => Err(format!("读取输入失败：{e}")),
+    }
+}
+
 pub fn chat_once(
     store: &SessionStore,
     mem: &MemoryStore,
@@ -220,10 +242,11 @@ pub fn chat_once(
     prompt_dir: PathBuf,
     enabled: Vec<Tool>,
     message: &str,
+    vault_root: PathBuf,
 ) -> Result<String> {
     let workspace = work_root.display().to_string();
     let pinned = pinned_snapshot(mem, &workspace, session);
-    let h = make_ctx(store, session, cfg, llm, work_root, prompt_dir, enabled, pinned);
+    let h = make_ctx(store, session, cfg, llm, work_root, prompt_dir, enabled, pinned, vault_root);
     run_one(&h, Some(mem), message)
 }
 
@@ -385,7 +408,8 @@ pub fn make_ctx_for_test<'a>(
     pinned: String,
     approver: Option<Box<dyn Fn(&crate::approval::Decision) -> bool + 'a>>,
 ) -> HarnessCtx<'a> {
-    let mut h = make_ctx(store, session, cfg, llm, work_root, prompt_dir, enabled, pinned);
+    let vault_root = work_root.clone();
+    let mut h = make_ctx(store, session, cfg, llm, work_root, prompt_dir, enabled, pinned, vault_root);
     h.approver = approver;
     h
 }
@@ -410,7 +434,8 @@ pub fn parent_ctx<'a>(
     prompt_dir: PathBuf,
     enabled: Vec<Tool>,
 ) -> HarnessCtx<'a> {
-    make_ctx(store, session, cfg, llm, work_root, prompt_dir, enabled, String::new())
+    let vault_root = work_root.clone();
+    make_ctx(store, session, cfg, llm, work_root, prompt_dir, enabled, String::new(), vault_root)
 }
 
 /// 执行一批子任务 Lane（**顺序**，每个子任务一个隔离子会话）。
@@ -497,5 +522,8 @@ fn build_sub_ctx<'a>(parent: &HarnessCtx<'a>, session: &str) -> HarnessCtx<'a> {
         approval_mode: parent.approval_mode,
         plan_only: parent.plan_only,
         approver: None, // 子任务不带交互回调（非交互 → 需审批默认拒绝）
+        system_override: parent.system_override.clone(),
+        vault_root: parent.vault_root.clone(),
+        asker: None, // 子任务无交互 → ask_user 会明确报错并交回主智能体
     }
 }

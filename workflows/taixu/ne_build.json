@@ -1,0 +1,72 @@
+{
+  "id": "ne_build",
+  "name": "ne-agent · 编译",
+  "description": "在 /workspace/小说系统 编译 ne-agent（全 workspace）。后台执行、实时日志、失败即中止。",
+  "iconName": "Hammer",
+  "category": "ne-agent",
+  "isBuiltin": false,
+  "trigger": { "type": "manual", "slashCommand": "/wf ne_build" },
+  "defaultVariables": {
+    "PROJECT_DIR": "/workspace/小说系统",
+    "TARGET": "ne-agent",
+    "PROFILE": "debug"
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "TRIGGER",
+      "title": "开始编译",
+      "description": "变量：PROJECT_DIR / TARGET / PROFILE(debug|release)",
+      "config": {},
+      "canvasX": 40.0,
+      "canvasY": 120.0
+    },
+    {
+      "id": "env",
+      "type": "BASH_COMMAND",
+      "title": "工具链自检",
+      "config": {
+        "command": "export PATH=/opt/taixu/toolchains/rust/bin:$PATH; echo \"=== 环境 ===\"; uname -m; rustc -V; cargo -V; echo \"=== 项目 ===\"; cd ${PROJECT_DIR} && pwd && git rev-parse --short HEAD 2>/dev/null || echo '(非 git)'"
+      },
+      "canvasX": 280.0,
+      "canvasY": 120.0
+    },
+    {
+      "id": "build",
+      "type": "BASH_COMMAND",
+      "title": "cargo build",
+      "config": {
+        "command": "export PATH=/opt/taixu/toolchains/rust/bin:$PATH; cd ${PROJECT_DIR} && if [ ${PROFILE} = release ]; then FLAG=--release; else FLAG=; fi; cargo build $FLAG -p ${TARGET} 2>&1 | tail -40"
+      },
+      "canvasX": 520.0,
+      "canvasY": 120.0,
+      "timeoutSeconds": 1800,
+      "failurePolicy": "ABORT"
+    },
+    {
+      "id": "artifact",
+      "type": "BASH_COMMAND",
+      "title": "产物信息",
+      "config": {
+        "command": "cd ${PROJECT_DIR} && BIN=target/${PROFILE}/ne-agent && ls -lh $BIN && echo '' && echo '动态依赖：' && ldd $BIN 2>/dev/null | grep '=>' | awk '{print $1}'"
+      },
+      "canvasX": 760.0,
+      "canvasY": 120.0,
+      "failurePolicy": "CONTINUE"
+    },
+    {
+      "id": "done",
+      "type": "TERMINAL_OUTPUT",
+      "title": "编译完成",
+      "config": {},
+      "canvasX": 1000.0,
+      "canvasY": 120.0
+    }
+  ],
+  "edges": [
+    { "id": "e0", "fromNodeId": "start", "fromPort": "success", "toNodeId": "env", "toPort": "input" },
+    { "id": "e1", "fromNodeId": "env", "fromPort": "success", "toNodeId": "build", "toPort": "input" },
+    { "id": "e2", "fromNodeId": "build", "fromPort": "success", "toNodeId": "artifact", "toPort": "input" },
+    { "id": "e3", "fromNodeId": "artifact", "fromPort": "success", "toNodeId": "done", "toPort": "input" }
+  ]
+}

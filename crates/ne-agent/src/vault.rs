@@ -29,6 +29,10 @@ pub const AGENT_DB: &str = "agent.db";
 pub const PROMPTS_DIR: &str = "prompts";
 pub const MEMORY_DIR: &str = "memory";
 pub const WORKSPACE_DIR: &str = "workspace";
+/// 规则块目录（M8）：`<vault>/rules/<name>.md`，供 `load_rule` 按需加载。
+pub const RULES_DIR: &str = "rules";
+/// 技能目录（M8）：`<vault>/skills/<技能名>/SKILL.md`，供 `load_skill` 懒加载。
+pub const SKILLS_DIR: &str = "skills";
 
 #[derive(Debug, Clone)]
 pub struct Vault {
@@ -69,7 +73,7 @@ impl Vault {
     /// 返回本次**新建**的文件列表（便于 CLI 打印）。
     pub fn init(&self) -> Result<Vec<PathBuf>> {
         let mut created = Vec::new();
-        for d in ["", PROMPTS_DIR, MEMORY_DIR, WORKSPACE_DIR] {
+        for d in ["", PROMPTS_DIR, MEMORY_DIR, WORKSPACE_DIR, RULES_DIR, SKILLS_DIR] {
             let p = if d.is_empty() { self.root.clone() } else { self.path(d) };
             if !p.exists() {
                 std::fs::create_dir_all(&p)
@@ -167,7 +171,9 @@ tools:
   # 网络工具（web_fetch/web_search）默认**关闭**，需显式打开（M6 会接审批策略）
   # 启用 MCP 服务后，其工具以 `mcp__<服务>__<工具>` 暴露给模型
   # plan/scratchpad：会话局部协作状态（持久化到 agent.db），建议常开
-  enabled: [read, write, edit, ls, base, plan, scratchpad]
+  # ask_user/load_rule/load_skill：M8 按需协作工具，无副作用，建议常开
+  # subagents/dual_agent：派生子智能体（会执行工具，谨慎常开）
+  enabled: [read, write, edit, ls, base, plan, scratchpad, ask_user, load_rule, load_skill]
 
 memory:
   # 记忆策略（M2 落地）

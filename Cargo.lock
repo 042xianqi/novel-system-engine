@@ -369,7 +369,7 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 
 [[package]]
 name = "ne-agent"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "clap",
@@ -392,7 +392,7 @@ dependencies = [
 
 [[package]]
 name = "ne-cardgen"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "ne-core",
@@ -405,7 +405,7 @@ dependencies = [
 
 [[package]]
 name = "ne-core"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "regex",
@@ -417,7 +417,7 @@ dependencies = [
 
 [[package]]
 name = "ne-db"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "ne-core",
@@ -428,7 +428,7 @@ dependencies = [
 
 [[package]]
 name = "ne-engine"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "ne-core",
@@ -444,7 +444,7 @@ dependencies = [
 
 [[package]]
 name = "ne-funnel"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "regex",
@@ -456,7 +456,7 @@ dependencies = [
 
 [[package]]
 name = "ne-import"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "ne-db",
@@ -470,7 +470,7 @@ dependencies = [
 
 [[package]]
 name = "ne-injection"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "ne-core",
@@ -482,7 +482,7 @@ dependencies = [
 
 [[package]]
 name = "ne-mcp"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "ne-core",
@@ -498,7 +498,7 @@ dependencies = [
 
 [[package]]
 name = "ne-qc"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "ne-core",

@@ -99,6 +99,9 @@ pub fn decide(
         Tool::Read | Tool::Ls | Tool::WebFetch | Tool::WebSearch => return Decision::allow(),
         // 会话局部协作状态（计划/草稿）：只改会话自己的数据，无文件/外部副作用 → 免审
         Tool::Plan | Tool::Scratchpad => return Decision::allow(),
+        // ask_user / load_rule / load_skill：向用户提问或读 vault 资源，无副作用 → 免审
+        // （太墟 ApprovalPolicyEngine 对 ASK_USER 亦豁免：提问动作本身不该被审批拦截）
+        Tool::AskUser | Tool::LoadRule | Tool::LoadSkill => return Decision::allow(),
         _ => {}
     }
 
@@ -148,9 +151,17 @@ pub fn decide(
             "MCP 工具可能访问外部服务或产生工作区之外的副作用。",
             summarize(tool, args, raw_mcp_name),
         ),
+        // 子智能体 / 双智能体：会派生隔离子会话并可能执行写/命令 → 保守要求确认
+        Tool::Subagents | Tool::DualAgent => Decision::ask(
+            "high",
+            "子智能体/双智能体会派生子任务并可能改动工作区，请确认其任务范围。",
+            summarize(tool, args, raw_mcp_name),
+        ),
         // 只读类（上面已放行，这里不可达）
         Tool::Read | Tool::Ls | Tool::WebFetch | Tool::WebSearch => Decision::allow(),
-        Tool::Plan | Tool::Scratchpad => Decision::allow(),
+        Tool::Plan | Tool::Scratchpad | Tool::AskUser | Tool::LoadRule | Tool::LoadSkill => {
+            Decision::allow()
+        }
     }
 }
 
@@ -167,10 +178,16 @@ pub fn plan_block(tool: Tool, _args: &crate::tool::ToolArgs) -> Option<String> {
         // 会话局部协作状态：不算"副作用"，只读规划下也放行
         // （规划本身**就是** plan 工具的用途，拦它等于自相矛盾）
         Tool::Plan | Tool::Scratchpad => None,
+        // 提问 / 按需加载只读资源：无副作用，只读规划下放行
+        Tool::AskUser | Tool::LoadRule | Tool::LoadSkill => None,
         // 写 / 执行 / 外部调用：只读规划下硬拒
         Tool::Write | Tool::Edit => Some("只读规划模式：不允许写文件".into()),
         Tool::Base => Some("只读规划模式：不允许执行命令（含构建/测试，它们会写产物）".into()),
         Tool::Mcp => Some("只读规划模式：不允许调用外部 MCP 服务".into()),
+        // 子智能体/双智能体系：会执行工具，只读规划下硬拒
+        Tool::Subagents | Tool::DualAgent => {
+            Some("只读规划模式：不允许派发子智能体（子任务会执行工具）".into())
+        }
     }
 }
 

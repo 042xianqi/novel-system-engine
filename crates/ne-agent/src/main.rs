@@ -330,7 +330,7 @@ fn run_chat(
     let sid = pick_session(&h.store, session, resume, new, &title, message.is_some())?;
 
     if let Some(msg) = message {
-        let out = ne_agent::task::chat_once(
+        let (out, reasoning) = ne_agent::task::chat_once(
             &h.store,
             &h.memory,
             &sid,
@@ -344,9 +344,14 @@ fn run_chat(
         )?;
         if json {
             println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                "session": sid, "reply": out,
+                "session": sid, "reply": out, "reasoning": reasoning,
             }))?);
         } else {
+            // 思考过程走 stderr，正文走 stdout（宿主可分别消费/合并）。
+            // 显式标记包裹：思考文本含换行，不能靠前缀行判断边界。
+            if !reasoning.trim().is_empty() {
+                eprintln!("<<<NE_REASONING>>>{reasoning}<<<END_NE_REASONING>>>");
+            }
             println!("{out}");
         }
         return Ok(());

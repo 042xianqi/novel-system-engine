@@ -66,6 +66,11 @@ pub struct RunOutcome {
     pub stop: StopReason,
     /// 最终给用户看的文本（最后一段无工具调用的 assistant 文本）
     pub final_text: String,
+    /// 模型的思考过程（`reasoning_content` 汇总）。
+    ///
+    /// 原先**被直接丢弃**（只取 `out.content`），这是「看不到思考过程」的根因。
+    /// 现按轮累积，供宿主 UI 以「思考」气泡展示。非流式/无思考能力的模型为空串。
+    pub reasoning: String,
     /// 总共跑了几轮
     pub rounds: usize,
     /// 全部工具结果（按顺序）
@@ -390,6 +395,7 @@ pub fn run_session(h: &HarnessCtx, turn_prefix: &TurnPrefix) -> Result<RunOutcom
     let mut all_results = Vec::new();
     let mut consecutive_failures = 0usize;
     let mut last_text = String::new();
+    let mut all_reasoning = String::new();
     let mut rounds = 0usize;
 
     // M9：自动压缩（策略开关；手动/命令压缩不受此约束）
@@ -404,12 +410,20 @@ pub fn run_session(h: &HarnessCtx, turn_prefix: &TurnPrefix) -> Result<RunOutcom
                 return Ok(RunOutcome {
                     stop: StopReason::Error,
                     final_text: last_text,
+                    reasoning: all_reasoning,
                     rounds,
                     tool_results: all_results,
                     warning: Some(format!("模型调用失败：{e}")),
                 });
             }
         };
+        // 累积本轮思考内容（原先整块丢弃 → 用户看不到思考过程）
+        if !out.reasoning.trim().is_empty() {
+            if !all_reasoning.is_empty() {
+                all_reasoning.push('\n');
+            }
+            all_reasoning.push_str(out.reasoning.trim());
+        }
 
         // 决议顺序：原生 tool_calls 优先，文本标记回退（太墟 resolveCalls 同策略）
         match resolve(&out.tool_calls, &out.content) {
@@ -456,6 +470,7 @@ pub fn run_session(h: &HarnessCtx, turn_prefix: &TurnPrefix) -> Result<RunOutcom
                         return Ok(RunOutcome {
                             stop: StopReason::FailureCircuit,
                             final_text: last_text,
+                            reasoning: all_reasoning,
                             rounds,
                             tool_results: all_results,
                             warning: Some(format!(
@@ -477,6 +492,7 @@ pub fn run_session(h: &HarnessCtx, turn_prefix: &TurnPrefix) -> Result<RunOutcom
                 return Ok(RunOutcome {
                     stop: StopReason::Stop,
                     final_text: last_text,
+                    reasoning: all_reasoning,
                     rounds,
                     tool_results: all_results,
                     warning: None,
@@ -488,6 +504,7 @@ pub fn run_session(h: &HarnessCtx, turn_prefix: &TurnPrefix) -> Result<RunOutcom
     Ok(RunOutcome {
         stop: StopReason::BudgetExhausted,
         final_text: last_text,
+        reasoning: all_reasoning,
         rounds,
         tool_results: all_results,
         warning: Some(format!("达到轮次上限 {}，已停止（太墟 RoundBudget 同策略）", h.max_rounds())),

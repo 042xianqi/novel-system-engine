@@ -160,6 +160,9 @@ model:
   max_tokens: 4096
   temperature: 1.0
   enable_thinking: false
+  # 推理强度档位（OpenAI 兼容 reasoning_effort）：留空 = 不下发该字段。
+  # 常见取值：low / medium / high（部分网关支持 xhigh / max / minimal）。
+  reasoning_effort: ""
 
 context:
   # 上下文窗口策略（M5 落地，先留参数）

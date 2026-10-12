@@ -76,6 +76,15 @@ pub struct ModelSection {
     pub max_tokens: u32,
     pub temperature: f64,
     pub enable_thinking: bool,
+    /// 推理强度档位（OpenAI 兼容 `reasoning_effort`）。
+    /// 空 = 不下发该字段（兼容旧行为）；可选 low / medium / high / xhigh / max 等。
+    pub reasoning_effort: String,
+    /// 是否用流式（SSE）请求模型。
+    ///
+    /// **必须为 true 才能拿到思考内容**：实测本机网关（WorkBuddy Native API / glm-5.3-flash）
+    /// 仅在 `stream=true` 时下发 `reasoning_content`，非流式一律丢弃（`reasoning_tokens: 0`）。
+    /// 默认 true —— 宿主 App 需要「思考过程」显示，且流式同时给出正文增量。
+    pub stream: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,6 +139,8 @@ impl Default for ModelSection {
             max_tokens: 4096,
             temperature: 1.0,
             enable_thinking: false,
+            reasoning_effort: String::new(),
+            stream: true,
         }
     }
 }
@@ -209,6 +220,14 @@ impl RuntimeConfig {
         p.max_tokens = self.model.max_tokens;
         p.temperature = self.model.temperature;
         p.enable_thinking = self.model.enable_thinking;
+        // 推理强度档位：空串 = 不下发（与旧行为一致）。
+        p.reasoning_effort = if self.model.reasoning_effort.trim().is_empty() {
+            None
+        } else {
+            Some(self.model.reasoning_effort.trim().to_string())
+        };
+        // 流式：拿 `reasoning_content` 的唯一途径（实测非流式网关不给）。
+        p.stream = self.model.stream;
         Ok(p)
     }
 

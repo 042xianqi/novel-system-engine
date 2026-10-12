@@ -98,7 +98,9 @@ fn turn_prefix(mem: &MemoryStore, cfg: &RuntimeConfig, workspace: &str, session:
 }
 
 /// 跑一轮（落 user → 多轮工具循环 → 落最终回复）。
-fn run_one(h: &HarnessCtx, mem: Option<&MemoryStore>, input: &str) -> Result<String> {
+///
+/// 返回 `(正文, 思考过程)` —— 思考过程供宿主 UI 以「思考」气泡展示。
+fn run_one(h: &HarnessCtx, mem: Option<&MemoryStore>, input: &str) -> Result<(String, String)> {
     // 先落 user 再跑
     harness::persist_user(h, input)?;
     // recall 在 user 落盘后计算（其内容只影响本轮的 provider 投影）
@@ -120,7 +122,77 @@ fn run_one(h: &HarnessCtx, mem: Option<&MemoryStore>, input: &str) -> Result<Str
             outcome.tool_results.len()
         ));
     }
-    Ok(out)
+    Ok((out, outcome.reasoning))
+}
+
+/// 思考过程标记（宿主 App 用它把思考与正文分开渲染）。
+///
+/// <p>内容含换行，必须用**显式标记**定界，不能靠"前缀行"判断。</p>
+pub const REASONING_OPEN: &str = "<<<NE_REASONING>>>";
+pub const REASONING_CLOSE: &str = "<<<END_NE_REASONING>>>";
+
+/// 流式转发状态（供调用方判断是否需要兜底整段打印）。
+#[derive(Default)]
+pub struct StreamSinkFlags {
+    pub saw_reasoning: std::sync::atomic::AtomicBool,
+    pub saw_content: std::sync::atomic::AtomicBool,
+    /// 思考段当前是否处于"已开未闭"状态（决定要不要写 CLOSE）。
+    reasoning_open: std::sync::atomic::AtomicBool,
+}
+
+/// 安装「实时转发」回调：模型每吐一段就立刻写到**对应的**输出流。
+///
+/// <p>这是「真流式」的关键：思考 → stderr（带标记），正文 → stdout（原样）。</p>
+/// <p>若等 `run_one` 跑完再整段打印，思考与答案会同一瞬间出现 —— 用户看到的
+/// 正是这种"一块出来"的假象。</p>
+pub fn install_stream_sink() -> std::sync::Arc<StreamSinkFlags> {
+    use std::io::Write;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+
+    let f = Arc::new(StreamSinkFlags::default());
+    let f2 = f.clone();
+    ne_engine::llm::set_delta_sink(Some(Box::new(move |kind: &str, text: &str| {
+        let open = f2.reasoning_open.load(Ordering::SeqCst);
+        match kind {
+            "reasoning" => {
+                let mut e = std::io::stderr();
+                if !open {
+                    let _ = e.write_all(REASONING_OPEN.as_bytes());
+                    f2.reasoning_open.store(true, Ordering::SeqCst);
+                }
+                let _ = e.write_all(text.as_bytes());
+                let _ = e.flush();
+                f2.saw_reasoning.store(true, Ordering::SeqCst);
+            }
+            _ => {
+                let mut o = std::io::stdout();
+                // 正文开始 → 立刻闭合思考段（保证思考先于答案出现）
+                if open {
+                    let mut e = std::io::stderr();
+                    let _ = e.write_all(REASONING_CLOSE.as_bytes());
+                    let _ = e.flush();
+                    f2.reasoning_open.store(false, Ordering::SeqCst);
+                }
+                let _ = o.write_all(text.as_bytes());
+                let _ = o.flush();
+                f2.saw_content.store(true, Ordering::SeqCst);
+            }
+        }
+    })));
+    f
+}
+
+/// 卸载回调，并确保思考段被闭合。
+pub fn uninstall_stream_sink(f: &StreamSinkFlags) {
+    use std::io::Write;
+    use std::sync::atomic::Ordering;
+    ne_engine::llm::set_delta_sink(None);
+    if f.reasoning_open.swap(false, Ordering::SeqCst) {
+        let mut e = std::io::stderr();
+        let _ = e.write_all(REASONING_CLOSE.as_bytes());
+        let _ = e.flush();
+    }
 }
 
 /// 交互式对话。
@@ -184,14 +256,28 @@ pub fn chat_interactive(
             }
             _ => {}
         }
-        match run_one(&h, Some(mem), input) {
-            Ok(text) => {
-                if !text.trim().is_empty() {
+        let sink = install_stream_sink();
+        let r = run_one(&h, Some(mem), input);
+        uninstall_stream_sink(&sink);
+        match r {
+            Ok((text, reasoning)) => {
+                use std::sync::atomic::Ordering;
+                // 兜底 1：模型没走流式回调（如纯机械摘要 / 网关不支持流式）→ 整段打印思考。
+                if !sink.saw_reasoning.load(Ordering::SeqCst) && !reasoning.trim().is_empty() {
+                    eprintln!("{REASONING_OPEN}{reasoning}{REASONING_CLOSE}");
+                }
+                // 兜底 2：正文也不流式时，整段补打（否则用户什么都看不到）。
+                if !sink.saw_content.load(Ordering::SeqCst) && !text.trim().is_empty() {
                     println!("{text}");
                 }
             }
             Err(e) => eprintln!("  ✗ 本轮失败：{e:#}"),
         }
+        // 与本轮回答分隔：回答是流式写出的（末尾无换行），若不补换行，下一次
+        // 提示符会紧贴正文出现（形如 "…）。> "），宿主 App 便无法按 "\n> " 判定
+        // 轮次边界 → 第二轮会追加进第一轮气泡。这里补一个换行，保证提示符恒为
+        // "\n> "（首个提示符前有 banner 的换行，同样满足）。
+        println!();
     }
     Ok(())
 }
@@ -243,7 +329,7 @@ pub fn chat_once(
     enabled: Vec<Tool>,
     message: &str,
     vault_root: PathBuf,
-) -> Result<String> {
+) -> Result<(String, String)> {
     let workspace = work_root.display().to_string();
     let pinned = pinned_snapshot(mem, &workspace, session);
     let h = make_ctx(store, session, cfg, llm, work_root, prompt_dir, enabled, pinned, vault_root);
@@ -413,9 +499,9 @@ pub fn make_ctx_for_test<'a>(
     h
 }
 
-/// 跑一轮（测试用，不带记忆召回）。
+/// 跑一轮（测试用，不带记忆召回）。返回正文（思考过程由 `run_one` 返回的第二项）。
 pub fn run_one_for_test(h: &HarnessCtx, input: &str) -> Result<String> {
-    run_one(h, None, input)
+    Ok(run_one(h, None, input)?.0)
 }
 
 // ───────────────────────────── 子智能体 Lane（M7）
@@ -484,7 +570,7 @@ pub fn run_subagents(
             )
         };
         match run_one(&sub, None, &input) {
-            Ok(text) => outcomes.push(LaneOutcome {
+            Ok((text, _reasoning)) => outcomes.push(LaneOutcome {
                 task_name: t.task_name.clone(),
                 session_id: sid,
                 ok: true,

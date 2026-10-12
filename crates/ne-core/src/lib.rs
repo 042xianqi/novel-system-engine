@@ -165,82 +165,10 @@ pub struct EventRef {
     pub status: String,
 }
 
-// ==== 2026-10-08 口径：20 类卡片 + 两层选卡 + 预算（spec: novel-pipeline）====
-
-/// 20 类资料卡权威清单（编号前缀待真卡扫描后回填，暂以类别名对齐）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CardClass {
-    Character,    // 角色
-    Faction,      // 势力
-    Location,     // 地点
-    Item,         // 物品
-    Culture,      // 文化
-    Skill,        // 技艺
-    Medicine,     // 丹药
-    Tech,         // 科技
-    Map,          // 地图
-    Event,        // 事件
-    History,      // 历史
-    Timeline,     // 时间
-    Building,     // 建筑
-    Equipment,    // 装备
-    Gongfa,       // 功法
-    Cultivation,  // 修炼体系
-    Realm,        // 境界
-    PowerSystem,  // 力量体系
-    Civilization, // 文明
-    Foreshadow,   // 伏笔
-}
-
-impl CardClass {
-    pub const ALL: [CardClass; 20] = [
-        CardClass::Character,
-        CardClass::Faction,
-        CardClass::Location,
-        CardClass::Item,
-        CardClass::Culture,
-        CardClass::Skill,
-        CardClass::Medicine,
-        CardClass::Tech,
-        CardClass::Map,
-        CardClass::Event,
-        CardClass::History,
-        CardClass::Timeline,
-        CardClass::Building,
-        CardClass::Equipment,
-        CardClass::Gongfa,
-        CardClass::Cultivation,
-        CardClass::Realm,
-        CardClass::PowerSystem,
-        CardClass::Civilization,
-        CardClass::Foreshadow,
-    ];
-
-    pub fn name(&self) -> &'static str {
-        match self {
-            CardClass::Character => "角色",
-            CardClass::Faction => "势力",
-            CardClass::Location => "地点",
-            CardClass::Item => "物品",
-            CardClass::Culture => "文化",
-            CardClass::Skill => "技艺",
-            CardClass::Medicine => "丹药",
-            CardClass::Tech => "科技",
-            CardClass::Map => "地图",
-            CardClass::Event => "事件",
-            CardClass::History => "历史",
-            CardClass::Timeline => "时间",
-            CardClass::Building => "建筑",
-            CardClass::Equipment => "装备",
-            CardClass::Gongfa => "功法",
-            CardClass::Cultivation => "修炼体系",
-            CardClass::Realm => "境界",
-            CardClass::PowerSystem => "力量体系",
-            CardClass::Civilization => "文明",
-            CardClass::Foreshadow => "伏笔",
-        }
-    }
-}
+// ==== 2026-10-13 口径：卡类别权威定义已统一到 `crate::templates`（26 类，v3）====
+// 旧的 `CardClass` 枚举（20 类 v2，含重复的 地图/地点、历史/时间）已删除——
+// 它与 `templates::all_templates()` 是**第二套事实源**，且全 workspace 无人使用。
+// 需要类名清单请用 `templates::all_categories()`；由编号反查类别用 `templates::category_of_code()`。
 
 /// L5 上下文预算常量：全文 3 张 ×1500 + 摘要 5 张 ×200 ≈ 5500，总预算 20000。
 pub const FULL_CARD_COUNT: usize = 3;
@@ -481,10 +409,12 @@ mod tests {
     }
 
     #[test]
-    fn card_class_all_20() {
-        assert_eq!(CardClass::ALL.len(), 20);
-        assert_eq!(CardClass::Civilization.name(), "文明");
-        assert_eq!(CardClass::PowerSystem.name(), "力量体系");
+    fn category_authority_is_templates() {
+        // 卡类别唯一事实源在 templates 模块（26 类）
+        use crate::templates::all_categories;
+        assert_eq!(all_categories().len(), 26);
+        assert!(all_categories().contains(&"文明".to_string()));
+        assert!(all_categories().contains(&"力量体系".to_string()));
     }
 
     #[test]

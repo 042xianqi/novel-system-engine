@@ -122,17 +122,18 @@ fn template_by_prefix(code: &str, rel_path: &str) -> Option<CardTemplate> {
     let p = code.split('-').next()?;
     let cands: Vec<CardTemplate> = all_templates()
         .into_iter()
-        .filter(|t| t.code_prefix.split('/').any(|x| x == p))
+        .filter(|t| {
+            t.code_prefix == p || t.code_prefix_aliases.iter().any(|a| a == p)
+        })
         .collect();
     if cands.len() <= 1 {
         return cands.into_iter().next();
     }
-    // 路径含 /文化/ → 文化；文件直接躺在 文明/ 根且是 CULT-99-010 → 跨文明关系
+    // v3 前缀已全局唯一；以下为历史多前缀前缀（若有）的路径消歧兜底。
     if p == "CULT" {
         if rel_path.contains("/文化/") {
             return cands.into_iter().find(|t| t.category == "文化");
         }
-        // A文明×B文明 标题特征
         return cands.into_iter().find(|t| t.category == "跨文明关系");
     }
     if p == "TECH" {

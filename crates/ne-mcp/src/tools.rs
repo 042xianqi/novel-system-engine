@@ -179,7 +179,68 @@ pub fn extract_card_jobs(outline_text: &str) -> Vec<CardJob> {
             category,
         });
     }
+    // 兜底：本卷用**内联式**标注（`…实体名【…待建卡…】`）而没有 `>` 清单时启用。
+    // 实测仅 卷02 是这种格式（全卷 0 行 `>` 清单）。有清单的卷不走这里，口径不变。
+    if jobs.is_empty() {
+        jobs = inline_card_jobs(outline_text);
+    }
     jobs
+}
+
+/// 内联式【待建卡】兜底（仅当**无** `>` 清单时启用）。
+///
+/// 形态：`- **在场**：陈寂、林晚秋、加百列·黑刃【天启帝国核心设定§核心人物，待建卡】`
+/// 名字 = 【 前最后一个强分隔段，去尾部括号、去开头虚词，再过**类别白名单**（宁缺毋滥）。
+fn inline_card_jobs(outline_text: &str) -> Vec<CardJob> {
+    let br = regex::Regex::new(r"【([^】]*待建卡[^】]*)】").unwrap();
+    let sep = regex::Regex::new(r#"[、，,：:=（）()\[\]"“”'‘’「」\s]+"#).unwrap();
+    let lead = regex::Regex::new(r"^[把将与和及的在向从对为被]+").unwrap();
+    let trailer = regex::Regex::new(r"[）)]$").unwrap();
+    let role = regex::Regex::new(
+        r"(修士|长老|执事|祭司|主教|大祭司|教皇|密探|随员|近侍|骑士|守卒|货主|老主|巡守|录事|验录使|使者|侍从|守卫|军官|统领|大导师|大占星师|大航海士|团主|舵手|掌柜|伙计|大修士|船长)$",
+    )
+    .unwrap();
+    let place = regex::Regex::new(
+        r"(墙|街|区|殿|坛|塔|廊|院|海|城|村|镇|山|洞|谷|窟|港|桥|门|冢|渊|废墟|遗址|防线|边界|缓冲带|回廊|祭坛|圣柱)$",
+    )
+    .unwrap();
+    let bad = regex::Regex::new(r#"[§#/+*"“”'‘’（）()\[\]]"#).unwrap();
+
+    let mut out: Vec<CardJob> = Vec::new();
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for m in br.captures_iter(outline_text) {
+        let inner = m.get(1).map(|x| x.as_str()).unwrap_or("");
+        let whole = m.get(0).unwrap();
+        let line_start = outline_text[..whole.start()].rfind('\n').map(|p| p + 1).unwrap_or(0);
+        let before = &outline_text[line_start..whole.start()];
+        let Some(last) = sep.split(before).filter(|s| !s.trim().is_empty()).last() else {
+            continue;
+        };
+        let name = lead.replace(last.trim(), "").to_string();
+        let name = trailer.replace(&name, "").trim().to_string();
+        let n = name.chars().count();
+        if n < 2 || n > 12 {
+            continue;
+        }
+        if bad.is_match(&name) || name.starts_with('章') {
+            continue;
+        }
+        // 正向白名单：必须是「带·的具名实体」或「…角色词」或「短…地点词」。
+        if !(name.contains('·') || role.is_match(&name) || (place.is_match(&name) && n <= 6)) {
+            continue;
+        }
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        let (source_ref, material, category) = parse_card_inner(inner);
+        out.push(CardJob {
+            name,
+            source_ref,
+            material,
+            category,
+        });
+    }
+    out
 }
 
 /// 从卡面内文解析 (来源引用, 素材, 类别)。
@@ -465,4 +526,38 @@ fn outline_file(cfg: &Cfg, volume: &str) -> Result<PathBuf> {
 #[allow(dead_code)]
 pub fn pstr(p: &Path) -> String {
     p.to_string_lossy().to_string()
+}
+
+#[cfg(test)]
+mod cardgen_tests {
+    use super::extract_card_jobs;
+
+    #[test]
+    fn list_style_requires_quote_prefix() {
+        // 只有带 `>` 前缀的清单行算待建卡；正文普通列表行不算。
+        let t = "> - 白鸦（REL-99-004 影阁内门，无角色卡）\n- **钩子**：引到白鸦（柒玖）【待建卡·REL-99-004】\n";
+        let jobs = extract_card_jobs(t);
+        let names: Vec<&str> = jobs.iter().map(|j| j.name.as_str()).collect();
+        assert_eq!(names, vec!["白鸦"], "实际：{names:?}");
+    }
+
+    #[test]
+    fn inline_style_fallback_only_when_no_list() {
+        // 无 `>` 清单 → 启用内联兜底，只收「带·具名 / 角色词 / 短地点词」。
+        let t = "- **在场**：陈寂、加百列·黑刃【天启帝国核心设定§核心人物，待建卡】、观测仪值守修士【待建卡】、仅登记【待建卡】\n";
+        let jobs = extract_card_jobs(t);
+        let names: Vec<&str> = jobs.iter().map(|j| j.name.as_str()).collect();
+        assert!(names.contains(&"加百列·黑刃"), "缺具名实体：{names:?}");
+        assert!(names.contains(&"观测仪值守修士"), "缺角色词实体：{names:?}");
+        assert!(!names.contains(&"仅登记"), "噪声「仅登记」应被白名单过滤：{names:?}");
+    }
+
+    #[test]
+    fn list_style_wins_over_inline() {
+        // 有 `>` 清单时**不**走内联兜底（口径互斥，避免重复/污染）。
+        let t = "> - 白鸦（REL-99-004，无角色卡）\n- **在场**：加百列·黑刃【天启帝国核心设定§核心人物，待建卡】\n";
+        let jobs = extract_card_jobs(t);
+        let names: Vec<&str> = jobs.iter().map(|j| j.name.as_str()).collect();
+        assert_eq!(names, vec!["白鸦"], "实际：{names:?}");
+    }
 }

@@ -76,8 +76,12 @@ pub fn card_target(root: &str, category: &str, name: &str) -> String {
 ///   > - 白鸦（柒玖）（REL-99-004 影阁内门，无角色卡）
 ///   > - 灶王爷（下城区老铁匠·左腿=净化远征救人回路过载所失·ORG-99-011 §胶囊·无独立 CHAR 卡）
 /// 每条抽：名字（首段括号前）+ source_ref（括号里第一个带编号/§的部分）+ material（描述）。
+///
+/// **必须带行首 `>` 前缀**：这是「【待建卡】清单」的专属标记。
+/// 早先用 `^>?`（`>` 可选），会把细纲正文里的普通列表行也扫进来——
+/// 实测卷01 匹配 542 行、真卡仅 9 张（`- **钩子**：…白鸦（柒玖）【待建卡…】` 之类全被误抽）。
 pub fn extract_card_jobs(outline_text: &str) -> Vec<CardJob> {
-    let re = Regex::new(r"(?m)^>?\s*-\s+([^（\n]+)（(.*)）\s*$").unwrap();
+    let re = Regex::new(r"(?m)^>\s*-\s+([^（\n]+)（(.*)）\s*$").unwrap();
     let mut jobs = Vec::new();
     for m in re.captures_iter(outline_text) {
         let name = m[1].trim();
@@ -198,6 +202,19 @@ mod tests {
         // 黑牛山北涧 应归到 地图（含"地点/涧"）
         let loc = jobs.iter().find(|j| j.name == "黑牛山北涧").unwrap();
         assert_eq!(loc.category, "地图");
+    }
+
+    /// 回归：细纲正文里的普通列表行（**不带 `>` 前缀**）不得被当成待建卡。
+    /// 旧正则 `^>?` 会误抽 542 行（卷01），真卡仅 9 张。
+    #[test]
+    fn body_lines_without_quote_prefix_are_ignored() {
+        let text = "> - 白鸦（柒玖）（REL-99-004 影阁内门，无角色卡）
+- **钩子**：路径会不会引到白鸦（柒玖）【待建卡·REL-99-004】
+- **目标**：把白鸦（柒玖）【待建卡·REL-99-004】的家书寄给白芷（青溪村
+";
+        let jobs = extract_card_jobs(text);
+        let names: Vec<&str> = jobs.iter().map(|j| j.name.as_str()).collect();
+        assert_eq!(names, vec!["白鸦"], "只应抽出带 `>` 前缀的那一条，实际：{names:?}");
     }
 
     #[test]

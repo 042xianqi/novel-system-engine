@@ -154,9 +154,13 @@ pub struct CardJob {
 }
 
 /// 从细纲文本抽【待建卡】清单。
-/// 行格式：`- 名字（内文）`，只取内文含"无…卡/待建"的（与 ne-cardgen 同口径）。
+/// 行格式：`> - 名字（内文）`，只取内文含"无…卡/待建"的（与 ne-cardgen 同口径）。
+///
+/// **必须带行首 `>` 前缀**（与 ne-cardgen::extract_card_jobs 对齐）：
+/// 早先用 `^>?` 把细纲正文里的普通 `- xxx（yyy）` 行也扫进来，
+/// 卷01 实测误抽 542 行、真卡仅 9 张（卡名被污染成 `**目标**：把白鸦` 之类）。
 pub fn extract_card_jobs(outline_text: &str) -> Vec<CardJob> {
-    let re = regex::Regex::new(r"(?m)^>?\s*-\s+([^（\n]+)（(.*)）\s*$").unwrap();
+    let re = regex::Regex::new(r"(?m)^>\s*-\s+([^（\n]+)（(.*)）\s*$").unwrap();
     let mut jobs = Vec::new();
     for m in re.captures_iter(outline_text) {
         let name = m.get(1).map(|x| x.as_str().trim()).unwrap_or("");

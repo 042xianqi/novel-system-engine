@@ -126,12 +126,14 @@ fn validate_args(name: &str, args: &serde_json::Value) -> Option<String> {
         if bad {
             return Some(format!("缺少必填参数 `{key}`"));
         }
-        // 类型校验：schema 声明 integer/boolean 的，收到错误类型也要拒
+        // 类型校验：schema 声明 integer/boolean 的，收到错误类型也要拒。
+        // 例外：string 字段容忍数字——部分 MCP 客户端（如 Operit）会把纯数字串
+        // 智能转成整数，这是客户端行为、非调用方本意，不应据此判参数非法。
         if let (Some(want), Some(got)) = (spec["inputSchema"]["properties"][key]["type"].as_str(), v) {
             let type_ok = match want {
                 "integer" => got.is_i64() || got.is_u64(),
                 "boolean" => got.is_boolean(),
-                "string" => got.is_string(),
+                "string" => got.is_string() || got.is_i64() || got.is_u64(),
                 _ => true,
             };
             if !type_ok {
@@ -149,22 +151,40 @@ fn validate_args(name: &str, args: &serde_json::Value) -> Option<String> {
     None
 }
 
+/// 读取 volume：兼容 `"01"` / `"卷01"` 字符串，以及被客户端**智能转成整数**的情形。
+///
+/// 背景：Operit 的 `MCPToolParameter.smartConvert` 没有 `"string"` 分支，会把
+/// 纯数字串 `"01"` 落进"数字猜测"→ 变成整数 `1`。若不处理，ne_cardgen/ne_inject
+/// 会因 `1` 不是字符串而拿不到卷号。这里把整数补零回两位，对齐既有「卷NN」口径。
+fn norm_volume(v: Option<&serde_json::Value>) -> String {
+    match v {
+        Some(serde_json::Value::String(s)) => s.trim().to_string(),
+        Some(serde_json::Value::Number(n)) => match n.as_i64() {
+            Some(i) if (0..100).contains(&i) => format!("{i:02}"),
+            Some(i) => i.to_string(),
+            None => n.to_string(),
+        },
+        _ => String::new(),
+    }
+}
+
 fn tool_call(cfg: &Cfg, name: &str, args: &serde_json::Value) -> serde_json::Value {
-    let s = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let s = |k: &str| match args.get(k) {
+        Some(serde_json::Value::String(v)) => v.clone(),
+        // 客户端可能把纯数字串转成数字，回退成字符串，避免被当成缺参。
+        Some(serde_json::Value::Number(n)) => n.to_string(),
+        _ => String::new(),
+    };
     let i = |k: &str| args.get(k).and_then(|v| v.as_i64()).unwrap_or(0) as u32;
     let b = |k: &str| args.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
+    let vol = norm_volume(args.get("volume"));
 
     let r: anyhow::Result<serde_json::Value> = match name {
         "funnel" => tools::funnel(cfg),
-        "ne_cardgen" => tools::cardgen(cfg, &s("volume")),
-        "ne_inject" => tools::inject(cfg, &s("volume"), i("chapter"), b("allow_missing")),
+        "ne_cardgen" => tools::cardgen(cfg, &vol),
+        "ne_inject" => tools::inject(cfg, &vol, i("chapter"), b("allow_missing")),
         "ne_check" => {
-            let vol = args
-                .get("volume")
-                .and_then(|v| v.as_str())
-                .filter(|v| !v.trim().is_empty())
-                .unwrap_or("卷01")
-                .to_string();
+            let vol = if vol.trim().is_empty() { "卷01".to_string() } else { vol };
             tools::check(cfg, &s("text"), i("chapter"), &vol)
         }
         "ne_db" => tools::db_status(cfg),
@@ -276,5 +296,33 @@ fn main() {
     if let Err(e) = jsonrpc::serve(|req| handle(&cfg, req)) {
         eprintln!("[ne-mcp] serve error: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod volume_tests {
+    use super::norm_volume;
+    use serde_json::json;
+
+    #[test]
+    fn volume_string_passthrough() {
+        assert_eq!(norm_volume(Some(&json!("卷01"))), "卷01");
+        assert_eq!(norm_volume(Some(&json!("01"))), "01");
+        assert_eq!(norm_volume(Some(&json!(" 02 "))), "02");
+    }
+
+    #[test]
+    fn volume_number_padded() {
+        // Operit 的 smartConvert 会把 "01" 转成整数 1；应补零回 "01"。
+        assert_eq!(norm_volume(Some(&json!(1))), "01");
+        assert_eq!(norm_volume(Some(&json!(2))), "02");
+        assert_eq!(norm_volume(Some(&json!(12))), "12");
+        assert_eq!(norm_volume(Some(&json!(100))), "100");
+    }
+
+    #[test]
+    fn volume_missing_is_empty() {
+        assert_eq!(norm_volume(None), "");
+        assert_eq!(norm_volume(Some(&serde_json::Value::Null)), "");
     }
 }

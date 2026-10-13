@@ -320,15 +320,26 @@ pub fn extract_chapter(outline_text: &str, number: u32) -> Option<ChapterOutline
     None
 }
 
-/// 抓卡编号（CHAR-/EVT-/LOC-/REL-/ART-/ORG-/TECH-/CAS- 等，前缀-数字-数字）。
+/// 抓卡编号（前缀-数字[-数字]），前缀合法性由 `templates::category_of_code` 统一裁定。
+///
+/// ⚠ 历史缺陷（2026-10-13 修复）：本函数曾**硬编码旧前缀白名单**
+/// （`CHAR|EVT|LOC|REL|ART|ORG|TECH|SYS|CULT|MTC|CAS|CAUSE|TIME|ANC|YGEN|OTHER`），
+/// 而叙事层细纲已按编号规范 v3 使用新前缀。结果：`EVNT/LOCA/PILL/CIVI/FACT/ITEM/FORE`
+/// 等新前缀引用被**静默丢弃**——实测 10 卷细纲 126 个唯一引用里 72 个（57%）未进
+/// `card_refs`，写链 L3→L4 注入不完整且不报错。
+///
+/// 现改为「宽正则抓候选 → templates 裁定」：与代码侧唯一事实源（26 类前缀 + 旧前缀别名）
+/// 对齐，今后新增类别前缀无需再改本处。
 pub fn find_card_refs(text: &str) -> Vec<String> {
-    let re = regex::Regex::new(
-        r"\b((?:CHAR|EVT|LOC|REL|ART|ORG|TECH|SYS|CULT|MTC|CAS|CAUSE|TIME|ANC|YGEN|OTHER)-\d+(-\d+)?)",
-    )
-    .unwrap();
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    // 候选：2–6 个大写字母前缀 + 1..n 段数字（`EVNT-99-005` / `EVT-141` / `CAS-014`）。
+    // 前缀是否合法由 category_of_code 裁定，非卡 token（如 `HTTP-404`）会被过滤。
+    let re = RE.get_or_init(|| regex::Regex::new(r"\b([A-Z]{2,6}-\d+(?:-\d+)*)").unwrap());
     let mut seen: Vec<String> = re
         .captures_iter(text)
         .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
+        .filter(|code| crate::templates::category_of_code(code).is_some())
         .collect();
     seen.sort();
     seen.dedup();
@@ -446,5 +457,22 @@ layers:
         assert!(ch.card_refs.iter().any(|c| c == "EVT-99-005"));
         assert!(ch.card_refs.iter().any(|c| c == "CHAR-99-001"));
         assert!(ch.characters.iter().any(|c| c.contains("陈寂")));
+    }
+
+    #[test]
+    fn find_card_refs_covers_v3_prefixes_and_rejects_junk() {
+        // v3 新前缀（曾因硬编码白名单被静默丢弃）必须全部识别
+        let text = "在场：陈寂（CHAR-99-001）\n\
+                    引用 EVNT-99-005、LOCA-99-020、FORE-99-006、ITEM-99-005、CIVI-99-013、PILL-99-001\n\
+                    旧码回退 EVT-141 backdrop HTTP-404 M1-2 L3 不是卡";
+        let refs = find_card_refs(text);
+        for want in ["CHAR-99-001", "EVNT-99-005", "LOCA-99-020", "FORE-99-006",
+                     "ITEM-99-005", "CIVI-99-013", "PILL-99-001", "EVT-141"] {
+            assert!(refs.iter().any(|r| r == want), "漏抓 {want}: {refs:?}");
+        }
+        // 非卡 token 必须被过滤
+        for junk in ["HTTP-404", "M1-2", "L3"] {
+            assert!(!refs.iter().any(|r| r == junk), "误抓 {junk}: {refs:?}");
+        }
     }
 }

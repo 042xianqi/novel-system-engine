@@ -127,9 +127,9 @@ pub fn build_injection_db(
         }
     }
 
-    // ④ 事件：从细纲引用里抓 EVT-* 作占位 due
+    // ④ 事件：从细纲引用里抓事件类卡作占位 due（按 templates 判类别，兼容 EVNT/EVT）
     for ref_code in &chapter.card_refs {
-        if ref_code.starts_with("EVT") {
+        if ne_core::templates::category_of_code(ref_code).as_deref() == Some("事件") {
             packet.events.push(EventRef {
                 id: ref_code.clone(),
                 name: String::new(),

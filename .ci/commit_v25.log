@@ -1,3 +1,5 @@
 === commit stage: v25 ===
 2026-10-14 10:21:18
 CI: RESULT=OK passed=618 failed=0
+commit_rc=0 hash=ea629b4
+RESULT=COMMITTED hash=ea629b4 rc=0

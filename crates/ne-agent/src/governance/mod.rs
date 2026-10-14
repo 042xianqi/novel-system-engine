@@ -14,6 +14,10 @@
 //! 子模块：`progress` —— 标准化进度输出（stderr；--quiet 静默）。
 //! 子模块：`scan_snapshot` —— 增量扫描快照（07_勘误工坊/.scan_snapshot.json）。
 //! 子模块：`inspect_batch` —— 批量检视入口（默认只预览/入队；绝不自动推理）。
+//! 子模块：`structured_log` —— 结构化日志（plain|structured；只写 stderr/显式文件）。
+//! 子模块：`probe_cache` —— 探针缓存层（07_勘误工坊/probe_cache/）。
+//! 子模块：`probe_export` —— 探针打包导出（零依赖 USTAR+gzip(stored) → .wg-probe.tar.gz）。
+//! 子模块：`self_check` —— 健康自检（--fix 仅建目录）。
 pub mod pipeline;
 pub mod pipeline_store;
 pub mod progress;
@@ -21,6 +25,10 @@ pub mod prompt_builder;
 pub mod report_builder;
 pub mod scan_snapshot;
 pub mod inspect_batch;
+pub mod structured_log;
+pub mod probe_cache;
+pub mod probe_export;
+pub mod self_check;
 pub mod semantic_runtime;
 
 use anyhow::Result;

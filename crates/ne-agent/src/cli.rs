@@ -26,6 +26,12 @@ pub(crate) struct Cli {
     /// 关闭进度/冗余日志（进度只走 stderr，不影响 --json 的 stdout）
     #[arg(long, global = true)]
     pub(crate) quiet: bool,
+    /// 日志模式：plain（默认）| structured（stderr 每行 JSON）
+    #[arg(long, global = true, default_value = "plain")]
+    pub(crate) log_mode: String,
+    /// 日志输出文件（不指定则写 stderr；不自动写盘）
+    #[arg(long, global = true, value_name = "PATH")]
+    pub(crate) log_file: Option<PathBuf>,
 
     #[command(subcommand)]
     pub(crate) cmd: Cmd,
@@ -518,6 +524,12 @@ pub enum WorldGovCmd {
         /// 扫描成功后写回 .scan_snapshot.json（时间锚点 + 统计 + 指纹；--dry-run 时不写）
         #[arg(long)]
         write_snapshot: bool,
+        /// 关闭探针缓存（默认开启）
+        #[arg(long)]
+        no_cache: bool,
+        /// 强制无视缓存，全量重生成
+        #[arg(long)]
+        invalidate_cache: bool,
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,
     },
@@ -568,6 +580,9 @@ pub enum WorldGovCmd {
         /// check-outline：卷名（走真实探针产出）；与 --probe-file 二选一
         #[arg(long)]
         volume: Option<String>,
+        /// 把预览对应的探针 JSON 落盘到该目录（方便调试；不指定则不写）
+        #[arg(long, value_name = "DIR")]
+        export_probe: Option<PathBuf>,
         /// 打印完整 user（默认只打印统计 + 前 800 字）
         #[arg(long)]
         full: bool,
@@ -611,6 +626,102 @@ pub enum WorldGovCmd {
         /// 资料库根
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,
+    },
+    /// 【调试】探针缓存（status|gc|clear；只动 07_勘误工坊/probe_cache/）
+    #[command(hide = true)]
+    Cache {
+        #[command(subcommand)]
+        cmd: CacheCmd,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
+    /// 【调试】探针打包导出（create|list|unpack；只含结构化探针，不含资料库源文件）
+    #[command(hide = true)]
+    ProbeExport {
+        #[command(subcommand)]
+        cmd: ProbeExportCmd,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
+    /// 【调试】健康自检（环境/索引/目录/管线；--fix 仅建目录）
+    #[command(hide = true)]
+    SelfCheck {
+        #[command(subcommand)]
+        cmd: SelfCheckCmd,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CacheCmd {
+    /// 缓存状态：数量、总大小、旧于 N 天条目数
+    Status {
+        /// 视为"旧"的天数阈值
+        #[arg(long, default_value_t = 30)]
+        older_than: u64,
+    },
+    /// 清理超期缓存
+    Gc {
+        /// 清理旧于 N 天的缓存项
+        #[arg(long, default_value_t = 30)]
+        older_than: u64,
+    },
+    /// 全部清空
+    Clear,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ProbeExportCmd {
+    /// 打包一批探针为一个 .wg-probe.tar.gz
+    Create {
+        /// 输出路径（默认 07_勘误工坊/probes_<ts>.wg-probe.tar.gz）
+        #[arg(long, value_name = "PATH")]
+        out: Option<PathBuf>,
+        /// 只含指定层（逗号分隔，如 L2,L3）
+        #[arg(long)]
+        only_layers: Option<String>,
+        /// 只含 src_mtime ≥ ts 的条目
+        #[arg(long)]
+        since: Option<i64>,
+        /// 以某个 scan 探针文件为源
+        #[arg(long)]
+        from_scan: Option<String>,
+        /// 只含某任务产生的探针
+        #[arg(long)]
+        job_id: Option<String>,
+        /// 只算数量不生成包
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// 列包内清单（不解压）
+    List {
+        /// 包路径
+        archive: PathBuf,
+    },
+    /// 解包到指定目录（默认 07_勘误工坊/probe_unpack/）
+    Unpack {
+        /// 包路径
+        archive: PathBuf,
+        /// 目标目录
+        #[arg(long, value_name = "DIR")]
+        to: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SelfCheckCmd {
+    /// 运行全套自检
+    Run {
+        /// 安全自动修复：仅创建缺失目录（不 ALTER 表/不删任务）
+        #[arg(long)]
+        fix: bool,
+        /// 缓存"旧"的定义天数
+        #[arg(long, default_value_t = 30)]
+        older_than: u64,
     },
 }
 
@@ -677,6 +788,9 @@ pub enum QueueCmd {
         /// 清理超过 7 天的旧持久任务（安全清理，只动 task_jobs）
         #[arg(long)]
         prune: bool,
+        /// 导出长期 Pending（>24h）任务清单为 JSON（只读排查死任务）
+        #[arg(long)]
+        dump_stuck: bool,
     },
 }
 

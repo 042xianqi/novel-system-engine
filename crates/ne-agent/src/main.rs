@@ -13,7 +13,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use crate::cli::{Cli, Cmd, LibraryCtlCmd, McpCmd, ModelsCmd, QueueCmd, VaultCmd, WorldGovCmd, AuditExportCmd};
+use crate::cli::{Cli, Cmd, LibraryCtlCmd, McpCmd, ModelsCmd, QueueCmd, VaultCmd, WorldGovCmd, AuditExportCmd, CacheCmd, ProbeExportCmd, SelfCheckCmd};
 use ne_agent::{RuntimeConfig, Vault};
 use std::path::{Path, PathBuf};
 mod cli;
@@ -40,6 +40,11 @@ fn resolve_vault(cli: &Cli) -> Vault {
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
+    // 初始化结构化日志（默认 plain；structured 时 stderr 每行 JSON，不污染 stdout）
+    {
+        let mode = ne_agent::governance::structured_log::LogMode::parse(&cli.log_mode)?;
+        ne_agent::governance::structured_log::init(mode, cli.quiet, cli.log_file.clone());
+    }
     let vault = resolve_vault(&cli);
 
     match &cli.cmd {
@@ -925,7 +930,11 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool, 
             st["incremental_scan_ready"] = serde_json::json!(true);
             st["batch_inspect_ready"] = serde_json::json!(true);
             // 工具链版本标记（仅标识，无逻辑作用）
-            st["toolchain_epoch"] = serde_json::json!(8);
+            st["toolchain_epoch"] = serde_json::json!(9);
+            // 第 9 批能力标记
+            for (k, v) in ne_agent::governance::self_check::capabilities().as_object().cloned().unwrap_or_default() {
+                st[k] = v;
+            }
             if json {
                 println!("{}", serde_json::to_string_pretty(&st)?);
             } else {
@@ -1057,7 +1066,7 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                 println!("（共 {} 层上层约束；详见 --json）", r["chain_len"]);
             }
         }
-        WorldGovCmd::ScanLibrary { semantic, slice, dry_run, enqueue, persist, all_layers, since, write_snapshot, lib: _ } => {
+        WorldGovCmd::ScanLibrary { semantic, slice, dry_run, enqueue, persist, all_layers, since, write_snapshot, no_cache, invalidate_cache, lib: _ } => {
             if *enqueue {
                 let (sn, sm) = match slice.as_deref() {
                     Some(s) => world_gov::parse_slice_strict(s).map_err(|e| anyhow::anyhow!("{e}"))?,
@@ -1080,6 +1089,34 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
             ne_agent::governance::progress::emit(quiet, "scan-library", 0, 1, None);
             let r = world_gov::scan_library(&conn, lib_root, slice.as_deref(), *semantic, *dry_run, *all_layers, since_ts)?;
             ne_agent::governance::progress::emit(quiet, "scan-library", 1, 1, Some(0));
+            // 探针缓存：把本片 probe_items 写入缓存（默认开启；--no-cache 关闭；--invalidate-cache 强制重写）
+            // 缓存 key = hash(layer+key+src_mtime+baseline_fingerprint)；命中即复用，不重算。
+            let mut cache_hits = 0usize;
+            let mut cache_miss = 0usize;
+            let baseline_fp = world_gov::read_baseline_fingerprint(lib_root).unwrap_or_default();
+            if !*no_cache {
+                use ne_agent::governance::probe_cache as pc;
+                if let Some(items) = r["probe_items"].as_array() {
+                    for it in items {
+                        let layer = it["layer"].as_str().unwrap_or("");
+                        let key = it["key"].as_str().unwrap_or("");
+                        let mtime = it["src_mtime"].as_i64().unwrap_or(0);
+                        let source = it["source"].as_str().unwrap_or("");
+                        if !*invalidate_cache && pc::get(lib_root, layer, key, mtime, &baseline_fp).is_some() {
+                            cache_hits += 1;
+                        } else {
+                            let _ = pc::put(lib_root, layer, key, mtime, &baseline_fp, source, it);
+                            cache_miss += 1;
+                        }
+                    }
+                }
+            }
+            ne_agent::governance::structured_log::info("world-gov scan-library", "scan.done", serde_json::json!({
+                "slice": format!("{}of{}", r["slice"]["n"], r["slice"]["m"]),
+                "used": r["counts"]["used"],
+                "cache_hits": cache_hits, "cache_miss": cache_miss,
+                "is_incremental": r["counts"]["is_incremental"],
+            }));
             // 写回快照（仅成功且非 dry-run 且显式 --write-snapshot）
             let snapshot_written = if *write_snapshot && !*dry_run {
                 let used = r["counts"]["used"].as_u64().unwrap_or(0) as usize;
@@ -1098,6 +1135,9 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
             };
             if json {
                 let mut out = r.clone();
+                if !*no_cache {
+                    out["cache"] = serde_json::json!({"hits": cache_hits, "miss": cache_miss});
+                }
                 if let Some(n) = &since_note { out["since_note"] = serde_json::json!(n); }
                 if let Some(p) = &snapshot_written { out["snapshot_written"] = serde_json::json!(p); }
                 println!("{}", serde_json::to_string_pretty(&out)?);
@@ -1128,6 +1168,7 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                 if *dry_run { println!("\n[--dry-run] 未落盘清单文件（快照亦不写）"); }
                 else { println!("\n清单已写: {}/07_勘误工坊/scan_probe_{}of{}.json",
                     lib_root.display(), s["n"], s["m"]); }
+                if !*no_cache { println!("探针缓存: 命中 {} / 写入 {}", cache_hits, cache_miss); }
                 if let Some(p) = &snapshot_written { println!("快照已写: {p}"); }
             }
         }
@@ -1190,7 +1231,7 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                 println!("端点配置：{}", cfg.safe_snapshot());
             }
         }
-        WorldGovCmd::PromptPreview { kind, key, probe_file, volume, full, lib: _ } => {
+        WorldGovCmd::PromptPreview { kind, key, probe_file, volume, export_probe, full, lib: _ } => {
             use ne_agent::governance::prompt_builder as pb;
             // ① 取探针 payload：优先文件；否则走真实探针产出（纯只读、零外呼）
             let payload: serde_json::Value = if let Some(pf) = probe_file {
@@ -1231,6 +1272,14 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
             };
             // ③ 组装（纯规则层：零外呼、零推理、零落盘）
             let built = pb::build_by_kind(kind, &payload)?;
+            // --export-probe DIR：把预览对应的探针 JSON 落盘（方便调试）
+            if let Some(dir) = export_probe {
+                std::fs::create_dir_all(dir)?;
+                let safe_kind: String = kind.chars().map(|c| if c.is_ascii_alphanumeric() || c=='-' { c } else { '_' }).collect();
+                let fp = dir.join(format!("probe_{safe_kind}.json"));
+                std::fs::write(&fp, serde_json::to_string_pretty(&payload)?)?;
+                if !quiet { eprintln!("[info] 探针已导出: {}", fp.display()); }
+            }
             if json {
                 println!("{}", serde_json::to_string_pretty(&serde_json::json!({
                     "command": "world-gov prompt-preview",
@@ -1436,6 +1485,145 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                 }
             }
         }
+        WorldGovCmd::Cache { cmd, lib: _ } => {
+            use ne_agent::governance::probe_cache as pc;
+            match cmd {
+                CacheCmd::Status { older_than } => {
+                    let st = pc::status(lib_root, *older_than)?;
+                    if json { println!("{}", serde_json::to_string_pretty(&st)?); }
+                    else {
+                        println!("== 探针缓存状态 ==");
+                        println!("目录: {}", st["dir"]);
+                        println!("条目数: {}  总大小: {} bytes", st["entries"], st["total_bytes"]);
+                        println!("旧于 {} 天: {} 条", st["older_than_days"], st["stale_entries"]);
+                    }
+                }
+                CacheCmd::Gc { older_than } => {
+                    let n = pc::gc(lib_root, *older_than)?;
+                    if json { println!("{}", serde_json::to_string_pretty(&serde_json::json!({"command":"world-gov cache gc","removed":n,"older_than":older_than}))?); }
+                    else { println!("已清理 {n} 个超期缓存项（旧于 {older_than} 天）"); }
+                }
+                CacheCmd::Clear => {
+                    let n = pc::clear(lib_root)?;
+                    if json { println!("{}", serde_json::to_string_pretty(&serde_json::json!({"command":"world-gov cache clear","cleared":n}))?); }
+                    else { println!("已清空 {n} 个缓存项（只动 07_勘误工坊/probe_cache/）"); }
+                }
+            }
+        }
+        WorldGovCmd::ProbeExport { cmd, lib: _ } => {
+            use ne_agent::governance::probe_export as pe;
+            match cmd {
+                ProbeExportCmd::Create { out, only_layers, since, from_scan, job_id, dry_run } => {
+                    // 收集探针来源：scan 探针文件 + 缓存项（world-gov 生成的结构化探针）
+                    let mut items: Vec<(String, serde_json::Value)> = Vec::new();
+                    if let Some(src) = from_scan {
+                        let p = if Path::new(src).is_absolute() { PathBuf::from(src) } else { lib_root.join(src) };
+                        let raw = std::fs::read_to_string(&p).with_context(|| format!("读取 scan 探针失败: {}", p.display()))?;
+                        let v: serde_json::Value = serde_json::from_str(&raw)?;
+                        if let Some(arr) = v.get("probe_items").and_then(|x| x.as_array()) {
+                            let lay_filter: Option<Vec<String>> = only_layers.as_ref().map(|s| s.split(',').map(|x| x.trim().to_string()).collect());
+                            for it in arr {
+                                let layer = it["layer"].as_str().unwrap_or("");
+                                if let Some(lf) = &lay_filter { if !lf.iter().any(|x| x == layer) { continue; } }
+                                let key = it["key"].as_str().unwrap_or("unknown");
+                                let safe: String = key.chars().map(|c| if c.is_ascii_alphanumeric() || c=='-' || c=='_' { c } else { '_' }).collect();
+                                items.push((format!("probe-{safe}.json"), it.clone()));
+                            }
+                        }
+                    }
+                    // 缓存项（可选，按 --since / --job-id 过滤在缓存侧无 job 概念，故仅按层）
+                    let cache_dir = ne_agent::governance::probe_cache::cache_dir(lib_root);
+                    if cache_dir.is_dir() {
+                        for e in std::fs::read_dir(&cache_dir)? {
+                            let e = e?; let p = e.path();
+                            if p.extension().map(|x| x == "json").unwrap_or(false) {
+                                if let Ok(txt) = std::fs::read_to_string(&p) {
+                                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+                                        items.push((format!("probe-cache-{}.json", p.file_stem().unwrap().to_string_lossy()), v));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let _ = (since, job_id); // 保留参数语义；缓存侧无 mtime/job 元数据过滤（暂无）
+                    let manifest = serde_json::json!({
+                        "version": pe::WG_PROBE_VERSION,
+                        "created_at": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+                        "toolchain_epoch": 9,
+                        "layers": only_layers.clone().unwrap_or_else(|| "all".into()),
+                        "since_anchor": since,
+                        "baseline_fingerprint": world_gov::read_baseline_fingerprint(lib_root).unwrap_or_else(|| "(none)".into()),
+                        "item_count": items.len(),
+                        "entries": items.iter().map(|(n,_)| n.clone()).collect::<Vec<_>>(),
+                        "note": "只含 world-gov 生成的结构化探针；不含资料库原始源文件。",
+                    });
+                    if *dry_run {
+                        if json { println!("{}", serde_json::to_string_pretty(&serde_json::json!({"command":"world-gov probe-export create","dry_run":true,"item_count":items.len(),"manifest":manifest}))?); }
+                        else { println!("== probe-export create（--dry-run）==\n将打包 {} 个探针（未生成包）", items.len()); }
+                        return Ok(());
+                    }
+                    // 输出路径白名单：默认 07_勘误工坊/；显式 --out 需在 lib_root 内或绝对路径
+                    let out_path = match out {
+                        Some(p) => {
+                            if p.is_absolute() { p.clone() }
+                            else {
+                                // 防逃逸：相对路径不许含 ..
+                                if p.to_string_lossy().contains("..") { anyhow::bail!("--out 相对路径不得含 .."); }
+                                lib_root.join("07_勘误工坊").join(p)
+                            }
+                        }
+                        None => {
+                            let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+                            lib_root.join("07_勘误工坊").join(format!("probes_{ts}.wg-probe.tar.gz"))
+                        }
+                    };
+                    let (_p, nbytes) = pe::create_archive(&out_path, &manifest, &items)?;
+                    if json { println!("{}", serde_json::to_string_pretty(&serde_json::json!({"command":"world-gov probe-export create","path":out_path.display().to_string(),"bytes":nbytes,"item_count":items.len()}))?); }
+                    else { println!("== probe-export create ==\n已写: {}（{} bytes，{} 探针）", out_path.display(), nbytes, items.len()); }
+                }
+                ProbeExportCmd::List { archive } => {
+                    let p = if archive.is_absolute() { archive.clone() } else { lib_root.join(archive) };
+                    let m = pe::read_manifest(&p)?;
+                    if json { println!("{}", serde_json::to_string_pretty(&serde_json::json!({"command":"world-gov probe-export list","archive":p.display().to_string(),"manifest":m}))?); }
+                    else {
+                        println!("== probe-export list: {} ==", p.display());
+                        println!("版本: {}  条目数: {}", m["version"], m["item_count"]);
+                        println!("基线指纹: {}", m["baseline_fingerprint"]);
+                        println!("层过滤: {}  增量锚点: {}", m["layers"], m["since_anchor"]);
+                        if let Some(e) = m["entries"].as_array() { for x in e.iter().take(20) { println!("  - {}", x.as_str().unwrap_or("")); } }
+                    }
+                }
+                ProbeExportCmd::Unpack { archive, to } => {
+                    let p = if archive.is_absolute() { archive.clone() } else { lib_root.join(archive) };
+                    let dst = match to {
+                        Some(d) => if d.is_absolute() { d.clone() } else { lib_root.join("07_勘误工坊").join(d) },
+                        None => lib_root.join("07_勘误工坊/probe_unpack"),
+                    };
+                    let n = pe::unpack_archive(&p, &dst)?;
+                    if json { println!("{}", serde_json::to_string_pretty(&serde_json::json!({"command":"world-gov probe-export unpack","archive":p.display().to_string(),"to":dst.display().to_string(),"files":n}))?); }
+                    else { println!("== probe-export unpack ==\n已解包 {} 个文件到 {}", n, dst.display()); }
+                }
+            }
+        }
+        WorldGovCmd::SelfCheck { cmd, lib: _ } => {
+            use ne_agent::governance::self_check as sc;
+            match cmd {
+                SelfCheckCmd::Run { fix, older_than } => {
+                    let r = sc::run(&conn, lib_root, *fix, *older_than)?;
+                    if json { println!("{}", serde_json::to_string_pretty(&r)?); }
+                    else {
+                        println!("== world-gov self-check（{} 项检查，{} 失败）==", r["checks"], r["failed"]);
+                        if let Some(items) = r["items"].as_array() {
+                            for it in items {
+                                let mark = if it["ok"] == true { if it["warn"].as_bool().unwrap_or(false) { "⚠" } else { "✅" } } else { "❌" };
+                                println!("  {mark} {} : {}", it["name"], it["detail"]);
+                            }
+                        }
+                        if *fix { println!("（--fix：只创建缺失目录，未 ALTER 表/未删任务）"); }
+                    }
+                }
+            }
+        }
         WorldGovCmd::Queue { cmd } => {
             use ne_agent::governance::pipeline as pipe;
             use ne_agent::governance::pipeline_store as store;
@@ -1521,9 +1709,24 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                         }
                     }
                 }
-                QueueCmd::Step { limit, max_per_round, persist, prune } => {
+                QueueCmd::Step { limit, max_per_round, persist, prune, dump_stuck } => {
                     // 仅对**持久任务**推进（一步一推；不自动轮询）
                     store::ensure_task_table(&conn)?;
+                    if *dump_stuck {
+                        let stuck = ne_agent::governance::self_check::stalled_jobs(&conn, 24)?;
+                        if json {
+                            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                                "command": "world-gov queue step --dump-stuck",
+                                "threshold_hours": 24, "count": stuck.len(), "stuck": stuck,
+                            }))?);
+                        } else {
+                            println!("== 长期 Pending（>24h）任务：{} 个 ==", stuck.len());
+                            for s in &stuck {
+                                println!("  {} [{}] created_at={}", s["id"], s["kind"], s["created_at"]);
+                            }
+                        }
+                        return Ok(());
+                    }
                     if *prune {
                         let removed = store::job_prune(&conn, 7)?;
                         if json {

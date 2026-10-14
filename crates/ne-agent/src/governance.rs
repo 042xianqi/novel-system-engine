@@ -101,6 +101,11 @@ pub fn classify_layer(rel: &str) -> &'static str {
     if r.contains("03_叙事规划/细纲") { return "L3"; }
     if r.contains("03_叙事规划/分卷大纲") { return "L2"; }
     if r.contains("02_资料库/") { return "L4"; }
+    // 工程辅助文件（非叙事素材）：prompts / reports / 工单 / README / PLAN / rules
+    if r.contains("05_管线框架/") || r.contains("/工单_") || r.ends_with("/README.md")
+        || r.ends_with("/PLAN_L5.md") || r.contains("/rules.md") {
+        return "AUX";
+    }
     "UNCLASSIFIED"
 }
 
@@ -434,7 +439,7 @@ pub fn library_classify(conn: &Connection, out: Option<&Path>) -> Result<Value> 
         if layer == "UNCLASSIFIED" {
             if src.contains("_规范") { suggest = "GUARD".into(); reason = "_规范 目录".into(); }
             else if types.contains(&"CHAR".to_string()) || src.contains("角色") { suggest = "L4".into(); reason = "疑似角色卡".into(); }
-            else { suggest = "L4".into(); reason = "未匹配专规→按卡片".into(); }
+            else { suggest = "UNCLASSIFIED".into(); reason = "无层级特征，需人工判定".into(); }
         }
         // 建议 tag：类型前缀 join
         let mut tag = types.join("|");

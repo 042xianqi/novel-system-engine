@@ -13,7 +13,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use crate::cli::{Cli, Cmd, LibraryCtlCmd, McpCmd, ModelsCmd, QueueCmd, VaultCmd, WorldGovCmd};
+use crate::cli::{Cli, Cmd, LibraryCtlCmd, McpCmd, ModelsCmd, QueueCmd, VaultCmd, WorldGovCmd, AuditExportCmd};
 use ne_agent::{RuntimeConfig, Vault};
 use std::path::{Path, PathBuf};
 mod cli;
@@ -902,6 +902,9 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool) 
             st["persist_mode_available"] = serde_json::json!(true);
             st["llm_runtime_defined"] = serde_json::json!(true);
             st["llm_real_call_enabled"] = serde_json::json!(false);
+            // 审计报告导出：纯读拼接，不依赖门控，恒可用
+            st["report_export_ready"] = serde_json::json!(true);
+            st["prompt_preview_ready"] = serde_json::json!(true);
             if json {
                 println!("{}", serde_json::to_string_pretty(&st)?);
             } else {
@@ -1033,7 +1036,7 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool) 
                 println!("（共 {} 层上层约束；详见 --json）", r["chain_len"]);
             }
         }
-        WorldGovCmd::ScanLibrary { semantic, slice, dry_run, enqueue, persist, lib: _ } => {
+        WorldGovCmd::ScanLibrary { semantic, slice, dry_run, enqueue, persist, all_layers, lib: _ } => {
             if *enqueue {
                 let (sn, sm) = match slice.as_deref() {
                     Some(s) => world_gov::parse_slice_strict(s).map_err(|e| anyhow::anyhow!("{e}"))?,
@@ -1044,13 +1047,17 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool) 
                     Some((sn as u32, sm as u32)), None, probe, *persist, json,
                     &format!("scan-library slice={sn}/{sm}"));
             }
-            let r = world_gov::scan_library(&conn, lib_root, slice.as_deref(), *semantic, *dry_run)?;
+            let r = world_gov::scan_library(&conn, lib_root, slice.as_deref(), *semantic, *dry_run, *all_layers)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&r)?);
             } else {
                 let s = &r["slice"];
                 println!("== 探针分片清单（零模型骨架）==");
-                println!("分片 {}/{}：偏移 {}，本片 {} 条 / 全库 {} 条", s["n"], s["m"], s["offset"], s["items"], s["total"]);
+                println!("分片 {}/{}：偏移 {}，本片 {} 条 / 扫描域 {} 条", s["n"], s["m"], s["offset"], s["items"], s["total"]);
+                if let Some(c) = r.get("counts") {
+                    println!("层过滤: {}  （全库 {} → 扫描域 {}，过滤掉 {}）",
+                        c["layer_filter"], c["total_before"], c["used"], c["filtered_aux"]);
+                }
                 println!("semantic: {}", r["semantic"]);
                 println!("入库通路: {}", r["semantic_channel"]);
                 println!("五查: {}", r["questions"].as_array().map(|a| a.len()).unwrap_or(0),);
@@ -1210,6 +1217,88 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool) 
                     println!("{}", built.user);
                 } else {
                     println!("{}", built.user.chars().take(800).collect::<String>());
+                }
+            }
+        }
+        WorldGovCmd::AuditExport { cmd, lib: _ } => {
+            use ne_agent::governance::report_builder as rb;
+            let lf = rb::scan_layer_filter_text(false);
+            match cmd {
+                AuditExportCmd::New { format, dry_run, only_semantic, only_structural, law_hash, job_id } => {
+                    let fmt = rb::ReportFormat::parse(format)?;
+                    let filter = rb::ExportFilter {
+                        only_semantic: *only_semantic,
+                        only_structural: *only_structural,
+                        law_hash: law_hash.clone(),
+                        job_id: job_id.clone(),
+                    };
+                    // 纯读组装（不落盘、不推理、不写库）
+                    let rep = rb::build_report(&conn, lib_root, &lf, false, &filter)?;
+                    if *dry_run {
+                        if json {
+                            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                                "command": "world-gov audit-export new", "dry_run": true,
+                                "meta": rep.meta, "counts": rep.counts,
+                                "items_exported": rep.items.len(),
+                                "would_write_to": rb::lf_dir_display(lib_root),
+                                "note": "只算不落地（reports/ 目录未创建）",
+                            }))?);
+                        } else {
+                            println!("== audit-export new（--dry-run：只算不落地）==");
+                            println!("run_id: {}", rep.meta.run_id);
+                            println!("基线指纹: {}", rep.meta.baseline_fingerprint);
+                            println!("统计: {}", rep.counts);
+                            println!("将导出 {} 条 → {}", rep.items.len(), rb::lf_dir_display(lib_root));
+                            println!("[--dry-run] 未写任何文件、未创建目录。");
+                        }
+                        return Ok(());
+                    }
+                    let path = rb::write_report(lib_root, &rep, fmt)?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                            "command": "world-gov audit-export new",
+                            "format": format, "meta": rep.meta, "counts": rep.counts,
+                            "items_exported": rep.items.len(),
+                            "path": path.display().to_string(),
+                        }))?);
+                    } else {
+                        println!("== audit-export new ==");
+                        println!("格式: {}", format);
+                        println!("run_id: {}", rep.meta.run_id);
+                        println!("基线指纹: {}", rep.meta.baseline_fingerprint);
+                        println!("统计: {}", rep.counts);
+                        println!("已写: {}", path.display());
+                    }
+                }
+                AuditExportCmd::List => {
+                    let rows = rb::list_reports(lib_root)?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                            "command": "world-gov audit-export list",
+                            "dir": rb::lf_dir_display(lib_root),
+                            "count": rows.len(), "reports": rows,
+                        }))?);
+                    } else {
+                        println!("== audit-export list（{} 份）==", rows.len());
+                        println!("目录: {}", rb::lf_dir_display(lib_root));
+                        for r in &rows {
+                            println!("  {}  {} bytes  mtime={}", r["name"], r["size"], r["mtime"]);
+                        }
+                    }
+                }
+                AuditExportCmd::Show { run_id, format } => {
+                    let fmt = rb::ReportFormat::parse(format)?;
+                    let (p, content) = rb::read_report(lib_root, fmt.ext(), run_id)?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                            "command": "world-gov audit-export show",
+                            "run_id": run_id, "path": p.display().to_string(),
+                            "content": content,
+                        }))?);
+                    } else {
+                        println!("== audit-export show: {} ==", p.display());
+                        println!("{content}");
+                    }
                 }
             }
         }

@@ -10,9 +10,11 @@
 //! 子模块：`pipeline_store` —— 可选持久任务层（novel.db.task_jobs；仅 --persist 启用）。
 //! 子模块：`semantic_runtime` —— 语义推理运行时（契约/壳/沙盘替身；真实调用死 TODO）。
 //! 子模块：`prompt_builder` —— 探针 JSON → 结构化 prompt 文本（规则层；无外呼、无副作用）。
+//! 子模块：`report_builder` —— 审计报告 & 导出（只读 risk_index/task_jobs/基线 → 结构化产物）。
 pub mod pipeline;
 pub mod pipeline_store;
 pub mod prompt_builder;
+pub mod report_builder;
 pub mod semantic_runtime;
 
 use anyhow::Result;

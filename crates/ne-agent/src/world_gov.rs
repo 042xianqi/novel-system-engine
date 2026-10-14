@@ -461,15 +461,8 @@ pub fn emit_semantic_findings(
         let key = f["key"].as_str().unwrap_or("");
         let kind = f["kind"].as_str().unwrap_or("语义风险");
         let law = f["law_ref"].as_str().unwrap_or("");
-        // law_hash：依据文本的轻量指纹（FNV-1a 截 8 hex），使幂等键对"依据被改写"敏感
-        let law_hash = {
-            let mut h: u64 = 0xcbf29ce484222325;
-            for b in law.as_bytes() {
-                h ^= *b as u64;
-                h = h.wrapping_mul(0x100000001b3);
-            }
-            format!("{h:08x}")
-        };
+        // law_hash：依据文本的轻量指纹（与 `law_hash8` 同口径），使幂等键对"依据被改写"敏感
+        let law_hash = law_hash8(law);
         let msg = format!(
             "语义{kind}[{v}] {key} :: law#{law_hash} :: {}",
             f["explain"].as_str().unwrap_or("")
@@ -483,9 +476,42 @@ pub fn emit_semantic_findings(
     Ok(n)
 }
 
+// ────────────────────────────────── 扫描层过滤（默认不扫工程辅助）
+
+/// scan-library 默认接纳的层级（只扫真正的内容层；AUX/工程辅助默认排除，避免脏输入）。
+pub const SCAN_LAYERS_DEFAULT: &[&str] = &["L2", "L3", "L4"];
+
+/// 某层是否属于默认扫描范围。
+pub fn is_scannable_layer(layer: &str) -> bool {
+    SCAN_LAYERS_DEFAULT.contains(&layer)
+}
+
+/// 轻量指纹（FNV-1a 64 位 → 十六进制字符串，≥16 hex）——与 `emit_semantic_findings` 里 law_hash 同口径；
+/// 提升为公共函数，便于 report_builder 从 message 复算/比对 law# 哈希。
+pub fn law_hash8(s: &str) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in s.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{h:08x}")
+}
+
+/// 读取已落盘的基线快照（`07_勘误工坊/world_baseline.json`），只取指纹；
+/// 缺失/损坏时返回 `None`（**不自动 bootstrap、不写任何文件**）。
+pub fn read_baseline_fingerprint(lib_root: &Path) -> Option<String> {
+    let p = lib_root.join("07_勘误工坊").join("world_baseline.json");
+    let raw = std::fs::read_to_string(&p).ok()?;
+    let v: Value = serde_json::from_str(&raw).ok()?;
+    v.get("baseline_fingerprint")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string())
+}
+
 /// scan-library 骨架：产出**探针分片清单**（零模型；不产出任何语义判定）。
 ///
-/// - `--slice N/M` 把 library_index 全条目切成连续分块，输出第 N 片元数据清单；
+/// - `--slice N/M` 把 library_index 条目切成连续分块，输出第 N 片元数据清单；
+/// - **默认只扫 L2/L3/L4**（AUX/工程辅助等默认过滤，避免脏输入）；`--all-layers` 关闭过滤；
 /// - `--semantic` **仅参数占位**：通路已预埋（emit_semantic_findings → risk_index.is_semantic=1），
 ///   真实模型推理等单独放行；骨架阶段 findings 恒空；
 /// - `--dry-run` 沙盘：只打印，不落盘清单文件。
@@ -495,6 +521,30 @@ pub fn scan_library(
     slice: Option<&str>,
     semantic: bool,
     dry_run: bool,
+    all_layers: bool,
+) -> Result<Value> {
+    let report = scan_report(conn, slice, semantic, dry_run, all_layers)?;
+    if !dry_run {
+        let sn = report["slice"]["n"].as_i64().unwrap_or(1);
+        let sm = report["slice"]["m"].as_i64().unwrap_or(1);
+        let path = lib_root
+            .join("07_勘误工坊")
+            .join(format!("scan_probe_{sn}of{sm}.json"));
+        if let Some(p) = path.parent() {
+            std::fs::create_dir_all(p)?;
+        }
+        std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
+    }
+    Ok(report)
+}
+
+/// scan-library **纯计算**（不落盘）：拆分出来便于 dry-run / prompt-preview 复用。
+pub fn scan_report(
+    conn: &Connection,
+    slice: Option<&str>,
+    semantic: bool,
+    dry_run: bool,
+    all_layers: bool,
 ) -> Result<Value> {
     let (sn, sm) = match slice {
         Some(s) => parse_slice_strict(s).map_err(|e| anyhow::anyhow!("{e}"))?,
@@ -504,7 +554,7 @@ pub fn scan_library(
         "SELECT layer,key,IFNULL(title,''),chars,IFNULL(source,'') FROM library_index
          ORDER BY layer,key",
     )?;
-    let all: Vec<Value> = stmt
+    let raw: Vec<Value> = stmt
         .query_map([], |r| {
             Ok(json!({
                 "layer": r.get::<_,String>(0)?,
@@ -516,6 +566,16 @@ pub fn scan_library(
         })?
         .filter_map(|x| x.ok())
         .collect();
+    let total_before = raw.len();
+    // 层过滤：默认只接纳 L2/L3/L4；--all-layers 放行全部（逃生门）
+    let all: Vec<Value> = if all_layers {
+        raw
+    } else {
+        raw.into_iter()
+            .filter(|v| is_scannable_layer(v["layer"].as_str().unwrap_or("")))
+            .collect()
+    };
+    let filtered = total_before - all.len();
     let total = all.len();
     // 粒度防御：单分片 >250 条拒绝（防一次性爆算力），提示调大 M
     check_slice_granularity(sn, sm, total, 250).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -526,6 +586,18 @@ pub fn scan_library(
         "command": "world-gov scan-library",
         "mode": "probe_slice",
         "slice": {"n": sn, "m": sm, "offset": start, "items": end - start, "total": total},
+        // 过滤统计：默认不动 AUX/工程文件，计数显式可查
+        "counts": {
+            "total_before": total_before,
+            "filtered_aux": filtered,
+            "used": total,
+            "all_layers": all_layers,
+            "layer_filter": if all_layers {
+                "off（--all-layers：含 AUX/L1 等全部条目）".to_string()
+            } else {
+                SCAN_LAYERS_DEFAULT.join("/")
+            },
+        },
         "semantic": if semantic {
             "requested_but_locked（--semantic 仅占位；真实推理等单独放行）"
         } else {
@@ -544,17 +616,8 @@ pub fn scan_library(
         "verdict_rule": "严禁幻觉式乱报警告；拿不准统一标 UNCERTAIN，不强行归为风险；判冲突必须附【双方原文片段 + 上层法理原话】。",
         "findings": [], // 骨架阶段恒空（无模型不产出语义判定）
         "dry_run": dry_run,
-        "note": "骨架阶段只产分片清单；模型放行后本清单即逐片模型输入。",
+        "note": "骨架阶段只产分片清单；默认过滤工程辅助层（AUX/L1 等），显式 --all-layers 可扫全部。",
     });
-    if !dry_run {
-        let path = lib_root
-            .join("07_勘误工坊")
-            .join(format!("scan_probe_{sn}of{sm}.json"));
-        if let Some(p) = path.parent() {
-            std::fs::create_dir_all(p)?;
-        }
-        std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
-    }
     Ok(report)
 }
 
@@ -908,5 +971,86 @@ mod tests {
         assert_eq!(emit_semantic_findings(&conn, "s", &f1).unwrap(), 1);
         assert_eq!(emit_semantic_findings(&conn, "s", &f1).unwrap(), 0, "同 key+verdict+law 重复 → 幂等拦");
         assert_eq!(emit_semantic_findings(&conn, "s", &f2).unwrap(), 1, "依据文本变化 → law_hash 变 → 允许新入库");
+    }
+
+    // ── scan 层过滤（第 6 批修复）──
+
+    /// 造一个含 L4/AUX/L1/L3 四类条目的内存库。
+    fn seed_library_index(conn: &Connection) {
+        conn.execute_batch(
+            "CREATE TABLE library_index(
+               layer TEXT, key TEXT, title TEXT, chars INTEGER, source TEXT);",
+        )
+        .unwrap();
+        for (layer, key, src) in [
+            ("L4", "A-1", "04/A-1.md"),
+            ("L4", "A-2", "04/A-2.md"),
+            ("L3", "L3-1", "03/L3-1.md"),
+            ("L2", "L2-1", "02/L2-1.md"),
+            ("AUX", "README", "05_管线框架/README.md"),
+            ("AUX", "PLAN_L5", "05_管线框架/PLAN_L5.md"),
+            ("L1", "叙事总纲", "01/叙事总纲.md"),
+        ] {
+            conn.execute(
+                "INSERT INTO library_index(layer,key,title,chars,source) VALUES(?1,?2,'',10,?3)",
+                params![layer, key, src],
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn scan_default_filters_aux_and_upper_layers() {
+        let conn = Connection::open_in_memory().unwrap();
+        seed_library_index(&conn);
+        let r = scan_report(&conn, None, false, true, false).unwrap();
+        let c = &r["counts"];
+        assert_eq!(c["total_before"], 7, "库里 7 条");
+        assert_eq!(c["used"], 4, "默认只留 L2/L3/L4=4 条");
+        assert_eq!(c["filtered_aux"], 3, "过滤掉 2 AUX + 1 L1");
+        assert_eq!(c["all_layers"], false);
+        // AUX 条目绝不出现在待检清单
+        let layers: Vec<&str> = r["probe_items"].as_array().unwrap().iter()
+            .map(|v| v["layer"].as_str().unwrap()).collect();
+        assert!(!layers.contains(&"AUX"), "AUX 必须被滤除");
+        assert!(!layers.contains(&"L1"), "L1 默认不扫");
+        assert!(layers.contains(&"L4"));
+    }
+
+    #[test]
+    fn scan_all_layers_escape_hatch_includes_everything() {
+        let conn = Connection::open_in_memory().unwrap();
+        seed_library_index(&conn);
+        let r = scan_report(&conn, None, false, true, true).unwrap();
+        let c = &r["counts"];
+        assert_eq!(c["used"], 7, "--all-layers 放行全部 7 条");
+        assert_eq!(c["filtered_aux"], 0);
+        assert_eq!(c["all_layers"], true);
+        let layers: Vec<&str> = r["probe_items"].as_array().unwrap().iter()
+            .map(|v| v["layer"].as_str().unwrap()).collect();
+        assert!(layers.contains(&"AUX"), "--all-layers 应含 AUX");
+        assert!(layers.contains(&"L1"));
+    }
+
+    #[test]
+    fn is_scannable_layer_matches_default_set() {
+        for l in ["L2", "L3", "L4"] { assert!(is_scannable_layer(l), "{l} 应可扫"); }
+        for l in ["AUX", "L1", "L0", "L0.5", "GUARD", "ANCHOR", "L1x", ""] {
+            assert!(!is_scannable_layer(l), "{l} 应被过滤");
+        }
+    }
+
+    #[test]
+    fn law_hash8_is_stable_and_sensitive() {
+        assert_eq!(law_hash8("铁则原文A"), law_hash8("铁则原文A"));
+        assert_ne!(law_hash8("铁则原文A"), law_hash8("铁则原文B"));
+        assert_eq!(law_hash8("x").len(), 16, "FNV-1a 64 位十六进制 = 16 hex");
+    }
+
+    #[test]
+    fn read_baseline_fingerprint_absent_is_none() {
+        // 指向不存在的目录：必须返回 None，绝不 panic、绝不自动创建
+        let tmp = std::env::temp_dir().join("wg_no_such_lib_zzz");
+        assert!(read_baseline_fingerprint(&tmp).is_none());
     }
 }

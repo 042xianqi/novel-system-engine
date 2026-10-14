@@ -506,6 +506,9 @@ pub enum WorldGovCmd {
         /// 落库持久化（默认 off = 纯内存；开启后写 novel.db.task_jobs）
         #[arg(long)]
         persist: bool,
+        /// 逃生门：关闭层过滤，扫描全部条目（含 AUX/L1 等工程辅助）
+        #[arg(long)]
+        all_layers: bool,
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,
     },
@@ -562,6 +565,50 @@ pub enum WorldGovCmd {
         /// 资料库根
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,
+    },
+    /// 【调试】审计报告导出（只读拼接 risk_index/task_jobs/基线；产物只落 reports/）
+    #[command(hide = true)]
+    AuditExport {
+        #[command(subcommand)]
+        cmd: AuditExportCmd,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AuditExportCmd {
+    /// 生成一份新报告并落盘（--dry-run 只算不落地）
+    New {
+        /// 报告格式
+        #[arg(long, default_value = "minimal-md")]
+        format: String,
+        /// 只算不落地
+        #[arg(long)]
+        dry_run: bool,
+        /// 只导出语义脏点（is_semantic=1）
+        #[arg(long)]
+        only_semantic: bool,
+        /// 只导出结构脏点（is_semantic=0）
+        #[arg(long)]
+        only_structural: bool,
+        /// 只导出某法理依据哈希（law#<hash>）的条目
+        #[arg(long)]
+        law_hash: Option<String>,
+        /// 只导出某任务产生的风险（source 含该 job id）
+        #[arg(long)]
+        job_id: Option<String>,
+    },
+    /// 列出已有报告（只列文件名 + 时间，不读内容）
+    List,
+    /// 打印已有报告内容
+    Show {
+        /// 报告 run_id（见 list）
+        run_id: String,
+        /// 报告格式（决定查找的扩展名）
+        #[arg(long, default_value = "minimal-md")]
+        format: String,
     },
 }
 

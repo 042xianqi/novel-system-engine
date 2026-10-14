@@ -23,6 +23,9 @@ pub(crate) struct Cli {
     /// 输出 JSON（便于脚本消费）
     #[arg(long, global = true)]
     pub(crate) json: bool,
+    /// 关闭进度/冗余日志（进度只走 stderr，不影响 --json 的 stdout）
+    #[arg(long, global = true)]
+    pub(crate) quiet: bool,
 
     #[command(subcommand)]
     pub(crate) cmd: Cmd,
@@ -509,6 +512,12 @@ pub enum WorldGovCmd {
         /// 逃生门：关闭层过滤，扫描全部条目（含 AUX/L1 等工程辅助）
         #[arg(long)]
         all_layers: bool,
+        /// 增量扫描：Unix 时间戳数字，或 `last`（读 .scan_snapshot.json 的上次锚点）
+        #[arg(long)]
+        since: Option<String>,
+        /// 扫描成功后写回 .scan_snapshot.json（时间锚点 + 统计 + 指纹；--dry-run 时不写）
+        #[arg(long)]
+        write_snapshot: bool,
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,
     },
@@ -575,6 +584,34 @@ pub enum WorldGovCmd {
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,
     },
+    /// 【调试】批量检视（三种输入；默认只预览/入队，绝不自动推理）
+    #[command(hide = true)]
+    InspectBatch {
+        /// 模式 a：读 scan 落盘探针 JSON，取其 key 列表
+        #[arg(long)]
+        from_scan: Option<String>,
+        /// 模式 b：读文本文件（每行一个 key，忽略空行/#注释）
+        #[arg(long)]
+        id_list: Option<String>,
+        /// 模式 c：增量取 key（Unix 时间戳或 last）
+        #[arg(long)]
+        since: Option<String>,
+        /// 只算数量，不写任何任务/探针
+        #[arg(long)]
+        dry_run: bool,
+        /// 入队（默认只预览不入队）
+        #[arg(long)]
+        enqueue: bool,
+        /// 入队是否落库持久化（仅 --enqueue 时有效）
+        #[arg(long)]
+        persist: bool,
+        /// 关闭层过滤（默认只取 L2/L3/L4）
+        #[arg(long)]
+        all_layers: bool,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -599,6 +636,9 @@ pub enum AuditExportCmd {
         /// 只导出某任务产生的风险（source 含该 job id）
         #[arg(long)]
         job_id: Option<String>,
+        /// 零风险时不报错（跳过空报告）
+        #[arg(long)]
+        ignore_empty: bool,
     },
     /// 列出已有报告（只列文件名 + 时间，不读内容）
     List,
@@ -628,6 +668,9 @@ pub enum QueueCmd {
         /// 最多推进 N 个 ReadyForInferring 任务（默认 1）
         #[arg(long, default_value_t = 1)]
         limit: usize,
+        /// 单轮最大推进上限（防手滑一口气推几百个；默认 20）
+        #[arg(long, default_value_t = 20)]
+        max_per_round: usize,
         /// 使用持久层（novel.db.task_jobs）；缺省则对内存队列操作
         #[arg(long)]
         persist: bool,

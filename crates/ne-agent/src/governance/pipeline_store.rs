@@ -93,6 +93,17 @@ pub fn job_persist(conn: &Connection, job: &SemanticJob, meta: Option<&Value>) -
     Ok(())
 }
 
+/// 任务是否已存在（跨进程幂等判定；只查 id，不读全行）。
+pub fn job_exists(conn: &Connection, id: &str) -> Result<bool> {
+    ensure_task_table(conn)?;
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM task_jobs WHERE id=?1",
+        params![id],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
 /// 按 id 加载一条任务。找不到返回 None；kind/state 非法（脏数据）也返回 None。
 pub fn job_load(conn: &Connection, id: &str) -> Result<Option<SemanticJob>> {
     let row = conn
@@ -475,5 +486,16 @@ mod tests {
         let mem_has = super::super::pipeline::with_queue(|q| q.peek("dbjob").is_some());
         assert!(!mem_has, "持久任务不得出现在内存队列");
         assert_eq!(job_list(&c, None).unwrap().len(), 1, "db 任务表独立存在");
+    }
+
+    #[test]
+    fn job_exists_detects_presence_for_cross_process_idempotency() {
+        let c = fresh_conn();
+        assert!(!job_exists(&c, "job-abc").unwrap(), "不存在 → false");
+        job_persist(&c, &mk_job("job-abc", JobKind::InspectCard, JobState::Pending), None).unwrap();
+        assert!(job_exists(&c, "job-abc").unwrap(), "已存在 → true（幂等基础）");
+        // 再次 UPSERT 同 id：不新增行（任务表不膨胀）
+        job_persist(&c, &mk_job("job-abc", JobKind::InspectCard, JobState::Pending), None).unwrap();
+        assert_eq!(job_list(&c, None).unwrap().len(), 1, "同 id UPSERT 不膨胀");
     }
 }

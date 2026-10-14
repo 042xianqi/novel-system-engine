@@ -81,6 +81,29 @@ fn gen_id(seq: u64) -> String {
     format!("job-{:x}-{:04x}", now_ts(), seq & 0xffff)
 }
 
+/// **参数派生**任务 id：同 `kind + slice + volume`（+ 可选 key）→ 同 id。
+/// 用于跨进程幂等（持久层 UPSERT 命中同一行，不灌水）。
+/// 不含时间戳/随机源，因此**可复现**。
+pub fn derived_id(kind: JobKind, slice: Option<(u32, u32)>, volume: Option<&str>, key: Option<&str>) -> String {
+    let mut s = String::new();
+    s.push_str(kind.as_str());
+    if let Some((n, m)) = slice {
+        s.push_str(&format!("|s{n}/{m}"));
+    }
+    if let Some(v) = volume {
+        s.push_str(&format!("|v{v}"));
+    }
+    if let Some(k) = key {
+        s.push_str(&format!("|k{k}"));
+    }
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in s.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("job-{:016x}", h)
+}
+
 /// 一个语义任务。
 #[derive(Debug, Clone, Serialize)]
 pub struct SemanticJob {
@@ -358,6 +381,25 @@ mod tests {
         let (id3, _) = q.enqueue(JobKind::ScanLibrary, Some((3, 4)), None);
         assert_eq!(q.try_drain(false).len(), 1, "单次只取一个");
         assert!(q.peek(&id3).is_some());
+    }
+
+    #[test]
+    fn derived_id_is_deterministic_and_param_sensitive() {
+        // 同参数 → 同 id（跨进程幂等基础）
+        let a = derived_id(JobKind::ScanLibrary, Some((1, 4)), None, None);
+        let b = derived_id(JobKind::ScanLibrary, Some((1, 4)), None, None);
+        assert_eq!(a, b, "同参数必须派生出同 id");
+        assert!(a.starts_with("job-"));
+        assert_eq!(a.len(), 20, "job- + 16 hex");
+        // 任一参数变化 → id 变化
+        assert_ne!(a, derived_id(JobKind::ScanLibrary, Some((2, 4)), None, None), "slice 变 → id 变");
+        assert_ne!(a, derived_id(JobKind::CheckOutline, None, Some("卷01"), None));
+        assert_ne!(a, derived_id(JobKind::InspectCard, None, None, Some("K1")));
+        assert_ne!(
+            derived_id(JobKind::InspectCard, None, None, Some("K1")),
+            derived_id(JobKind::InspectCard, None, None, Some("K2")),
+            "key 变 → id 变"
+        );
     }
 
     #[test]

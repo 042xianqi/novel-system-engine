@@ -11,10 +11,16 @@
 //! 子模块：`semantic_runtime` —— 语义推理运行时（契约/壳/沙盘替身；真实调用死 TODO）。
 //! 子模块：`prompt_builder` —— 探针 JSON → 结构化 prompt 文本（规则层；无外呼、无副作用）。
 //! 子模块：`report_builder` —— 审计报告 & 导出（只读 risk_index/task_jobs/基线 → 结构化产物）。
+//! 子模块：`progress` —— 标准化进度输出（stderr；--quiet 静默）。
+//! 子模块：`scan_snapshot` —— 增量扫描快照（07_勘误工坊/.scan_snapshot.json）。
+//! 子模块：`inspect_batch` —— 批量检视入口（默认只预览/入队；绝不自动推理）。
 pub mod pipeline;
 pub mod pipeline_store;
+pub mod progress;
 pub mod prompt_builder;
 pub mod report_builder;
+pub mod scan_snapshot;
+pub mod inspect_batch;
 pub mod semantic_runtime;
 
 use anyhow::Result;
@@ -171,7 +177,9 @@ pub fn semantic_gate_status(cli_semantic: bool) -> Value {
     })
 }
 
-/// 幂等补齐 library_index 的新列（title/tags）；已存在则跳过。
+/// 幂等补齐 library_index 的新列（title/tags/src_mtime）；已存在则跳过。
+/// `src_mtime` = init 时快照的**文件 mtime（Unix 秒）**，供增量扫描 `--since` 使用；
+/// 只读 index（不再 stat 磁盘），避免跨设备磁盘时间乱跳。旧库该列为 0 → 增量优雅降级全扫。
 fn ensure_library_index_cols(conn: &Connection) -> Result<()> {
     let mut have = std::collections::HashSet::new();
     {
@@ -179,7 +187,11 @@ fn ensure_library_index_cols(conn: &Connection) -> Result<()> {
         let it = st.query_map([], |r| r.get::<_, String>(1))?;
         for x in it.filter_map(|v| v.ok()) { have.insert(x); }
     }
-    for (name, ty) in [("title", "TEXT DEFAULT ''"), ("tags", "TEXT DEFAULT '[]'")] {
+    for (name, ty) in [
+        ("title", "TEXT DEFAULT ''"),
+        ("tags", "TEXT DEFAULT '[]'"),
+        ("src_mtime", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
         if !have.contains(name) {
             conn.execute(&format!("ALTER TABLE library_index ADD COLUMN {name} {ty}"), [])?;
         }
@@ -417,12 +429,19 @@ pub fn library_init(conn: &Connection, lib_root: &Path) -> Result<Value> {
         if chars == 0 { notes.push("空文件".into()); }
         if title.is_empty() && layer != "L3" { notes.push("缺标题(H1)".into()); }
         let is_dirty = !notes.is_empty();
+        // 文件 mtime（Unix 秒），供增量扫描 --since；只在 init 时写一次，消费侧只读 index
+        let src_mtime: i64 = std::fs::metadata(f)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
         conn.execute(
-            "INSERT INTO library_index(layer,category,key,source,chars,types,title,tags,dirty,dirty_note)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            "INSERT INTO library_index(layer,category,key,source,chars,types,title,tags,dirty,dirty_note,src_mtime)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
             params![layer, category, key, rel, chars as i64,
                     serde_json::to_string(&types)?, title, serde_json::to_string(&tags)?,
-                    if is_dirty {1} else {0}, notes.join("；")],
+                    if is_dirty {1} else {0}, notes.join("；"), src_mtime],
         )?;
         if is_dirty { dirty.push(json!({"file": rel, "layer": layer, "note": notes.join("；")})); }
     }

@@ -522,8 +522,9 @@ pub fn scan_library(
     semantic: bool,
     dry_run: bool,
     all_layers: bool,
+    since_ts: Option<i64>,
 ) -> Result<Value> {
-    let report = scan_report(conn, slice, semantic, dry_run, all_layers)?;
+    let report = scan_report(conn, slice, semantic, dry_run, all_layers, since_ts)?;
     if !dry_run {
         let sn = report["slice"]["n"].as_i64().unwrap_or(1);
         let sm = report["slice"]["m"].as_i64().unwrap_or(1);
@@ -539,21 +540,34 @@ pub fn scan_library(
 }
 
 /// scan-library **纯计算**（不落盘）：拆分出来便于 dry-run / prompt-preview 复用。
+/// `since_ts`：`Some(ts)` = 增量（仅 src_mtime ≥ ts）；`None` = 全量。
 pub fn scan_report(
     conn: &Connection,
     slice: Option<&str>,
     semantic: bool,
     dry_run: bool,
     all_layers: bool,
+    since_ts: Option<i64>,
 ) -> Result<Value> {
     let (sn, sm) = match slice {
         Some(s) => parse_slice_strict(s).map_err(|e| anyhow::anyhow!("{e}"))?,
         None => (1, 1),
     };
-    let mut stmt = conn.prepare(
-        "SELECT layer,key,IFNULL(title,''),chars,IFNULL(source,'') FROM library_index
-         ORDER BY layer,key",
-    )?;
+    // src_mtime 列可能尚不存在（旧库未重跑 init）→ 幂等补齐；缺列时全为 0
+    let has_mtime: bool = {
+        let mut st = conn.prepare("PRAGMA table_info(library_index)")?;
+        let cols: Vec<String> = st
+            .query_map([], |r| r.get::<_, String>(1))?
+            .filter_map(|v| v.ok())
+            .collect();
+        cols.iter().any(|c| c == "src_mtime")
+    };
+    let sql = if has_mtime {
+        "SELECT layer,key,IFNULL(title,''),chars,IFNULL(source,''),IFNULL(src_mtime,0) FROM library_index ORDER BY layer,key"
+    } else {
+        "SELECT layer,key,IFNULL(title,''),chars,IFNULL(source,''),0 FROM library_index ORDER BY layer,key"
+    };
+    let mut stmt = conn.prepare(sql)?;
     let raw: Vec<Value> = stmt
         .query_map([], |r| {
             Ok(json!({
@@ -562,25 +576,46 @@ pub fn scan_report(
                 "title": r.get::<_,String>(2)?,
                 "chars": r.get::<_,i64>(3)?,
                 "source": r.get::<_,String>(4)?,
+                "src_mtime": r.get::<_,i64>(5)?,
             }))
         })?
         .filter_map(|x| x.ok())
         .collect();
     let total_before = raw.len();
     // 层过滤：默认只接纳 L2/L3/L4；--all-layers 放行全部（逃生门）
-    let all: Vec<Value> = if all_layers {
+    let layered: Vec<Value> = if all_layers {
         raw
     } else {
         raw.into_iter()
             .filter(|v| is_scannable_layer(v["layer"].as_str().unwrap_or("")))
             .collect()
     };
-    let filtered = total_before - all.len();
+    let filtered = total_before - layered.len();
+    // 增量过滤：仅取 src_mtime >= since 的条目。
+    // 旧库 src_mtime 全 0（未重跑 init）→ 增量无意义，优雅降级为全扫并标注。
+    let (all, is_incremental, mtime_degraded) = match since_ts {
+        Some(ts) => {
+            let any_mtime = layered.iter().any(|v| v["src_mtime"].as_i64().unwrap_or(0) > 0);
+            if !any_mtime {
+                (layered, true, true) // 无有效 mtime → 全扫（降级）
+            } else {
+                let inc: Vec<Value> = layered
+                    .into_iter()
+                    .filter(|v| v["src_mtime"].as_i64().unwrap_or(0) >= ts)
+                    .collect();
+                (inc, true, false)
+            }
+        }
+        None => (layered, false, false),
+    };
     let total = all.len();
     // 粒度防御：单分片 >250 条拒绝（防一次性爆算力），提示调大 M
     check_slice_granularity(sn, sm, total, 250).map_err(|e| anyhow::anyhow!("{e}"))?;
     let (start, end) = slice_range(sn, sm, total);
     let probe_items: Vec<Value> = all[start..end].to_vec();
+    // 增量密钥指纹（不含原文）
+    let keys: Vec<String> = all.iter().map(|v| v["key"].as_str().unwrap_or("").to_string()).collect();
+    let scan_fp = crate::governance::scan_snapshot::keys_fingerprint(&keys);
 
     let report = json!({
         "command": "world-gov scan-library",
@@ -597,6 +632,10 @@ pub fn scan_report(
             } else {
                 SCAN_LAYERS_DEFAULT.join("/")
             },
+            "is_incremental": is_incremental,
+            "since_ts": since_ts,
+            "mtime_degraded": mtime_degraded,
+            "scan_fingerprint": scan_fp,
         },
         "semantic": if semantic {
             "requested_but_locked（--semantic 仅占位；真实推理等单独放行）"
@@ -616,7 +655,13 @@ pub fn scan_report(
         "verdict_rule": "严禁幻觉式乱报警告；拿不准统一标 UNCERTAIN，不强行归为风险；判冲突必须附【双方原文片段 + 上层法理原话】。",
         "findings": [], // 骨架阶段恒空（无模型不产出语义判定）
         "dry_run": dry_run,
-        "note": "骨架阶段只产分片清单；默认过滤工程辅助层（AUX/L1 等），显式 --all-layers 可扫全部。",
+        "note": if mtime_degraded {
+            "增量降级：index 无有效 src_mtime（请重跑 library-ctl init 写入）；本次按全量扫描。"
+        } else if is_incremental {
+            "增量扫描：仅 src_mtime ≥ since 的条目。"
+        } else {
+            "全量扫描；默认过滤工程辅助层（AUX/L1 等），显式 --all-layers 可扫全部。"
+        },
     });
     Ok(report)
 }
@@ -975,35 +1020,72 @@ mod tests {
 
     // ── scan 层过滤（第 6 批修复）──
 
-    /// 造一个含 L4/AUX/L1/L3 四类条目的内存库。
+    /// 造一个含 L4/AUX/L1/L3 四类条目的内存库（带 src_mtime 供增量测试）。
     fn seed_library_index(conn: &Connection) {
         conn.execute_batch(
             "CREATE TABLE library_index(
-               layer TEXT, key TEXT, title TEXT, chars INTEGER, source TEXT);",
+               layer TEXT, key TEXT, title TEXT, chars INTEGER, source TEXT, src_mtime INTEGER NOT NULL DEFAULT 0);",
         )
         .unwrap();
-        for (layer, key, src) in [
-            ("L4", "A-1", "04/A-1.md"),
-            ("L4", "A-2", "04/A-2.md"),
-            ("L3", "L3-1", "03/L3-1.md"),
-            ("L2", "L2-1", "02/L2-1.md"),
-            ("AUX", "README", "05_管线框架/README.md"),
-            ("AUX", "PLAN_L5", "05_管线框架/PLAN_L5.md"),
-            ("L1", "叙事总纲", "01/叙事总纲.md"),
+        for (layer, key, src, m) in [
+            ("L4", "A-1", "04/A-1.md", 1000),
+            ("L4", "A-2", "04/A-2.md", 2000),
+            ("L3", "L3-1", "03/L3-1.md", 3000),
+            ("L2", "L2-1", "02/L2-1.md", 500),
+            ("AUX", "README", "05_管线框架/README.md", 4000),
+            ("AUX", "PLAN_L5", "05_管线框架/PLAN_L5.md", 4000),
+            ("L1", "叙事总纲", "01/叙事总纲.md", 4000),
         ] {
             conn.execute(
-                "INSERT INTO library_index(layer,key,title,chars,source) VALUES(?1,?2,'',10,?3)",
-                params![layer, key, src],
+                "INSERT INTO library_index(layer,key,title,chars,source,src_mtime) VALUES(?1,?2,'',10,?3,?4)",
+                params![layer, key, src, m],
             )
             .unwrap();
         }
     }
 
     #[test]
+    fn scan_incremental_filters_by_mtime() {
+        let conn = Connection::open_in_memory().unwrap();
+        seed_library_index(&conn);
+        // since=2000，默认层过滤：L2/L3/L4 中 mtime>=2000 → A-2(2000), L3-1(3000)
+        let r = scan_report(&conn, None, false, true, false, Some(2000)).unwrap();
+        let c = &r["counts"];
+        assert_eq!(c["is_incremental"], true);
+        assert_eq!(c["since_ts"], 2000);
+        assert_eq!(c["mtime_degraded"], false);
+        assert_eq!(c["used"], 2, "增量后仅 2 条");
+        let keys: Vec<&str> = r["probe_items"].as_array().unwrap().iter()
+            .map(|v| v["key"].as_str().unwrap()).collect();
+        assert!(keys.contains(&"A-2"));
+        assert!(keys.contains(&"L3-1"));
+        assert!(!keys.contains(&"A-1"), "mtime 1000 < since 2000 应排除");
+    }
+
+    #[test]
+    fn scan_incremental_all_zero_mtime_degrades() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE library_index(layer TEXT,key TEXT,title TEXT,chars INTEGER,source TEXT,src_mtime INTEGER NOT NULL DEFAULT 0);").unwrap();
+        conn.execute("INSERT INTO library_index(layer,key,title,chars,source,src_mtime) VALUES('L4','Z','',1,'s',0)", []).unwrap();
+        let r = scan_report(&conn, None, false, true, false, Some(9999)).unwrap();
+        assert_eq!(r["counts"]["mtime_degraded"], true, "全 0 mtime → 降级");
+        assert_eq!(r["counts"]["used"], 1, "降级时仍返回扫描域全部");
+    }
+
+    #[test]
+    fn scan_non_incremental_flagged_off() {
+        let conn = Connection::open_in_memory().unwrap();
+        seed_library_index(&conn);
+        let r = scan_report(&conn, None, false, true, false, None).unwrap();
+        assert_eq!(r["counts"]["is_incremental"], false);
+        assert_eq!(r["counts"]["since_ts"], serde_json::Value::Null);
+    }
+
+    #[test]
     fn scan_default_filters_aux_and_upper_layers() {
         let conn = Connection::open_in_memory().unwrap();
         seed_library_index(&conn);
-        let r = scan_report(&conn, None, false, true, false).unwrap();
+        let r = scan_report(&conn, None, false, true, false, None).unwrap();
         let c = &r["counts"];
         assert_eq!(c["total_before"], 7, "库里 7 条");
         assert_eq!(c["used"], 4, "默认只留 L2/L3/L4=4 条");
@@ -1021,7 +1103,7 @@ mod tests {
     fn scan_all_layers_escape_hatch_includes_everything() {
         let conn = Connection::open_in_memory().unwrap();
         seed_library_index(&conn);
-        let r = scan_report(&conn, None, false, true, true).unwrap();
+        let r = scan_report(&conn, None, false, true, true, None).unwrap();
         let c = &r["counts"];
         assert_eq!(c["used"], 7, "--all-layers 放行全部 7 条");
         assert_eq!(c["filtered_aux"], 0);

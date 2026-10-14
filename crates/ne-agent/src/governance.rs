@@ -92,7 +92,7 @@ pub fn ensure_risk_index_cols(conn: &Connection) -> Result<()> {
 }
 
 /// 写入一条**语义类**风险（world-gov 专用；is_semantic=1 并携带法理依据原话）。
-/// 幂等规则与 record_risk 一致。
+/// 幂等规则与 record_risk 一致；返回 true=新插入，false=已存在被幂等跳过。
 pub fn record_risk_semantic(
     conn: &Connection,
     risk_type: &str,
@@ -102,7 +102,7 @@ pub fn record_risk_semantic(
     level: &str,
     message: &str,
     law_basis: &str,
-) -> Result<()> {
+) -> Result<bool> {
     let exists: Option<i64> = conn
         .query_row(
             "SELECT id FROM risk_index WHERE risk_type=?1 AND IFNULL(volume,'')=IFNULL(?2,'')
@@ -117,8 +117,10 @@ pub fn record_risk_semantic(
              VALUES(?1,?2,?3,?4,?5,?6,1,?7)",
             params![risk_type, volume, chapter, source, message, level, law_basis],
         )?;
+        Ok(true)
+    } else {
+        Ok(false)
     }
-    Ok(())
 }
 
 /// 幂等补齐 library_index 的新列（title/tags）；已存在则跳过。

@@ -935,19 +935,67 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool) 
                 println!("（共 {} 层上层约束；详见 --json）", r["chain_len"]);
             }
         }
-        WorldGovCmd::ScanLibrary { semantic, slice: _, dry_run: _, lib: _ } => {
-            let _ = semantic;
-            anyhow::bail!("scan-library 属第 2 批交付（重算力语义扫描），本轮未实现；第 1 批已交付 bootstrap/inspect-card/trace。");
+        WorldGovCmd::ScanLibrary { semantic, slice, dry_run, lib: _ } => {
+            let r = world_gov::scan_library(&conn, lib_root, slice.as_deref(), *semantic, *dry_run)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&r)?);
+            } else {
+                let s = &r["slice"];
+                println!("== 探针分片清单（零模型骨架）==");
+                println!("分片 {}/{}：偏移 {}，本片 {} 条 / 全库 {} 条", s["n"], s["m"], s["offset"], s["items"], s["total"]);
+                println!("semantic: {}", r["semantic"]);
+                println!("入库通路: {}", r["semantic_channel"]);
+                println!("五查: {}", r["questions"].as_array().map(|a| a.len()).unwrap_or(0),);
+                println!("待检条目（前 5）：");
+                if let Some(items) = r["probe_items"].as_array() {
+                    for it in items.iter().take(5) {
+                        println!("  [{}] {} {}（{} 字）", it["layer"], it["key"],
+                            it["title"].as_str().unwrap_or(""), it["chars"]);
+                    }
+                    if items.len() > 5 { println!("  … 共 {} 条", items.len()); }
+                }
+                if *dry_run { println!("\n[--dry-run] 未落盘清单文件"); }
+                else { println!("\n清单已写: {}/07_勘误工坊/scan_probe_{}of{}.json",
+                    lib_root.display(), s["n"], s["m"]); }
+            }
         }
-        WorldGovCmd::CheckOutline { volume: _, semantic: _, dry_run: _, lib: _ } => {
-            anyhow::bail!("check-outline 属第 2 批交付（卷细纲法理评估），本轮未实现。");
+        WorldGovCmd::CheckOutline { volume, semantic, dry_run, lib: _ } => {
+            let r = world_gov::check_outline(&conn, lib_root, volume, *semantic, *dry_run)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&r)?);
+            } else {
+                println!("== 卷细纲探针包（零模型骨架）==");
+                println!("卷: {} | 定位到 L3 文件: {} 个", r["volume"], r["files_found"]);
+                println!("semantic: {}", r["semantic"]);
+                println!("上层法理基线: {} 条（摘要已附）",
+                    r["upper_law_baseline"].as_array().map(|a| a.len()).unwrap_or(0));
+                println!("评估三问: ①越界 ②自洽 ③L4支撑");
+                if let Some(fs) = r["outline_probe_files"].as_array() {
+                    for f in fs.iter().take(5) {
+                        println!("  · {}（{} 字，头部读取: {}）", f["source"], f["chars"], f["head_present"]);
+                    }
+                }
+                if *dry_run { println!("\n[--dry-run] 未落盘探针文件"); }
+                else { println!("\n探针已写: {}/07_勘误工坊/outline_probe_{}.json（卷名已安全转写）",
+                    lib_root.display(), volume.replace(|c: char| !c.is_ascii_alphanumeric(), "_")); }
+            }
         }
     }
     Ok(())
 }
 
-fn run_compliance(vault: &Vault, lib_root: &Path, from: u32, to: Option<u32>, volume: &str, _semantic: bool, json: bool) -> Result<()> {
+fn run_compliance(vault: &Vault, lib_root: &Path, from: u32, to: Option<u32>, volume: &str, semantic: bool, json: bool) -> Result<()> {
     let conn = ne_agent::governance::open_gov(lib_root)?;
+    // 【world-gov 法理基线接入点·预埋】基线随基准一起生成，语义校验暂不激活
+    // （铁则：--semantic 显式开才调模型；本处只备料，不推理、不写任何合规结论）。
+    let law_baseline: Vec<serde_json::Value> = ne_agent::world_gov::baseline_entries(&conn)?
+        .iter()
+        .map(|e| serde_json::json!({
+            "layer": e.layer, "key": e.key,
+            "summary": e.summary.chars().take(80).collect::<String>(),
+        }))
+        .collect();
+    let law_fp = ne_agent::world_gov::baseline_fingerprint(&ne_agent::world_gov::baseline_entries(&conn)?);
     let lo = if from == 0 { 1 } else { from };
     let hi = to.unwrap_or(lo);
     let mut out = Vec::new();
@@ -958,8 +1006,22 @@ fn run_compliance(vault: &Vault, lib_root: &Path, from: u32, to: Option<u32>, vo
         out.push(serde_json::json!({"chapter": ch, "refs_l3": refs_l3, "refs_l4": refs_l4, "level": "(未评)"}));
     }
     let _ = vault;
-    if json { println!("{}", serde_json::to_string_pretty(&out)?); }
-    else { println!("合规基准已生成/refs 已回写：{} 章", out.len()); }
+    if json {
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "volume": volume,
+            "chapters": out,
+            "law_baseline_attached": law_baseline.len(),
+            "law_baseline_fingerprint": law_fp,
+            "semantic": if semantic { "requested_but_locked（--semantic 仅占位；语义校验未激活）" } else { "off（默认零模型）" },
+        }))?);
+    }
+    else {
+        println!("合规基准已生成/refs 已回写：{} 章", out.len());
+        println!("法理基线（world-gov 预埋）：{} 条已随基准附上（指纹 {law_fp}），语义校验未激活", law_baseline.len());
+        if semantic {
+            println!("[提示] --semantic 已请求但锁死：真实模型推理等你单独放行。");
+        }
+    }
     Ok(())
 }
 

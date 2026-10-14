@@ -398,6 +398,226 @@ pub fn trace(conn: &Connection, lib_root: &Path, key: &str) -> Result<Value> {
     }))
 }
 
+// ────────────────────────────────── 4. world-gov scan-library（骨架）
+
+/// 解析 `--slice N/M`（N=第几片从 1 起，M=总片数）。非法输入返回 None。
+pub fn parse_slice(s: &str) -> Option<(usize, usize)> {
+    let (a, b) = s.split_once('/')?;
+    let n: usize = a.trim().parse().ok()?;
+    let m: usize = b.trim().parse().ok()?;
+    if n == 0 || m == 0 || n > m {
+        return None;
+    }
+    Some((n, m))
+}
+
+/// 第 n 片（共 m 片）在 len 条列表上的连续区间 [start, end)。
+/// 连续分块：片大小 = ceil(len/m)，末片允许不满。
+pub fn slice_range(n: usize, m: usize, len: usize) -> (usize, usize) {
+    let size = len.div_ceil(m.max(1));
+    let start = (n - 1).saturating_mul(size).min(len);
+    let end = (start + size).min(len);
+    (start, end)
+}
+
+/// 把（未来的）语义项路由进 risk_index：WARN/HIGH-RISK 入语义桶（is_semantic=1 + law_basis）；
+/// UNCERTAIN/OK **不入库**（铁则：拿不准不强行归为风险）。返回入库条数。
+pub fn emit_semantic_findings(
+    conn: &Connection,
+    source_cmd: &str,
+    findings: &[Value],
+) -> Result<usize> {
+    let mut n = 0usize;
+    for f in findings {
+        let v = f["verdict"].as_str().unwrap_or("UNCERTAIN");
+        if v != "WARN" && v != "HIGH-RISK" {
+            continue; // UNCERTAIN / OK 不入库
+        }
+        let key = f["key"].as_str().unwrap_or("");
+        let kind = f["kind"].as_str().unwrap_or("语义风险");
+        let law = f["law_ref"].as_str().unwrap_or("");
+        let msg = format!("语义{kind}: {key} :: {}", f["explain"].as_str().unwrap_or(""));
+        if crate::governance::record_risk_semantic(
+            conn, "world_gov", None, None, source_cmd, v, &msg, law,
+        )? {
+            n += 1; // 只统计真实插入；幂等跳过不计
+        }
+    }
+    Ok(n)
+}
+
+/// scan-library 骨架：产出**探针分片清单**（零模型；不产出任何语义判定）。
+///
+/// - `--slice N/M` 把 library_index 全条目切成连续分块，输出第 N 片元数据清单；
+/// - `--semantic` **仅参数占位**：通路已预埋（emit_semantic_findings → risk_index.is_semantic=1），
+///   真实模型推理等单独放行；骨架阶段 findings 恒空；
+/// - `--dry-run` 沙盘：只打印，不落盘清单文件。
+pub fn scan_library(
+    conn: &Connection,
+    lib_root: &Path,
+    slice: Option<&str>,
+    semantic: bool,
+    dry_run: bool,
+) -> Result<Value> {
+    let (sn, sm) = match slice {
+        Some(s) => parse_slice(s).ok_or_else(|| {
+            anyhow::anyhow!("--slice 格式应为 N/M（如 1/4），N≥1 且 N≤M；收到: {s}")
+        })?,
+        None => (1, 1),
+    };
+    let mut stmt = conn.prepare(
+        "SELECT layer,key,IFNULL(title,''),chars,IFNULL(source,'') FROM library_index
+         ORDER BY layer,key",
+    )?;
+    let all: Vec<Value> = stmt
+        .query_map([], |r| {
+            Ok(json!({
+                "layer": r.get::<_,String>(0)?,
+                "key": r.get::<_,String>(1)?,
+                "title": r.get::<_,String>(2)?,
+                "chars": r.get::<_,i64>(3)?,
+                "source": r.get::<_,String>(4)?,
+            }))
+        })?
+        .filter_map(|x| x.ok())
+        .collect();
+    let total = all.len();
+    let (start, end) = slice_range(sn, sm, total);
+    let probe_items: Vec<Value> = all[start..end].to_vec();
+
+    let report = json!({
+        "command": "world-gov scan-library",
+        "mode": "probe_slice",
+        "slice": {"n": sn, "m": sm, "offset": start, "items": end - start, "total": total},
+        "semantic": if semantic {
+            "requested_but_locked（--semantic 仅占位；真实推理等单独放行）"
+        } else {
+            "off（默认零模型）"
+        },
+        "semantic_channel": "ready（emit_semantic_findings → risk_index.is_semantic=1 + law_basis）",
+        "probe_items": probe_items,
+        "law_chain": LAW_CHAIN.iter().map(|(l, n)| json!({"layer": l, "name": n})).collect::<Vec<_>>(),
+        "questions": [
+            "a) 内容层面真重复/近义冲突（两张卡讲同一东西但设定打架）？",
+            "b) L4 卡违背 L0~GUARD 上层法理（引用哪条原话）？",
+            "c) 同层条目内部自噬？",
+            "d) 隐形悬空：L3 逻辑依赖某设定但无显式 key 可锚定？",
+            "e) 法理倒转：下层定义推翻上层边界的规则？",
+        ],
+        "verdict_rule": "严禁幻觉式乱报警告；拿不准统一标 UNCERTAIN，不强行归为风险；判冲突必须附【双方原文片段 + 上层法理原话】。",
+        "findings": [], // 骨架阶段恒空（无模型不产出语义判定）
+        "dry_run": dry_run,
+        "note": "骨架阶段只产分片清单；模型放行后本清单即逐片模型输入。",
+    });
+    if !dry_run {
+        let path = lib_root
+            .join("07_勘误工坊")
+            .join(format!("scan_probe_{sn}of{sm}.json"));
+        if let Some(p) = path.parent() {
+            std::fs::create_dir_all(p)?;
+        }
+        std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
+    }
+    Ok(report)
+}
+
+// ────────────────────────────────── 5. world-gov check-outline（骨架）
+
+/// check-outline 骨架：输出**卷细纲探针包**（零模型；只出报告不改细纲）。
+///
+/// 定位该卷 L3 细纲 → 附上层法理基线摘要 + 越界/自洽/L4支撑三问 + verdict_rule；
+/// 大文件只读头部（32KB）防百万字爆栈，全量等模型放行后分片。
+pub fn check_outline(
+    conn: &Connection,
+    lib_root: &Path,
+    volume: &str,
+    semantic: bool,
+    dry_run: bool,
+) -> Result<Value> {
+    let mut stmt = conn.prepare(
+        "SELECT key,IFNULL(source,''),IFNULL(title,''),chars FROM library_index
+         WHERE layer='L3' AND (source LIKE '%'||?1||'%' OR key LIKE '%'||?1||'%')
+         ORDER BY key",
+    )?;
+    let files: Vec<Value> = stmt
+        .query_map([volume], |r| {
+            Ok(json!({
+                "key": r.get::<_,String>(0)?,
+                "source": r.get::<_,String>(1)?,
+                "title": r.get::<_,String>(2)?,
+                "chars": r.get::<_,i64>(3)?,
+            }))
+        })?
+        .filter_map(|x| x.ok())
+        .collect();
+
+    // 附上每个文件的头部探针（大文件只读 32KB）
+    let mut probe_files = Vec::new();
+    for f in &files {
+        let src = f["source"].as_str().unwrap_or("");
+        let path = lib_root.join(src);
+        let head = if path.is_file() {
+            crate::governance::read_head(&path, 32 * 1024)
+        } else {
+            String::new()
+        };
+        probe_files.push(json!({
+            "key": f["key"], "source": src, "chars": f["chars"],
+            "title": f["title"],
+            "head_present": !head.is_empty(),
+            "head_32k": head,
+        }));
+    }
+
+    let baseline = baseline_entries(conn)?;
+    let baseline_brief: Vec<Value> = baseline
+        .iter()
+        .map(|e| json!({
+            "layer": e.layer, "key": e.key,
+            "summary": e.summary.chars().take(80).collect::<String>(),
+            "boundaries": e.boundaries,
+        }))
+        .collect();
+
+    let report = json!({
+        "command": "world-gov check-outline",
+        "mode": "outline_probe",
+        "volume": volume,
+        "semantic": if semantic {
+            "requested_but_locked（--semantic 仅占位；真实推理等单独放行）"
+        } else {
+            "off（默认零模型）"
+        },
+        "files_found": files.len(),
+        "outline_probe_files": probe_files,
+        "upper_law_baseline": baseline_brief,
+        "law_chain": LAW_CHAIN.iter().map(|(l, n)| json!({"layer": l, "name": n})).collect::<Vec<_>>(),
+        "questions": [
+            "① 本卷目标是否越出 L1/L1x/锚点边界（引用哪条原话）？",
+            "② 细纲内部逻辑是否自洽（前后矛盾点定位）？",
+            "③ 细纲引用的 L4 在世界观层面能否支撑剧情（逐 key 列依据）？",
+        ],
+        "verdict_rule": "只出评估报告，绝不修改细纲；无依据不判违规；拿不准 UNCERTAIN。",
+        "findings": [], // 骨架阶段恒空（无模型不产出语义判定）
+        "dry_run": dry_run,
+        "note": "骨架只产探针包；大文件只读头部 32KB，全量评估待模型放行后分片。",
+    });
+    if !dry_run {
+        let safe_vol: String = volume
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        let path = lib_root
+            .join("07_勘误工坊")
+            .join(format!("outline_probe_{safe_vol}.json"));
+        if let Some(p) = path.parent() {
+            std::fs::create_dir_all(p)?;
+        }
+        std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
+    }
+    Ok(report)
+}
+
 // ────────────────────────────────── 单测（锁定法理契约关键行为）
 
 #[cfg(test)]
@@ -486,5 +706,63 @@ mod tests {
         assert_eq!(names, vec!["L0", "L0.5", "L1", "L1x", "ANCHOR", "GUARD", "L3", "L4"]);
         assert!(is_upper_layer("ANCHOR") && is_upper_layer("GUARD"));
         assert!(!is_upper_layer("L3") && !is_upper_layer("L4"), "L3/L4 是被约束方");
+    }
+
+    // ─────── 第 2 批：骨架行为锁定 ───────
+
+    #[test]
+    fn parse_slice_accepts_valid_and_rejects_bad() {
+        assert_eq!(parse_slice("1/4"), Some((1, 4)));
+        assert_eq!(parse_slice("4/4"), Some((4, 4)));
+        assert_eq!(parse_slice("0/4"), None, "N 必须 ≥1");
+        assert_eq!(parse_slice("5/4"), None, "N 不得大于 M");
+        assert_eq!(parse_slice("abc"), None);
+        assert_eq!(parse_slice("2/"), None);
+    }
+
+    #[test]
+    fn slice_range_covers_all_without_overlap() {
+        // 10 条分 4 片：片大小 ceil(10/4)=3 → [0,3)[3,6)[6,9)[9,10)
+        assert_eq!(slice_range(1, 4, 10), (0, 3));
+        assert_eq!(slice_range(2, 4, 10), (3, 6));
+        assert_eq!(slice_range(3, 4, 10), (6, 9));
+        assert_eq!(slice_range(4, 4, 10), (9, 10));
+        // 边界：空库 / n 超界被钳制
+        assert_eq!(slice_range(1, 1, 0), (0, 0));
+        assert_eq!(slice_range(3, 2, 5), (5, 5), "n>m 由 parse_slice 拦，此处防御性钳制");
+    }
+
+    #[test]
+    fn emit_routes_only_real_risks_into_semantic_bucket() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("governance_schema.sql")).unwrap();
+        crate::governance::ensure_risk_index_cols(&conn).unwrap();
+        let findings = vec![
+            serde_json::json!({"key":"K1","verdict":"HIGH-RISK","kind":"推翻上层","law_ref":"GUARD/全局世界观铁则：禁止X","explain":"e1"}),
+            serde_json::json!({"key":"K2","verdict":"UNCERTAIN","kind":"内部矛盾","law_ref":"","explain":"e2"}),
+            serde_json::json!({"key":"K3","verdict":"OK","kind":"应遵从约束","law_ref":"L0","explain":"e3"}),
+            serde_json::json!({"key":"K4","verdict":"WARN","kind":"法理倒转","law_ref":"ANCHOR/跨卷线锚点表：Y 不可破","explain":"e4"}),
+        ];
+        let n = emit_semantic_findings(&conn, "world-gov scan-library", &findings).unwrap();
+        assert_eq!(n, 2, "只有 WARN/HIGH-RISK 入库；UNCERTAIN/OK 不入库");
+        let r = crate::governance::risk_list(&conn, false).unwrap();
+        assert_eq!(r["semantic_count"], 2);
+        assert_eq!(r["structural_count"], 0);
+        let items = r["items"].as_array().unwrap();
+        assert!(items.iter().all(|i| i["is_semantic"] == 1));
+        assert!(items.iter().all(|i| !i["law_basis"].as_str().unwrap_or("").is_empty()),
+            "每条语义风险必须带法理依据");
+    }
+
+    #[test]
+    fn emit_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("governance_schema.sql")).unwrap();
+        crate::governance::ensure_risk_index_cols(&conn).unwrap();
+        let f = vec![serde_json::json!({"key":"K","verdict":"HIGH-RISK","kind":"k","law_ref":"L","explain":"e"})];
+        let n1 = emit_semantic_findings(&conn, "s", &f).unwrap();
+        let n2 = emit_semantic_findings(&conn, "s", &f).unwrap();
+        assert_eq!(n1, 1);
+        assert_eq!(n2, 0, "同 finding 重复路由必须幂等");
     }
 }

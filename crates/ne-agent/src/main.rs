@@ -88,6 +88,25 @@ fn run() -> Result<()> {
         Cmd::Novel { chap_id, volume, lib, dry_run, prompt_only, use_memory } => {
             run_novel(&vault, *chap_id, volume, lib.as_deref(), *dry_run, *prompt_only, *use_memory, cli.json)
         }
+        Cmd::AuditMaterialCoverage { from, to, volume, lib } => {
+            let lib_root = lib.clone().unwrap_or_else(|| vault.workspace());
+            if let Some(to) = to {
+                let rep = ne_agent::audit_material::audit_batch(&lib_root, volume, *from, *to)?;
+                if cli.json {
+                    println!("{}", serde_json::to_string_pretty(&rep)?);
+                } else {
+                    print_audit_batch(&rep);
+                }
+            } else {
+                let rep = ne_agent::audit_material::audit_chapter(&lib_root, volume, *from)?;
+                if cli.json {
+                    println!("{}", serde_json::to_string_pretty(&rep)?);
+                } else {
+                    print_audit_one(&rep);
+                }
+            }
+            Ok(())
+        }
         Cmd::Mcp { cmd } => run_mcp(&vault, cmd, cli.json),
         Cmd::Task { cmd } => cmds::run_task(&vault, cmd, cli.json),
         Cmd::Subagent { file, session, max_tasks } => {
@@ -676,6 +695,36 @@ fn run_models(vault: &Vault, cmd: &ModelsCmd, json: bool) -> Result<()> {
                 println!("  max_tokens：{}", p.max_tokens);
             }
             Ok(())
+        }
+    }
+}
+
+/// 人读输出：单章。
+fn print_audit_one(a: &ne_agent::audit_material::ChapterAudit) {
+    use ne_agent::audit_material::Status;
+    println!("== 审计 {} 第{}章 ==", a.volume, a.chapter);
+    println!("细纲切出: {}  引用卡 {} → 选入 {}", a.outline_found, a.refs_total, a.refs_selected);
+    println!("prompt 合计 {} 字；记忆注入 {} token", a.prompt_chars, a.mem.inject_tokens);
+    println!("短期 {} 条 / 快照 {:?} / char_state {} 行 / 锚点 {} 条", a.mem.short_term_rows, a.mem.snapshot_id, a.mem.char_state_rows, a.mem.anchor_rows);
+    println!("压缩细纲 {} 字（原 {} 字）", a.mem.compressed_outline_chars, a.mem.raw_outline_chars);
+    println!("--");
+    for c in &a.checks {
+        let tag = match c.status { Status::Hit => "HIT   ", Status::Empty => "EMPTY ", Status::NotQueried => "NOQUERY" };
+        println!("[{tag}] {} :: {}", c.item, c.evidence);
+    }
+}
+
+/// 人读输出：批量汇总表。
+fn print_audit_batch(rep: &serde_json::Value) {
+    println!("== 批量审计 {} 第{}-{}章（共 {} 章）==", rep["volume"], rep["from"], rep["to"], rep["chapters"]);
+    println!("{:<52} {:>5} {:>6} {:>9}  {}", "项", "HIT", "EMPTY", "NOQUERY", "判定");
+    if let Some(sum) = rep["summary"].as_array() {
+        for s in sum {
+            println!(
+                "{:<52} {:>5} {:>6} {:>9}  {}",
+                s["item"].as_str().unwrap_or("").chars().take(50).collect::<String>(),
+                s["hit"], s["empty"], s["not_queried"], s["verdict"].as_str().unwrap_or("")
+            );
         }
     }
 }

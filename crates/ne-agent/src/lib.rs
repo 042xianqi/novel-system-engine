@@ -14,6 +14,7 @@
 
 pub mod api;
 pub mod approval;
+pub mod audit_material;
 pub mod ask_user;
 pub mod compaction;
 pub mod checkpoint;

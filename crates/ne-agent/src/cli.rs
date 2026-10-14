@@ -187,6 +187,21 @@ pub enum Cmd {
         #[arg(long, num_args = 0..=1, default_value_t = true, default_missing_value = "true")]
         use_memory: bool,
     },
+    /// 只读审计：验证生成链路实际取材覆盖面（不调模型、不写库）
+    AuditMaterialCoverage {
+        /// 起始章号
+        #[arg(long, default_value_t = 1)]
+        from: u32,
+        /// 结束章号（省略 = 只审计 from 单章）
+        #[arg(long)]
+        to: Option<u32>,
+        /// 卷号
+        #[arg(long, default_value = "卷01")]
+        volume: String,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
     /// 管理外部 MCP 服务
     Mcp {
         #[command(subcommand)]

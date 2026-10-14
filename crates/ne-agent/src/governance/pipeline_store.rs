@@ -218,27 +218,69 @@ pub fn job_set_state(conn: &Connection, id: &str, next: JobState) -> Result<JobS
 }
 
 /// 向前推进**一步**（Pending→Probing→ReadyForInferring→Done）。
-/// `ReadyForInferring → Done` 时返回该步产出的 findings（沙盘模拟）；其余步返回空。
-/// **真实推理分支带 TODO+bail!**，此处只做状态流转 + 沙盘。
-pub fn job_step_forward(conn: &Connection, id: &str) -> Result<(JobState, Vec<Value>)> {
+///
+/// `ReadyForInferring` 步**经 [`super::semantic_runtime::run_semantic_infer`] 收口**：
+/// - `Success` → findings → `Done`
+/// - `Timeout`/`RetriesExhausted`/`ProtocolError` → `Rejected`（并回传失败说明，供上层写结构性风险）
+/// - `GateLocked` → `Rejected`（门控锁死）
+///
+/// `gate_open` 由上层经 `governance::get_semantic_gate()` 求得；`dry_run=true` 走沙盘替身。
+/// 其余步只做状态流转，无 findings。
+pub fn job_step_forward(
+    conn: &Connection,
+    id: &str,
+    gate_open: bool,
+    dry_run: bool,
+) -> Result<(JobState, Vec<Value>, Option<String>)> {
     let job = job_load(conn, id)?.ok_or_else(|| anyhow::anyhow!("未知 job id: {id}"))?;
-    let next = match job.state {
-        JobState::Pending => JobState::Probing,
-        JobState::Probing => JobState::ReadyForInferring,
-        JobState::ReadyForInferring => JobState::Done,
+    match job.state {
+        JobState::Pending => {
+            job_set_state(conn, id, JobState::Probing)?;
+            Ok((JobState::Probing, Vec::new(), None))
+        }
+        JobState::Probing => {
+            job_set_state(conn, id, JobState::ReadyForInferring)?;
+            Ok((JobState::ReadyForInferring, Vec::new(), None))
+        }
+        JobState::ReadyForInferring => {
+            // 组装请求（prompt 由探针侧提供；此处只承载 probe_path 摘要，不生成全文）
+            let req = super::semantic_runtime::SemanticRequest {
+                job_id: job.id.clone(),
+                law_fingerprint: String::new(), // 由上层可注入真实指纹；本占位留空
+                prompt_text: format!("probe:{}", job.probe_path),
+                max_tokens: 2048,
+                temperature: 0.2,
+            };
+            let cfg = super::semantic_runtime::SemanticEndpointConfig::from_env();
+            let outcome = super::semantic_runtime::run_semantic_infer(&req, &cfg, gate_open, dry_run)?;
+            match outcome {
+                super::semantic_runtime::RuntimeOutcome::Success(resp) => {
+                    let findings = super::semantic_runtime::findings_to_json(&resp.findings);
+                    job_set_state(conn, id, JobState::Done)?;
+                    Ok((JobState::Done, findings, None))
+                }
+                super::semantic_runtime::RuntimeOutcome::GateLocked => {
+                    job_set_state(conn, id, JobState::Rejected)?;
+                    Ok((JobState::Rejected, Vec::new(), Some("GATE_LOCKED: 语义门控锁死，未发起任何推理".into())))
+                }
+                super::semantic_runtime::RuntimeOutcome::Timeout => {
+                    job_set_state(conn, id, JobState::Rejected)?;
+                    Ok((JobState::Rejected, Vec::new(), Some("TIMEOUT: 推理超时".into())))
+                }
+                super::semantic_runtime::RuntimeOutcome::RetriesExhausted => {
+                    job_set_state(conn, id, JobState::Rejected)?;
+                    Ok((JobState::Rejected, Vec::new(), Some("RETRIES_EXHAUSTED: 重试耗尽".into())))
+                }
+                super::semantic_runtime::RuntimeOutcome::ProtocolError(e) => {
+                    job_set_state(conn, id, JobState::Rejected)?;
+                    Ok((JobState::Rejected, Vec::new(), Some(format!("PROTOCOL_ERROR: {e}"))))
+                }
+            }
+        }
         JobState::Done | JobState::Rejected => {
             anyhow::bail!("任务 {id} 已是终态 {}，无法继续推进", job.state.as_str());
         }
-    };
-    // 【TODO·放行令后填充】ReadyForInferring→Done 的真实推理应经 get_semantic_gate()；
-    // 未放行 → 本步用沙盘模拟（OK/UNCERTAIN 样例，不入库）；放行后替换为真实调用（未实现）。
-    let findings = if next == JobState::Done {
-        super::pipeline::simulate_findings(&job)
-    } else {
-        Vec::new()
-    };
-    job_set_state(conn, id, next)?;
-    Ok((next, findings))
+    }
 }
 
 /// 任务表统计（供 queue list 概览）。
@@ -359,16 +401,44 @@ mod tests {
     fn step_forward_one_state_at_a_time() {
         let c = fresh_conn();
         job_persist(&c, &mk_job("j", JobKind::ScanLibrary, JobState::Pending), None).unwrap();
-        let (s1, f1) = job_step_forward(&c, "j").unwrap();
+        // gate 关 + dry_run 关：ReadyForInferring 步会 GateLocked → Rejected
+        let (s1, f1, r1) = job_step_forward(&c, "j", false, false).unwrap();
         assert_eq!(s1, JobState::Probing);
-        assert!(f1.is_empty(), "非终态步不产 findings");
-        let (s2, _) = job_step_forward(&c, "j").unwrap();
+        assert!(f1.is_empty() && r1.is_none(), "非终态步不产 findings");
+        let (s2, _, _) = job_step_forward(&c, "j", false, false).unwrap();
         assert_eq!(s2, JobState::ReadyForInferring);
-        let (s3, f3) = job_step_forward(&c, "j").unwrap();
-        assert_eq!(s3, JobState::Done);
-        assert_eq!(f3.len(), 2, "Done 步产出沙盘 findings");
+        // 第 3 步：ReadyForInferring → 门控锁死 → Rejected
+        let (s3, f3, r3) = job_step_forward(&c, "j", false, false).unwrap();
+        assert_eq!(s3, JobState::Rejected, "门控锁死必须 Rejected");
+        assert!(f3.is_empty());
+        assert!(r3.unwrap().contains("GATE_LOCKED"));
         // 终态不可再推
-        assert!(job_step_forward(&c, "j").is_err(), "终态推进必须报错，不能自旋");
+        assert!(job_step_forward(&c, "j", false, false).is_err(), "终态推进必须报错，不能自旋");
+    }
+
+    #[test]
+    fn step_gate_open_dryrun_reaches_done_with_mock() {
+        let c = fresh_conn();
+        job_persist(&c, &mk_job("j", JobKind::ScanLibrary, JobState::Pending), None).unwrap();
+        job_step_forward(&c, "j", true, true).unwrap(); // → Probing
+        job_step_forward(&c, "j", true, true).unwrap(); // → ReadyForInferring
+        let (s3, findings, fail) = job_step_forward(&c, "j", true, true).unwrap(); // → Done（沙盘）
+        assert_eq!(s3, JobState::Done);
+        assert!(fail.is_none());
+        assert_eq!(findings.len(), 2, "沙盘替身 2 条 findings");
+        assert_eq!(findings[0]["verdict"], "OK");
+        assert_eq!(findings[1]["verdict"], "UNCERTAIN");
+    }
+
+    #[test]
+    fn step_gate_open_real_call_is_rejected_not_done() {
+        // 门控开 + 非沙盘 → run_semantic_infer bail!(REAL_LLM_NOT_IMPLEMENTED) → 冒泡为 Err
+        let c = fresh_conn();
+        job_persist(&c, &mk_job("j", JobKind::InspectCard, JobState::ReadyForInferring), None).unwrap();
+        let e = job_step_forward(&c, "j", true, false).unwrap_err();
+        assert!(e.to_string().contains("REAL_LLM_NOT_IMPLEMENTED"));
+        // 状态未被改成 Done（保持 ReadyForInferring）
+        assert_eq!(job_load(&c, "j").unwrap().unwrap().state, JobState::ReadyForInferring);
     }
 
     #[test]

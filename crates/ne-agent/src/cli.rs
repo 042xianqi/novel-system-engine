@@ -531,6 +531,16 @@ pub enum WorldGovCmd {
         #[command(subcommand)]
         cmd: QueueCmd,
     },
+    /// 【调试】只跑 semantic_runtime 沙盘替身，验证 序列化→findings→入库 全链路（hidden）
+    #[command(hide = true)]
+    SemanticVerify {
+        /// 沙盘 seed（同 seed 同输出，可复现）
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand, Debug)]

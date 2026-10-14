@@ -898,8 +898,10 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool) 
     match cmd {
         WorldGovCmd::GateCheck { semantic } => {
             let mut st = semantic_gate_status(*semantic);
-            // 能力标识（仅告知持久层可用，不自动开启）
+            // 能力标识（仅告知，不自动开启）
             st["persist_mode_available"] = serde_json::json!(true);
+            st["llm_runtime_defined"] = serde_json::json!(true);
+            st["llm_real_call_enabled"] = serde_json::json!(false);
             if json {
                 println!("{}", serde_json::to_string_pretty(&st)?);
             } else {
@@ -908,7 +910,9 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool) 
                 println!("② 命令行 --semantic:            {}", st["cli_semantic"]);
                 println!("③ NOVEL_SEMANTIC_UNLOCK=yes:    {}（raw: {}）", st["env_unlock"], st["env_raw"]);
                 println!("→ {}", st["status"]);
-                println!("persist_mode_available: {}（能力标识，需 --persist 显式开启）", st["persist_mode_available"]);
+                println!("persist_mode_available: {}", st["persist_mode_available"]);
+                println!("llm_runtime_defined: {} / llm_real_call_enabled: {}",
+                    st["llm_runtime_defined"], st["llm_real_call_enabled"]);
             }
             return Ok(());
         }
@@ -1092,6 +1096,36 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool) 
                     lib_root.display(), volume.replace(|c: char| !c.is_ascii_alphanumeric(), "_")); }
             }
         }
+        WorldGovCmd::SemanticVerify { seed, lib: _ } => {
+            use ne_agent::governance::semantic_runtime as rt;
+            // 只跑沙盘替身，不碰任何外部
+            let resp = rt::deterministic_semantic_mock(*seed);
+            // 序列化 → 反序列化（打通契约）
+            let round = serde_json::from_str::<rt::SemanticResponse>(
+                &serde_json::to_string(&resp)?)?;
+            // findings → JSON → emit（走入库路由；OK/UNCERTAIN 不入库）
+            let js = rt::findings_to_json(&round.findings);
+            let n_risk = world_gov::emit_semantic_findings(&conn, "world-gov semantic-verify", &js)?;
+            let cfg = rt::SemanticEndpointConfig::from_env();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "command": "world-gov semantic-verify", "seed": seed,
+                    "mock_note": resp.note, "findings": round.findings,
+                    "risks_emitted": n_risk,
+                    "endpoint": cfg.safe_snapshot(),
+                    "note": "沙盘替身全链路；真实调用未实现",
+                }))?);
+            } else {
+                println!("== semantic-verify（沙盘替身全链路）==");
+                println!("seed={seed}  {}", resp.note);
+                println!("序列化/反序列化往返：OK（{} 条 findings）", round.findings.len());
+                for f in &round.findings {
+                    println!("  [{}] {} conf={:.2} {}", f.verdict, f.item_id, f.confidence, f.note.clone().unwrap_or_default());
+                }
+                println!("入库路由：{} 条（OK/UNCERTAIN 按铁则不入库）", n_risk);
+                println!("端点配置：{}", cfg.safe_snapshot());
+            }
+        }
         WorldGovCmd::Queue { cmd } => {
             use ne_agent::governance::pipeline as pipe;
             use ne_agent::governance::pipeline_store as store;
@@ -1190,6 +1224,8 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool) 
                         return Ok(());
                     }
                     let _ = persist;
+                    // 门控收口：所有推理外呼必经 get_semantic_gate()；沙盘替身也不绕门控
+                    let gate_open = get_semantic_gate(false);
                     // 取**任一可推进任务**（Pending/Probing/ReadyForInferring），按创建序；
                     // 每个任务本次**只前进一步**（不一口气跑到终态），limit 限制本次任务数。
                     let advanceable: Vec<_> = store::job_list(&conn, None)?
@@ -1214,25 +1250,40 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool) 
                     let take = (*limit).max(1);
                     let mut results = Vec::new();
                     for j in advanceable.into_iter().take(take) {
-                        let (st, findings) = store::job_step_forward(&conn, &j.id)?;
-                        let n_risk = world_gov::emit_semantic_findings(&conn, "world-gov queue step", &findings)?;
+                        // dry_run=true：ReadyForInferring 步走沙盘替身（不碰外部）。
+                        // 门控未开时，run_semantic_infer 仍返回 GateLocked → 任务 Rejected。
+                        let (st, findings, fail) = store::job_step_forward(&conn, &j.id, gate_open, true)?;
+                        let n_risk = if findings.is_empty() {
+                            0
+                        } else {
+                            world_gov::emit_semantic_findings(&conn, "world-gov queue step", &findings)?
+                        };
+                        // 推理失败（非内容语义判定）→ 可选写一条**结构性**风险
+                        if let Some(reason) = &fail {
+                            let _ = ne_agent::governance::record_risk(
+                                &conn, "pipeline", None, None, "world-gov queue step", "WARN",
+                                &format!("任务 {} 推理失败：{reason}（结构性，非内容语义判定）", j.id),
+                            );
+                        }
                         results.push(serde_json::json!({
                             "job_id": j.id, "from": j.state.as_str(), "to": st.as_str(),
                             "findings": findings.len(), "risks_emitted": n_risk,
+                            "fail": fail,
                         }));
                     }
                     if json {
                         println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                            "stepped": results.len(), "results": results,
+                            "stepped": results.len(), "gate_open": gate_open, "results": results,
                             "note": "每个任务本次只前进一步；需多次调用逐级推进 Pending→Probing→Ready→Done",
                         }))?);
                     } else {
-                        println!("== queue step（推进 {} 个任务，各一步）==", results.len());
+                        println!("== queue step（推进 {} 个任务，各一步；gate_open={gate_open}）==", results.len());
                         for r in &results {
-                            println!("  {} {} → {}（findings {}，入库 {}）",
+                            let f = r["fail"].as_str().map(|s| format!("  ⚠ {s}")).unwrap_or_default();
+                            println!("  {} {} → {}（findings {}，入库 {}）{f}",
                                 r["job_id"], r["from"], r["to"], r["findings"], r["risks_emitted"]);
                         }
-                        println!("（沙盘模拟；真实推理等放行令；step 不自动轮询、不一口气跑完）");
+                        println!("（沙盘替身；真实推理等放行令；step 不自动轮询、不一口气跑完）");
                     }
                 }
             }

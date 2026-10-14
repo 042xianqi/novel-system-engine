@@ -13,7 +13,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use crate::cli::{Cli, Cmd, LibraryCtlCmd, McpCmd, ModelsCmd, QueueCmd, VaultCmd, WorldGovCmd, AuditExportCmd, CacheCmd, ProbeExportCmd, SelfCheckCmd, TagCmd, NoteCmd, DiffCmd, DiffSnapCmd, WebCmd, ConflictCmd, GraphCmd};
+use crate::cli::{Cli, Cmd, LibraryCtlCmd, McpCmd, ModelsCmd, QueueCmd, VaultCmd, WorldGovCmd, AuditExportCmd, CacheCmd, ProbeExportCmd, SelfCheckCmd, TagCmd, NoteCmd, DiffCmd, DiffSnapCmd, WebCmd, ConflictCmd, GraphCmd, SandboxCmd};
 use ne_agent::{RuntimeConfig, Vault};
 use std::path::{Path, PathBuf};
 mod cli;
@@ -955,7 +955,7 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool, 
             st["incremental_scan_ready"] = serde_json::json!(true);
             st["batch_inspect_ready"] = serde_json::json!(true);
             // 工具链版本标记（仅标识，无逻辑作用）
-            st["toolchain_epoch"] = serde_json::json!(14);
+            st["toolchain_epoch"] = serde_json::json!(15);
             st["tag_note_ready"] = serde_json::json!(true);
             st["diff_snap_ready"] = serde_json::json!(true);
             st["webpanel_ready"] = serde_json::json!(true);
@@ -963,6 +963,7 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool, 
             st["real_llm_triple_lock"] = ne_agent::governance::llm_gate::lock_status(false);
             st["conflict_store_ready"] = serde_json::json!(true);
             st["rel_graph_ready"] = serde_json::json!(true);
+            st["sandbox_ready"] = serde_json::json!(true);
             st["llm_real_call_enabled"] = serde_json::json!(
                 ne_agent::governance::llm_gate::real_llm_unlocked(false)
             );
@@ -1361,6 +1362,89 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                             }
                         }
                     }
+                }
+            }
+        }
+        WorldGovCmd::Sandbox { cmd, lib: _ } => {
+            use ne_agent::governance::sandbox as sb;
+            match cmd {
+                SandboxCmd::Run { scenario, quick, actor, label, save } => {
+                    let sc = match (scenario, quick) {
+                        (Some(p), None) => serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(p)?)
+                            .map_err(|e| anyhow::anyhow!("场景 JSON 解析失败：{e}"))?,
+                        (None, Some(q)) => sb::quick_scenario(q)?,
+                        (Some(_), Some(_)) => anyhow::bail!("--scenario 与 --quick 只能二选一"),
+                        (None, None) => anyhow::bail!("需给 --scenario <文件> 或 --quick <warn|critical|tip|calm>"),
+                    };
+                    let r = sb::run(&conn, lib_root, label, actor.as_deref(), &sc, *save)?;
+                    if json { println!("{}", serde_json::to_string_pretty(&r)?); }
+                    else {
+                        println!("== 沙盘推演{} ==", if r["saved"] == true { format!(" #{}", r["run_id"]) } else { "（未落库）".into() });
+                        println!("步数: {}  判决: {}  临界步: {}", r["steps"], r["verdict"], r["critical_steps"]);
+                        println!("指纹: {}", r["fingerprint"]);
+                        println!("最终态: {}", serde_json::to_string(&r["final_state"])?);
+                        if let Some(a) = r["affected"].as_object() {
+                            let n = a["cards"].as_array().map(|x| x.len()).unwrap_or(0);
+                            println!("受影响卡（关系网一跳）: {n} 张  actor={}", a["actor"]);
+                        }
+                        println!("{}", r["note"].as_str().unwrap_or(""));
+                    }
+                }
+                SandboxCmd::Verify { run_id } => {
+                    let r = sb::verify(&conn, *run_id)?;
+                    if json { println!("{}", serde_json::to_string_pretty(&r)?); }
+                    else if r["status"] == "NOT_FOUND" {
+                        println!("未找到推演记录 #{run_id}");
+                    } else {
+                        println!("== 重放校验 #{} ==", run_id);
+                        println!("结果: {}（确定性: {}）", r["status"], r["deterministic"]);
+                        println!("记录指纹: {}", r["stored_fingerprint"]);
+                        println!("重放指纹: {}", r["replay_fingerprint"]);
+                        println!("记录判决: {}  重放判决: {}", r["stored_verdict"], r["replay_verdict"]);
+                    }
+                }
+                SandboxCmd::List { limit } => {
+                    let r = sb::list(&conn, *limit)?;
+                    if json { println!("{}", serde_json::to_string_pretty(&r)?); }
+                    else {
+                        println!("== 沙盘推演记录（{} 条）==", r["count"]);
+                        if let Some(rs) = r["runs"].as_array() {
+                            for x in rs {
+                                println!("  #{} [{}] steps={} verdict={} crit={} fp={}",
+                                    x["id"], x["label"].as_str().unwrap_or(""),
+                                    x["steps"], x["verdict"], x["critical_steps"],
+                                    x["fingerprint"].as_str().unwrap_or("").chars().take(8).collect::<String>());
+                            }
+                        }
+                    }
+                }
+                SandboxCmd::Show { run_id, full } => {
+                    let r = sb::show(&conn, *run_id, *full)?;
+                    if json { println!("{}", serde_json::to_string_pretty(&r)?); }
+                    else if r["status"] == "NOT_FOUND" {
+                        println!("未找到推演记录 #{run_id}");
+                    } else {
+                        println!("== 沙盘推演 #{} ==", run_id);
+                        println!("标签: {}  actor: {}", r["label"], r["actor"]);
+                        println!("步数: {}  判决: {}  临界步: {}  epoch: {}", r["steps"], r["verdict"], r["critical_steps"], r["engine_epoch"]);
+                        println!("指纹: {}", r["fingerprint"]);
+                        println!("最终态: {}", serde_json::to_string_pretty(&r["final_state"])?);
+                        if *full {
+                            if let Some(sd) = r["steps_detail"].as_array() {
+                                println!("── 逐步（{}）──", sd.len());
+                                for s in sd {
+                                    println!("  step {} chapter {} verdict {}  state={}",
+                                        s["step"], s["state"]["chapter"], s["state"]["verdict"],
+                                        serde_json::to_string(&s["state"]["state"]).unwrap_or_default());
+                                }
+                            }
+                        } else { println!("（加 --full 查看 scenario 与逐步状态）"); }
+                    }
+                }
+                SandboxCmd::Delete { run_id } => {
+                    let ok = sb::delete(&conn, *run_id)?;
+                    if json { println!("{}", serde_json::json!({"deleted": ok, "run_id": run_id})); }
+                    else { println!("{}推演记录 #{}", if ok { "已删除" } else { "未找到" }, run_id); }
                 }
             }
         }

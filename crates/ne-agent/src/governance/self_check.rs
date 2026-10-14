@@ -228,6 +228,14 @@ pub fn run(conn: &Connection, lib_root: &Path, fix: bool, older_than_days: u64) 
         "detail": rgs,
     }));
 
+    // ⑬ 沙盘推演（第 15 批）：sandbox_run/sandbox_step 结构 + 步骤数一致性（只读）
+    let sbs = super::sandbox::table_check(conn).unwrap_or(json!({"ok": false, "error": "检查失败"}));
+    items.push(json!({
+        "name": "sandbox",
+        "ok": sbs["ok"] == true,
+        "detail": sbs,
+    }));
+
     let failed = items.iter().filter(|x| x["ok"] == false).count();
     Ok(json!({
         "command": "world-gov self-check",
@@ -237,7 +245,7 @@ pub fn run(conn: &Connection, lib_root: &Path, fix: bool, older_than_days: u64) 
         "failed": failed,
         "all_ok": failed == 0,
         "items": items,
-        "toolchain_epoch": 14,
+        "toolchain_epoch": 15,
         "note": "自检只读为主；--fix 仅创建缺失目录，绝不 ALTER 表/删任务/改资料库。",
     }))
 }
@@ -277,7 +285,8 @@ pub fn capabilities() -> Value {
         "conflict_store_ready": true,
         "real_semantic_triple_lock": true,
         "rel_graph_ready": true,
-        "toolchain_epoch": 14,
+        "sandbox_ready": true,
+        "toolchain_epoch": 15,
     })
 }
 
@@ -347,7 +356,7 @@ mod tests {
     #[test]
     fn capabilities_marker() {
         let c = capabilities();
-        assert_eq!(c["toolchain_epoch"], 14);
+        assert_eq!(c["toolchain_epoch"], 15);
         assert_eq!(c["selfcheck_ready"], true);
         assert_eq!(c["tag_note_ready"], true);
         assert_eq!(c["diff_snap_ready"], true);
@@ -355,5 +364,6 @@ mod tests {
         assert_eq!(c["conflict_store_ready"], true);
         assert_eq!(c["real_semantic_triple_lock"], true);
         assert_eq!(c["rel_graph_ready"], true);
+        assert_eq!(c["sandbox_ready"], true);
     }
 }

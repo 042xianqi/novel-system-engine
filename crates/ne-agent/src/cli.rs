@@ -729,6 +729,15 @@ pub enum WorldGovCmd {
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,
     },
+    /// 【调试】沙盘推演（run|verify|list|show|delete；确定性多步推演，可重放）
+    #[command(hide = true)]
+    Sandbox {
+        #[command(subcommand)]
+        cmd: SandboxCmd,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -822,6 +831,46 @@ pub enum GraphCmd {
         max_len: usize,
         #[arg(long, default_value_t = 50)]
         limit: usize,
+    },
+}
+#[derive(Subcommand, Debug)]
+pub enum SandboxCmd {
+    /// 跑一次多步确定性推演（--save 才落库；数值可重放）
+    Run {
+        /// 场景 JSON 文件路径（--scenario 或 --quick 二选一）
+        #[arg(long)]
+        scenario: Option<String>,
+        /// 快捷预设（warn / critical / tip / calm）
+        #[arg(long)]
+        quick: Option<String>,
+        /// 推演主体卡 key（取自关系网，给出受影响集）
+        #[arg(long)]
+        actor: Option<String>,
+        /// 记录标签
+        #[arg(long, default_value = "")]
+        label: String,
+        /// 落库（默认只算不写）
+        #[arg(long)]
+        save: bool,
+    },
+    /// 重放校验（同 scenario 重跑，比对指纹）
+    Verify {
+        run_id: i64,
+    },
+    /// 列出推演记录
+    List {
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
+    /// 查看单条（--full 含 scenario 与逐步状态）
+    Show {
+        run_id: i64,
+        #[arg(long)]
+        full: bool,
+    },
+    /// 删除一条推演记录（含步骤）
+    Delete {
+        run_id: i64,
     },
 }
 #[derive(Subcommand, Debug)]

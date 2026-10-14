@@ -27,6 +27,7 @@ pub mod llm_gate;
 pub mod llm_client;
 pub mod conflict_store;
 pub mod rel_graph;
+pub mod sandbox;
 pub mod pipeline;
 pub mod pipeline_store;
 pub mod progress;
@@ -113,6 +114,8 @@ pub fn open_gov(lib_root: &Path) -> Result<Connection> {
     conflict_store::ensure_table(&conn)?;
     // 关系网（第 14 批）：幂等建表，与主索引完全隔离
     rel_graph::ensure_table(&conn)?;
+    // 沙盘推演（第 15 批）：幂等建表，与主索引完全隔离
+    sandbox::ensure_table(&conn)?;
     Ok(conn)
 }
 

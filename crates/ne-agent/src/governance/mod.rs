@@ -23,6 +23,9 @@ pub mod note_tag_store;
 pub mod digest;
 pub mod diff_snapshot;
 pub mod web_gateway;
+pub mod llm_gate;
+pub mod llm_client;
+pub mod conflict_store;
 pub mod pipeline;
 pub mod pipeline_store;
 pub mod progress;
@@ -105,6 +108,8 @@ pub fn open_gov(lib_root: &Path) -> Result<Connection> {
     note_tag_store::ensure_tables(&conn)?;
     // 差异快照（第 11 批）：幂等建表，与主索引完全隔离
     diff_snapshot::ensure_table(&conn)?;
+    // 冲突记录库（第 13 批）：幂等建表，与主索引完全隔离
+    conflict_store::ensure_table(&conn)?;
     Ok(conn)
 }
 

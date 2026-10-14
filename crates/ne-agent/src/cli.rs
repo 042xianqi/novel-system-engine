@@ -471,6 +471,9 @@ pub enum WorldGovCmd {
         /// 沙盘：--semantic 时只打印将发送的 prompt，不调模型
         #[arg(long)]
         dry_run: bool,
+        /// 第 13 批：真实 LLM 三重锁之命令行锁（还需 feature + WOGOV_ALLOW_REAL_LLM=yes）
+        #[arg(long)]
+        real_semantic: bool,
         /// 提交任务进内存管线队列（沙盘：同调用内走通 enqueue→simulate→入库）
         #[arg(long)]
         enqueue: bool,
@@ -638,6 +641,9 @@ pub enum WorldGovCmd {
         /// 排除含该标签的条目（第 10 批；可重复）
         #[arg(long = "without-tag", value_name = "TAG")]
         without_tag: Vec<String>,
+        /// 第 13 批：真实 LLM 三重锁之命令行锁（批量语义）
+        #[arg(long)]
+        real_semantic: bool,
         /// 资料库根
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,
@@ -705,6 +711,48 @@ pub enum WorldGovCmd {
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,
     },
+    /// 【调试】冲突记录库（list|show|review|summary；存 AI 观点，人是终审）
+    #[command(hide = true)]
+    Conflict {
+        #[command(subcommand)]
+        cmd: ConflictCmd,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ConflictCmd {
+    /// 列出冲突记录（可按状态/key 过滤）
+    List {
+        /// pending | valid | false_alarm | ignored
+        #[arg(long)]
+        status: Option<String>,
+        #[arg(long)]
+        key: Option<String>,
+        /// 显示原始 prompt/response 全文
+        #[arg(long)]
+        full: bool,
+    },
+    /// 查看单条（含 raw 预览）
+    Show {
+        id: i64,
+        #[arg(long)]
+        full: bool,
+    },
+    /// 人工复核：更新 review_status（可反向给条目打 ai-flagged）
+    Review {
+        id: i64,
+        /// pending | valid | false_alarm | ignored
+        #[arg(long)]
+        status: String,
+        /// 同时给该条目的 probe_key 打 ai-flagged 标签
+        #[arg(long)]
+        flag: bool,
+    },
+    /// 统计（总数 + 按状态分布）
+    Summary,
 }
 
 #[derive(Subcommand, Debug)]

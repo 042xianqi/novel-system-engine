@@ -62,6 +62,8 @@ pub enum Outcome {
     Success { content: Value, key: String, guards: Value, token_in: i64, token_out: i64, backend: String, model: String },
     /// 护栏拒绝（schema/JSON/白名单）。
     GuardRejected { reason: String, guards: Value },
+    /// 模型输出经重试后仍非合法 JSON（标记 malformed；**未写缓存、未记账为成功**）。
+    Malformed { attempts: u32, last_raw_head: String },
     /// 后端错误。
     BackendError { kind: String, message: String },
 }
@@ -77,6 +79,9 @@ impl Outcome {
                 json!({"status": "OK", "content": content, "cache_key": key, "guards": guards,
                        "token_in": token_in, "token_out": token_out, "backend": backend, "model": model, "cache_hit": false}),
             Outcome::GuardRejected { reason, guards } => json!({"status": "GUARD_REJECTED", "reason": reason, "guards": guards}),
+            Outcome::Malformed { attempts, last_raw_head } =>
+                json!({"status": "MALFORMED", "attempts": attempts, "last_raw_head": last_raw_head,
+                       "note": "模型输出非法 JSON；已重试修复仍失败，标记 malformed（未写缓存）"}),
             Outcome::BackendError { kind, message } => json!({"status": "BACKEND_ERROR", "kind": kind, "message": message}),
         }
     }
@@ -140,8 +145,25 @@ pub fn call(conn: &rusqlite::Connection, work_root: &Path, cfg: &llm_config::Llm
         schema: tpl.schema.clone(),
     };
     let start = std::time::Instant::now();
-    let res = backend.chat(&tpl.system, &[llm_adapter::Msg::user(user)], &constraint);
-    let elapsed = start.elapsed().as_millis() as i64;
+    let mut res = backend.chat(&tpl.system, &[llm_adapter::Msg::user(user)], &constraint);
+    let mut elapsed = start.elapsed().as_millis() as i64;
+    // ④b 修复回合（spec §3：输出非法 → 有限次重试后标记 malformed）。
+    // 触发条件：真实后端返回 Ok 但 content 非对象（模型吐了散文/markdown）。
+    let max_retry = cfg.max_retry;
+    let mut attempts: u32 = 1;
+    while let Ok(o) = &res {
+        if !o.content.is_null() || o.raw.trim().is_empty() || req.use_mock {
+            break;
+        }
+        if attempts >= max_retry.saturating_add(1) as u32 || max_retry == 0 {
+            break;
+        }
+        let repairs = llm_adapter::repair_messages(&o.raw, &tpl.schema);
+        let r2 = backend.chat(&tpl.system, &repairs, &constraint);
+        elapsed = start.elapsed().as_millis() as i64;
+        res = r2;
+        attempts += 1;
+    }
 
     let out = match res {
         Err(llm_adapter::BackendError::Unavailable(m)) => {
@@ -155,6 +177,16 @@ pub fn call(conn: &rusqlite::Connection, work_root: &Path, cfg: &llm_config::Llm
         }
         Ok(o) => o,
     };
+
+    // ④c 重试后仍非合法 JSON → 标记 malformed（不写缓存、不算成功）。
+    if out.content.is_null() {
+        let head: String = out.raw.chars().take(200).collect();
+        let _ = llm_obs::record(conn, &llm_obs::CallRecord {
+            backend: backend_name, model, token_in: out.token_in, token_out: out.token_out,
+            elapsed_ms: elapsed, cache_hit: false, ok: false, note: "malformed".into(),
+        }, cfg.breaker_threshold, 60);
+        return Ok(Outcome::Malformed { attempts, last_raw_head: head });
+    }
 
     // ⑤ 护栏：schema
     let mut guards = json!({});

@@ -1702,6 +1702,10 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                             sp::Outcome::GuardRejected { reason, guards } => {
                                 println!("[护栏拒绝] {reason}: {}", serde_json::to_string(guards)?);
                             }
+                            sp::Outcome::Malformed { attempts, last_raw_head } => {
+                                println!("[格式非法] 重试 {attempts} 次仍非合法 JSON（已标记 malformed，未写缓存）。");
+                                println!("模型原始输出前 200 字：{last_raw_head}");
+                            }
                             sp::Outcome::BackendError { kind, message } => println!("[后端错误] {kind}: {message}"),
                         }
                     }

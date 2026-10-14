@@ -194,6 +194,7 @@ fn ollama_chat(ep: &Endpoint, sys: &str, messages: &[Msg], c: &Constraint) -> st
         return Err(BackendError::NotConfigured("ollama base_url 为空".into()));
     }
     let url = format!("{}/api/chat", ep.base_url.trim_end_matches('/'));
+    let sys = sys_with_schema(sys, &c.schema);
     let mut msgs = vec![json!({"role": "system", "content": sys})];
     for m in messages {
         msgs.push(json!({"role": m.role, "content": m.content}));
@@ -208,7 +209,8 @@ fn ollama_chat(ep: &Endpoint, sys: &str, messages: &[Msg], c: &Constraint) -> st
     let v = ne_engine::http::post_json_value(&url, &[], &body, std::time::Duration::from_secs(60))
         .map_err(|e| BackendError::Transport(e.to_string()))?;
     let content_str = v["message"]["content"].as_str().unwrap_or("");
-    let content = prompt_lib::extract_json(content_str).map_err(|e| BackendError::Protocol(e.to_string()))?;
+    // 解析失败 → content=Null（原始文本保留在 raw），由管线决定是否走修复回合。
+    let content = prompt_lib::extract_json(content_str).unwrap_or(Value::Null);
     let token_in = v["prompt_eval_count"].as_i64().unwrap_or(0);
     let token_out = v["eval_count"].as_i64().unwrap_or(0);
     Ok(LlmOutput { content, raw: content_str.to_string(), token_in, token_out, backend: "ollama".into(), model: ep.model_id.clone(), cache_hit: false })
@@ -220,12 +222,13 @@ fn ollama_chat(_ep: &Endpoint, _sys: &str, _messages: &[Msg], _c: &Constraint) -
 }
 
 #[cfg(feature = "llm_integration")]
-fn openai_chat(ep: &Endpoint, sys: &str, messages: &[Msg], c: &Constraint) -> std::result::Result<LlmOutput, BackendError> {
+fn openai_chat(ep: &Endpoint, sys_prompt: &str, messages: &[Msg], c: &Constraint) -> std::result::Result<LlmOutput, BackendError> {
     if ep.base_url.is_empty() {
         return Err(BackendError::NotConfigured("openai_compat base_url 为空".into()));
     }
     let url = format!("{}/chat/completions", ep.base_url.trim_end_matches('/'));
-    let mut msgs = vec![json!({"role": "system", "content": sys})];
+    let sys_prompt = sys_with_schema(sys_prompt, &c.schema);
+    let mut msgs = vec![json!({"role": "system", "content": sys_prompt})];
     for m in messages {
         msgs.push(json!({"role": m.role, "content": m.content}));
     }
@@ -244,10 +247,44 @@ fn openai_chat(ep: &Endpoint, sys: &str, messages: &[Msg], c: &Constraint) -> st
     let v = ne_engine::http::post_json_value(&url, &headers, &body, std::time::Duration::from_secs(60))
         .map_err(|e| BackendError::Transport(e.to_string()))?;
     let content_str = v["choices"][0]["message"]["content"].as_str().unwrap_or("");
-    let content = prompt_lib::extract_json(content_str).map_err(|e| BackendError::Protocol(e.to_string()))?;
+    // 解析失败 → content=Null（原始文本保留在 raw），由管线决定是否走修复回合。
+    let content = prompt_lib::extract_json(content_str).unwrap_or(Value::Null);
     let token_in = v["usage"]["prompt_tokens"].as_i64().unwrap_or(0);
     let token_out = v["usage"]["completion_tokens"].as_i64().unwrap_or(0);
     Ok(LlmOutput { content, raw: content_str.to_string(), token_in, token_out, backend: "openai_compat".into(), model: ep.model_id.clone(), cache_hit: false })
+}
+
+/// 把 JSON Schema 附加到 system 提示（**硬约束的请求侧载体**）。
+///
+/// 部分网关（如本地 workbuddy 代理）忽略 `response_format`，唯一可靠的强约束是把
+/// 目标结构直接写进 prompt，再叠加管线侧的**修复回合**重试。schema 为 Null 时原样返回。
+pub fn sys_with_schema(sys: &str, schema: &Value) -> String {
+    if schema.is_null() {
+        return sys.to_string();
+    }
+    let compact = serde_json::to_string(schema).unwrap_or_default();
+    format!(
+        "{sys}\n\n【输出强约束】只输出一个符合下列 JSON Schema 的 JSON 对象；\
+禁止 markdown 代码块、禁止解释性文字、禁止前后缀。\nSchema: {compact}"
+    )
+}
+
+/// 修复回合：把上一轮的非 JSON 输出喂回，要求**只**转成 JSON（不重问原问题）。
+///
+/// 这是 spec §3「模型输出非法 → 重试有限次数后标记 malformed」的落点。
+/// 纯构造函数（可测）：返回喂给后端的对话。
+pub fn repair_messages(last_raw: &str, schema: &Value) -> Vec<Msg> {
+    let format_hint = if schema.is_null() {
+        String::new()
+    } else {
+        format!("\n目标 JSON Schema: {}", serde_json::to_string(schema).unwrap_or_default())
+    };
+    vec![
+        Msg::system("你是严格的 JSON 格式转换器。只输出一个 JSON 对象，不输出任何其他文字、不加 markdown 代码块。"),
+        Msg::user(format!(
+            "把下面的内容**只**转换成一个 JSON 对象（保持原意，不要新增事实）。只输出 JSON 本身。{format_hint}\n\n待转换内容：\n{last_raw}"
+        )),
+    ]
 }
 
 #[cfg(not(feature = "llm_integration"))]
@@ -327,5 +364,25 @@ mod tests {
         let cfg = LlmConfig::default();
         assert_eq!(make_backend("mock", &cfg).name(), "dry_run_mock");
         assert_eq!(make_backend("ollama", &cfg).name(), "ollama");
+    }
+
+    #[test]
+    fn sys_with_schema_appends_constraint() {
+        let s = sys_with_schema("BASE", &json!({"type":"object"}));
+        assert!(s.starts_with("BASE"));
+        assert!(s.contains("【输出强约束】"));
+        assert!(s.contains("Schema:"));
+        // Null schema → 原样返回（不污染既有 prompt）
+        assert_eq!(sys_with_schema("BASE", &Value::Null), "BASE");
+    }
+
+    #[test]
+    fn repair_messages_shape() {
+        let msgs = repair_messages("散文输出", &json!({"type":"object"}));
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, "system");
+        assert_eq!(msgs[1].role, "user");
+        assert!(msgs[1].content.contains("散文输出"));
+        assert!(msgs[1].content.contains("JSON Schema"));
     }
 }

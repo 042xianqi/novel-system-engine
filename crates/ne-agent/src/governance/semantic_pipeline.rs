@@ -108,25 +108,88 @@ pub fn preview(work_root: &Path, cfg: &llm_config::LlmConfig, req: &PipelineRequ
     }))
 }
 
-/// 执行一次管线调用（**唯一真实外呼入口**）。
+/// 直接给定 system/user 的调用输入（**统一收口的第二入口**）。
+///
+/// 供 `inspect-card` / `inspect-batch` 等「题面由 `prompt_builder` 组装、不经
+/// `prompt_lib` 模板」的通路复用——它们与模板路径**共享同一闸门/熔断/缓存/后端/
+/// 护栏/记账/修复回合**，避免维护两套 LLM 调用链路（第 17.3 批迁移）。
+#[derive(Debug, Clone)]
+pub struct RawPrompt {
+    pub system: String,
+    pub user: String,
+    /// 缓存 key 的稳定锚（通常为探针指纹）。
+    pub probe_hash: String,
+    /// 期望 schema（`Value::Null` = 不校验；inspect 通路用宽容判定）。
+    pub schema: Value,
+    /// 白名单校验的实体字段（空 = 跳过白名单）。
+    pub entity_fields: Vec<String>,
+    pub temperature: f64,
+    /// 0 = 用 `cfg.max_resp_tokens`。
+    pub max_tokens: u32,
+    pub bypass_cache: bool,
+    pub use_mock: bool,
+}
+
+impl Default for RawPrompt {
+    fn default() -> Self {
+        RawPrompt {
+            system: String::new(),
+            user: String::new(),
+            probe_hash: String::new(),
+            schema: Value::Null,
+            entity_fields: Vec::new(),
+            temperature: 0.0,
+            max_tokens: 0,
+            bypass_cache: false,
+            use_mock: false,
+        }
+    }
+}
+
+/// 执行一次管线调用（模板路径；**薄包装**，委托 [`call_raw`]）。
+///
+/// 保留此签名以向后兼容既有调用方；收口逻辑全部下沉到 `call_raw`。
 pub fn call(conn: &rusqlite::Connection, work_root: &Path, cfg: &llm_config::LlmConfig, cli_real_semantic: bool, req: &PipelineRequest) -> Result<Outcome> {
+    let tpl = prompt_lib::load(work_root, &req.template)?;
+    let user = prompt_lib::render(&tpl.user, &req.vars);
+    let raw = RawPrompt {
+        system: tpl.system.clone(),
+        user,
+        probe_hash: req.probe_hash.clone(),
+        schema: tpl.schema.clone(),
+        entity_fields: tpl.entity_fields.clone(),
+        temperature: req.temperature,
+        max_tokens: req.max_tokens,
+        bypass_cache: req.bypass_cache,
+        use_mock: req.use_mock,
+    };
+    call_raw(conn, work_root, cfg, cli_real_semantic, &raw)
+}
+
+/// 执行一次管线调用（**唯一真实外呼入口**；模板路径与 inspect 通路共用）。
+pub fn call_raw(
+    conn: &rusqlite::Connection,
+    work_root: &Path,
+    cfg: &llm_config::LlmConfig,
+    cli_real_semantic: bool,
+    raw: &RawPrompt,
+) -> Result<Outcome> {
     // ① 三重闸门（mock 后端豁免：测试/预览不联网）
-    if !req.use_mock && !llm_gate::real_llm_unlocked(cli_real_semantic) {
+    if !raw.use_mock && !llm_gate::real_llm_unlocked(cli_real_semantic) {
         return Ok(Outcome::GateLocked(llm_gate::lock_status(cli_real_semantic)));
     }
     // ② 熔断（仅真实后端）
-    if !req.use_mock && llm_obs::breaker_tripped(conn).unwrap_or(false) {
+    if !raw.use_mock && llm_obs::breaker_tripped(conn).unwrap_or(false) {
         return Ok(Outcome::BreakerOpen);
     }
-    // 载模板
-    let tpl = prompt_lib::load(work_root, &req.template)?;
     let ep = llm_config::active_endpoint(cfg);
-    let backend_name = if req.use_mock { "dry_run_mock".to_string() } else { llm_adapter::make_backend(&cfg.default_backend, cfg).name().to_string() };
-    let model = if req.use_mock { "mock".to_string() } else { ep.model_id.clone() };
-    let key = inference_cache::cache_key(&backend_name, &model, &tpl.system, &req.probe_hash, req.temperature);
+    let backend_name = if raw.use_mock { "dry_run_mock".to_string() } else { llm_adapter::make_backend(&cfg.default_backend, cfg).name().to_string() };
+    let model = if raw.use_mock { "mock".to_string() } else { ep.model_id.clone() };
+    // 缓存 key：与模板路径同式（system + probe_hash 天然区分题面）。
+    let key = inference_cache::cache_key(&backend_name, &model, &raw.system, &raw.probe_hash, raw.temperature);
 
     // ③ 缓存命中（仅真实后端启用缓存；mock 不缓存）
-    if !req.use_mock && !req.bypass_cache && cfg.inference_cache_enable {
+    if !raw.use_mock && !raw.bypass_cache && cfg.inference_cache_enable {
         if let Some(hit) = inference_cache::get(work_root, &key)? {
             let content = prompt_lib::extract_json(&hit.output).unwrap_or(json!({}));
             let _ = llm_obs::record(conn, &llm_obs::CallRecord {
@@ -138,29 +201,28 @@ pub fn call(conn: &rusqlite::Connection, work_root: &Path, cfg: &llm_config::Llm
     }
 
     // ④ 后端调用
-    let backend = if req.use_mock { llm_adapter::make_backend("mock", cfg) } else { llm_adapter::make_backend(&cfg.default_backend, cfg) };
-    let user = prompt_lib::render(&tpl.user, &req.vars);
+    let backend = if raw.use_mock { llm_adapter::make_backend("mock", cfg) } else { llm_adapter::make_backend(&cfg.default_backend, cfg) };
     let constraint = llm_adapter::Constraint {
-        max_tokens: if req.max_tokens > 0 { req.max_tokens } else { cfg.max_resp_tokens },
-        temperature: req.temperature,
-        schema: tpl.schema.clone(),
+        max_tokens: if raw.max_tokens > 0 { raw.max_tokens } else { cfg.max_resp_tokens },
+        temperature: raw.temperature,
+        schema: raw.schema.clone(),
     };
     let start = std::time::Instant::now();
-    let mut res = backend.chat(&tpl.system, &[llm_adapter::Msg::user(user)], &constraint);
+    let mut res = backend.chat(&raw.system, &[llm_adapter::Msg::user(raw.user.clone())], &constraint);
     let mut elapsed = start.elapsed().as_millis() as i64;
     // ④b 修复回合（spec §3：输出非法 → 有限次重试后标记 malformed）。
     // 触发条件：真实后端返回 Ok 但 content 非对象（模型吐了散文/markdown）。
     let max_retry = cfg.max_retry;
     let mut attempts: u32 = 1;
     while let Ok(o) = &res {
-        if !o.content.is_null() || o.raw.trim().is_empty() || req.use_mock {
+        if !o.content.is_null() || o.raw.trim().is_empty() || raw.use_mock {
             break;
         }
         if attempts >= max_retry.saturating_add(1) as u32 || max_retry == 0 {
             break;
         }
-        let repairs = llm_adapter::repair_messages(&o.raw, &tpl.schema);
-        let r2 = backend.chat(&tpl.system, &repairs, &constraint);
+        let repairs = llm_adapter::repair_messages(&o.raw, &raw.schema);
+        let r2 = backend.chat(&raw.system, &repairs, &constraint);
         elapsed = start.elapsed().as_millis() as i64;
         res = r2;
         attempts += 1;
@@ -191,8 +253,8 @@ pub fn call(conn: &rusqlite::Connection, work_root: &Path, cfg: &llm_config::Llm
 
     // ⑤ 护栏：schema
     let mut guards = json!({});
-    if tpl.schema != Value::Null {
-        let errs = prompt_lib::validate_schema(&out.content, &tpl.schema);
+    if raw.schema != Value::Null {
+        let errs = prompt_lib::validate_schema(&out.content, &raw.schema);
         guards["schema_ok"] = json!(errs.is_empty());
         guards["schema_errors"] = json!(errs);
         if !errs.is_empty() {
@@ -200,10 +262,12 @@ pub fn call(conn: &rusqlite::Connection, work_root: &Path, cfg: &llm_config::Llm
             return Ok(Outcome::GuardRejected { reason: "schema".into(), guards });
         }
     }
-    // ⑤b 实体白名单
-    let pool = prompt_lib::entity_pool_from_library(conn);
-    let wl = prompt_lib::check_whitelist(&out.content, &tpl.entity_fields, &pool);
-    guards["whitelist"] = wl.clone();
+    // ⑤b 实体白名单（字段为空则跳过）
+    if !raw.entity_fields.is_empty() {
+        let pool = prompt_lib::entity_pool_from_library(conn);
+        let wl = prompt_lib::check_whitelist(&out.content, &raw.entity_fields, &pool);
+        guards["whitelist"] = wl.clone();
+    }
 
     // ⑥ 记账 + 写缓存（mock 不写缓存）
     let (_tc, _tf, tripped) = llm_obs::record(conn, &llm_obs::CallRecord {
@@ -213,7 +277,7 @@ pub fn call(conn: &rusqlite::Connection, work_root: &Path, cfg: &llm_config::Llm
     if tripped {
         guards["breaker_tripped"] = json!(true);
     }
-    if !req.use_mock && cfg.inference_cache_enable {
+    if !raw.use_mock && cfg.inference_cache_enable {
         let entry = inference_cache::make_entry(key.clone(), &backend_name, &model, out.raw.clone(), out.raw.clone(), out.token_in, out.token_out, vec![]);
         let _ = inference_cache::put(work_root, &entry);
     }

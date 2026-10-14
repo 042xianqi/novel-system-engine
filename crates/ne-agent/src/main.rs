@@ -1135,48 +1135,41 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                     "既有门控已开，但第 13 批真实外呼还需三重锁：编译 feature `real-semantic` + WOGOV_ALLOW_REAL_LLM=yes + --real-semantic；用 world-gov gate-check 查真值。本次未发出任何请求。"
                 );
             }
-            // 第 13 批：--real-semantic 路径（三重锁收口）
-            let gate_st = ne_agent::governance::llm_gate::lock_status(*real_semantic);
-            if !ne_agent::governance::llm_gate::real_llm_unlocked(*real_semantic) {
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                        "command": "world-gov inspect-card", "key": key,
-                        "status": "REAL_SEMANTIC_LOCKED",
-                        "llm_gate": gate_st,
-                        "note": "三重锁未全开；本次未发出任何请求，未消耗 token。",
-                    }))?);
-                } else {
-                    println!("[三重锁拦截] --real-semantic 未解锁（缺以下条件）：");
-                    if let Some(m) = gate_st["missing"].as_array() {
-                        for x in m { println!("  ✗ {}", x.as_str().unwrap_or("")); }
-                    }
-                    println!("本次未发出任何请求，未消耗 token。");
-                }
-                return Ok(());
-            }
-            // 三重锁全开：组装 prompt → 调用 → 写冲突库
-            use ne_agent::governance::{conflict_store as cs, llm_client as lc, prompt_builder as pb};
+            // 第 17.3 批：统一走 semantic_pipeline（与 `llm run` 模板路径**同一条收口**：
+            // 闸门→熔断→缓存→后端→护栏→记账→修复回合）。旧 `llm_client` 退化为过渡存根。
+            use ne_agent::governance::{conflict_store as cs, llm_config as lc, prompt_builder as pb, semantic_pipeline as sp};
             let built = pb::build_inspect_prompt(&r["probe_pack"]);
             let baseline_fp = world_gov::read_baseline_fingerprint(lib_root).unwrap_or_default();
             let probe_hash = wg_probe_hash(&r["probe_pack"]);
-            let endpoint = lc::LlmEndpoint::from_env();
-            let audit = lc::AuditContext::new(&baseline_fp, &probe_hash);
             let snap_id = wg_latest_snapshot(&conn);
-            let (verdict, tok_in, tok_out) = if *dry_run {
-                (serde_json::json!({"dry_run": true, "note": "只组装不发送"}), 0i64, 0i64)
-            } else {
-                match lc::call_structured(&endpoint, &audit, &built.system, &built.user, *real_semantic, false)? {
-                    lc::CallOutcome::Success { content, token_in, token_out } => (content, token_in, token_out),
-                    lc::CallOutcome::GateLocked => (serde_json::json!({"gate": "locked"}), 0, 0),
-                    lc::CallOutcome::NotCompiled => (serde_json::json!({"status": "NotCompiled",
-                        "note": "默认构建无出网能力（feature real-semantic 未启用）"}), 0, 0),
-                    lc::CallOutcome::Timeout => (serde_json::json!({"status": "Timeout"}), 0, 0),
-                    lc::CallOutcome::ProtocolError(e) => (serde_json::json!({"status": "ProtocolError", "error": e}), 0, 0),
-                }
+            let cfg = lc::load(lib_root)?;
+            let raw = sp::RawPrompt {
+                system: built.system.clone(),
+                user: built.user.clone(),
+                probe_hash: probe_hash.clone(),
+                // inspect 判定用宽容（无强 schema）：只做 JSON 解析 + 记账；判定结果仍写冲突库。
+                schema: serde_json::Value::Null,
+                ..Default::default()
             };
-            // 非 dry-run 且有结构化结果 → 落冲突库 + emit findings
+            let outcome = sp::call_raw(&conn, lib_root, &cfg, *real_semantic, &raw)?;
+            let oj = outcome.to_json();
+            let gate_st = ne_agent::governance::llm_gate::lock_status(*real_semantic);
+            let (verdict, tok_in, tok_out, status) = match &outcome {
+                sp::Outcome::Success { content, token_in, token_out, .. } => (content.clone(), *token_in, *token_out, "OK"),
+                sp::Outcome::CacheHit { content, .. } => (content.clone(), 0i64, 0i64, "CACHE_HIT"),
+                sp::Outcome::Malformed { attempts, last_raw_head } =>
+                    (serde_json::json!({"status":"MALFORMED","attempts":attempts,"last_raw_head":last_raw_head}), 0, 0, "MALFORMED"),
+                sp::Outcome::GuardRejected { reason, guards } =>
+                    (serde_json::json!({"status":"GUARD_REJECTED","reason":reason,"guards":guards}), 0, 0, "GUARD_REJECTED"),
+                sp::Outcome::GateLocked(_) => (serde_json::json!({"status":"GATE_LOCKED"}), 0, 0, "GATE_LOCKED"),
+                sp::Outcome::BreakerOpen => (serde_json::json!({"status":"BREAKER_OPEN"}), 0, 0, "BREAKER_OPEN"),
+                sp::Outcome::Unavailable(m) => (serde_json::json!({"status":"UNAVAILABLE","note":m}), 0, 0, "UNAVAILABLE"),
+                sp::Outcome::BackendError { kind, message } =>
+                    (serde_json::json!({"status":"BACKEND_ERROR","kind":kind,"message":message}), 0, 0, "BACKEND_ERROR"),
+            };
+            // 仅成功/缓存命中且含 verdict 字段 → 落冲突库 + emit findings（保持既有语义）
             let mut conflict_id = None;
-            if !*dry_run && verdict.get("verdict").is_some() {
+            if (status == "OK" || status == "CACHE_HIT") && verdict.get("verdict").is_some() {
                 conflict_id = Some(cs::insert(&conn, &cs::NewConflict {
                     probe_key: key.clone(),
                     snap_id: snap_id.clone(),
@@ -1187,21 +1180,32 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                     token_in: tok_in,
                     token_out: tok_out,
                 })?);
-                // 入库通路：emit_semantic_findings（沿用既有，只产证据）
                 let findings = vec![verdict.clone()];
                 let _ = world_gov_emit(&conn, "inspect-card", &findings);
             }
             if json {
                 println!("{}", serde_json::to_string_pretty(&serde_json::json!({
                     "command": "world-gov inspect-card", "key": key,
-                    "llm_gate": gate_st, "llm_endpoint": endpoint.safe_snapshot(),
+                    "status": status, "llm_gate": gate_st, "pipeline": oj,
                     "verdict": verdict, "conflict_id": conflict_id,
                     "audit": {"baseline_fp": baseline_fp, "probe_hash": probe_hash, "snap_id": snap_id},
                 }))?);
             } else {
-                println!("== inspect-card --real-semantic ==");
-                println!("三重锁: {}", gate_st["status"]);
-                println!("端点: {}", endpoint.safe_snapshot());
+                println!("== inspect-card --real-semantic（统一 semantic_pipeline）==");
+                println!("状态: {status}");
+                match &outcome {
+                    sp::Outcome::GateLocked(_) => {
+                        println!("[三重锁拦截] 未解锁（缺以下条件）：");
+                        if let Some(m) = gate_st["missing"].as_array() {
+                            for x in m { println!("  ✗ {}", x.as_str().unwrap_or("")); }
+                        }
+                        println!("本次未发出任何请求，未消耗 token。");
+                    }
+                    sp::Outcome::Malformed { attempts, .. } => {
+                        println!("[格式非法] 重试 {attempts} 次仍非合法 JSON（已标记 malformed，未写缓存）。");
+                    }
+                    _ => {}
+                }
                 println!("判定: {}", serde_json::to_string_pretty(&verdict)?);
                 if let Some(id) = conflict_id { println!("已写入冲突库 id={id}（world-gov conflict show {id}）"); }
             }
@@ -2150,8 +2154,9 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                     if !quiet { eprintln!("[note] --dry-run：只渲染报文，不发送、不写缓存（无需开闸门）。"); }
                     true
                 } else {
-                    if !quiet { eprintln!("[note] 三重锁已开；批量真实语义调用为骨架，待放行令填充。"); }
-                    false
+                    // 第 17.3 批：真实批量推理（逐卡走统一 semantic_pipeline；闸门已开）
+                    if !quiet { eprintln!("[note] 三重锁已开；批量真实语义推理逐卡执行（每卡写 conflict_records）。"); }
+                    true
                 }
             } else {
                 false
@@ -2218,10 +2223,58 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                     enqueued += 1;
                 }
             }
+            // 第 17.3 批：真实批量推理（--real-semantic 且非 --dry-run；逐卡走统一 semantic_pipeline）
+            let mut infer: Vec<serde_json::Value> = Vec::new();
+            if *real_semantic && !*dry_run {
+                use ne_agent::governance::{conflict_store as cs, llm_config as ct, prompt_builder as pb, semantic_pipeline as sp};
+                let cfg = ct::load(lib_root)?;
+                let baseline_fp = world_gov::read_baseline_fingerprint(lib_root).unwrap_or_default();
+                let snap_id = wg_latest_snapshot(&conn);
+                for (i, k) in keys.iter().enumerate() {
+                    progress::emit(quiet, "inspect-batch", i + 1, keys.len(), None);
+                    let rec = world_gov::inspect_card(&conn, lib_root, k)?;
+                    if rec["status"] == "NOT_FOUND" {
+                        infer.push(serde_json::json!({"key": k, "status": "NOT_FOUND"}));
+                        continue;
+                    }
+                    let built = pb::build_inspect_prompt(&rec["probe_pack"]);
+                    let ph = wg_probe_hash(&rec["probe_pack"]);
+                    let raw = sp::RawPrompt {
+                        system: built.system.clone(), user: built.user.clone(), probe_hash: ph,
+                        schema: serde_json::Value::Null, ..Default::default()
+                    };
+                    let outcome = sp::call_raw(&conn, lib_root, &cfg, true, &raw)?;
+                    let oj = outcome.to_json();
+                    let status = oj["status"].as_str().unwrap_or("?").to_string();
+                    let mut conflict_id = None;
+                    let (content_opt, tok_in, tok_out) = match &outcome {
+                        sp::Outcome::Success { content, token_in, token_out, .. } =>
+                            (Some(content.clone()), *token_in, *token_out),
+                        sp::Outcome::CacheHit { content, .. } => (Some(content.clone()), 0i64, 0i64),
+                        _ => (None, 0i64, 0i64),
+                    };
+                    if let Some(content) = content_opt {
+                        if content.get("verdict").is_some() {
+                            conflict_id = Some(cs::insert(&conn, &cs::NewConflict {
+                                probe_key: k.clone(), snap_id: snap_id.clone(), baseline_fp: baseline_fp.clone(),
+                                verdict: content.clone(), raw_prompt: built.user.clone(),
+                                raw_response: content.to_string(),
+                                token_in: tok_in, token_out: tok_out,
+                            })?);
+                            world_gov_emit(&conn, "inspect-batch", &[content])?;
+                        }
+                    }
+                    infer.push(serde_json::json!({
+                        "key": k, "status": status, "conflict_id": conflict_id,
+                        "verdict": oj["content"]["verdict"].clone(),
+                    }));
+                }
+            }
             if json {
                 let mut out = report.clone();
                 out["enqueued"] = serde_json::json!(enqueued);
                 if let Some(p) = &preview { out["llm_preview"] = p.clone(); }
+                if !infer.is_empty() { out["inference"] = serde_json::json!(infer.clone()); }
                 println!("{}", serde_json::to_string_pretty(&out)?);
             } else {
                 println!("== inspect-batch（批量检视；{}；默认不推理）==", report["source_kind"].as_str().unwrap_or("-"));
@@ -2248,6 +2301,16 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                 if *dry_run {
                     println!("[--dry-run] 只算数量，未写任何任务/探针{}。",
                         if preview.is_some() { "，未发送、未写缓存" } else { "" });
+                } else if !infer.is_empty() {
+                    println!("── 真实语义推理（{} 条）──", infer.len());
+                    let okn = infer.iter().filter(|x| x["status"] == "OK" || x["status"] == "CACHE_HIT").count();
+                    println!("成功 {okn} / {}；其余看 --json 的 inference 段", infer.len());
+                    for x in infer.iter().take(10) {
+                        println!("  {:<28} [{}] verdict={} conflict={}",
+                            x["key"].as_str().unwrap_or(""), x["status"].as_str().unwrap_or("-"),
+                            x["verdict"].as_str().unwrap_or("-"),
+                            x["conflict_id"].as_i64().map(|i| i.to_string()).unwrap_or_else(|| "-".into()));
+                    }
                 } else if *enqueue {
                     println!("已入队 {enqueued} 条（{}）；推进需手打 world-gov queue step（不自动跑）",
                         if *persist { "持久 task_jobs" } else { "内存队列" });

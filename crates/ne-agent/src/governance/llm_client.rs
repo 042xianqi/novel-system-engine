@@ -1,5 +1,13 @@
 //! LLM 客户端骨架（world-gov，第 13 批）—— OpenAI 兼容调用层。
 //!
+//! # ⚠️ DEPRECATED（第 17.3 批）
+//! 本模块**已被 [`super::semantic_pipeline`] 取代**，仅作**过渡存根**保留：
+//! - 唯一真实外呼入口现为 `semantic_pipeline::call_raw`（统一闸门/熔断/缓存/后端/
+//!   护栏/记账/**修复回合**）；`inspect-card` 已迁移，本模块**不再有生产调用方**。
+//! - `real_call` 从一开始就是未实现的占位（`REAL_LLM_CALL_NOT_IMPLEMENTED`），
+//!   真实 HTTP 由 `llm_adapter` 承担；本模块保留是为兼容既有纯函数单测与审计契约。
+//! - 迁移动机：不维护两套独立 LLM 链路；旧路径缺修复回合，在真实端点上必挂。
+//!
 //! # 默认构建（无 `real-semantic` feature）
 //! **出网代码根本不参与编译**：请求构造（纯函数）保留并可测，但"真正发 HTTP"的分支
 //! 只在 `#[cfg(feature="real-semantic")]` 下存在 → 默认二进制**没有任何出网通路**。

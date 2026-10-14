@@ -1696,26 +1696,34 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                 }
                 SandboxCmd::Spawn { from_snap, save, ai_sandbox, dry_run } => {
                     let r = sb::spawn_from_snapshot(&conn, lib_root, from_snap, *save && !*ai_sandbox)?;
-                    if json { println!("{}", serde_json::to_string_pretty(&r)?); }
-                    else if r["status"] == "SNAPSHOT_NOT_FOUND" {
-                        println!("未找到快照 {from_snap}；先 world-gov diff snap create --label ...");
+                    // 第 18 批修正：--ai-sandbox 时**只输出一个** JSON 文档（spawn 段并入 `spawn` 字段），
+                    // 避免两个顶层 JSON 文档拼接 → jq/解析器报 `Extra data`。
+                    if !*ai_sandbox {
+                        if json { println!("{}", serde_json::to_string_pretty(&r)?); }
+                        else if r["status"] == "SNAPSHOT_NOT_FOUND" {
+                            println!("未找到快照 {from_snap}；先 world-gov diff snap create --label ...");
+                        } else {
+                            println!("== 沙盘 spawn（从快照派生初始态）==");
+                            println!("快照: {}  条目: {}", r["snap_id"].as_str().unwrap_or("-"), r["entries"]);
+                            println!("元指纹: {}", r["meta_fingerprint"].as_str().unwrap_or("-"));
+                            println!("初始态: {}", serde_json::to_string(&r["scenario"]["world"])?);
+                            if r["saved"] == true { println!("已落库为 0 步基线记录 #{}", r["run_id"]); }
+                            println!("{}", r["note"].as_str().unwrap_or(""));
+                        }
                     } else {
-                        println!("== 沙盘 spawn（从快照派生初始态）==");
-                        println!("快照: {}  条目: {}", r["snap_id"].as_str().unwrap_or("-"), r["entries"]);
-                        println!("元指纹: {}", r["meta_fingerprint"].as_str().unwrap_or("-"));
-                        println!("初始态: {}", serde_json::to_string(&r["scenario"]["world"])?);
-                        if r["saved"] == true { println!("已落库为 0 步基线记录 #{}", r["run_id"]); }
-                        println!("{}", r["note"].as_str().unwrap_or(""));
+                        // ai-sandbox 模式：人类可读摘要（JSON 在下方合并输出）
+                        if !json && r.get("scenario").is_some() {
+                            println!("== 沙盘 spawn（从快照派生初始态）==");
+                            println!("快照: {}  条目: {}", r["snap_id"].as_str().unwrap_or("-"), r["entries"]);
+                            println!("初始态: {}", serde_json::to_string(&r["scenario"]["world"])?);
+                        }
                     }
                     // 【规约适配】--ai-sandbox：从快照派生后，用已放行的 LLM 做一次 AI 引导推演。
                     // 默认只算不写；仍受三重锁约束（feature + WOGOV_ALLOW_REAL_LLM=yes + 本次调用）。
                     if *ai_sandbox {
-                        let snap_ok = r["status"] == "PROBE_FROM_SNAPSHOT" || r["status"].is_null()
-                            || r.get("scenario").is_some();
                         if r.get("scenario").is_none() {
                             anyhow::bail!("ai-sandbox 需要可用的快照初始态（快照不存在或不可读）");
                         }
-                        let _ = snap_ok;
                         // 复用统一收口：把派生初始态打包成一步 AI 推演请求
                         use ne_agent::governance::{llm_config as lc, semantic_pipeline as sp};
                         let cfg = lc::load(lib_root)?;
@@ -1731,8 +1739,13 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                         let user = format!("初始态：{}", serde_json::to_string(&r["scenario"]["world"])?);
                         let raw = sp::RawPrompt {
                             system, user, probe_hash: ph,
-                            schema: serde_json::json!({"type":"object","required":["step","state","verdict"],
-                                "properties":{"step":{"type":"integer"},"state":{"type":"object"},
+                            // 第 18 批修正：`step` 对「AI 沙箱一步推演」非语义核心——
+                            // 模型在无明确步号时会合法地返回 `step:null`。原 schema 把 `step`
+                            // 设为 required+integer → 非确定性误拒（GUARD_REJECTED/schema）。
+                            // 修法：`step` 移出 required 且不约束类型；required 只保留语义核心
+                            // （state/verdict）。state 允许扩展字段（additionalProperties 默认放行）。
+                            schema: serde_json::json!({"type":"object","required":["state","verdict"],
+                                "properties":{"step":{},"state":{"type":"object"},
                                 "verdict":{"type":"string"},"note":{"type":"string"}}}),
                             ..Default::default()
                         };

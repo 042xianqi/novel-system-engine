@@ -387,6 +387,30 @@ mod tests {
         assert!(!validate_schema(&json!({"a":"x","b":1}), &sc).is_empty());
     }
 
+    /// 第 18 批修正：ai-sandbox 的 schema（`step` 非必填、不约束类型）对 `step:null` 必须宽容。
+    ///
+    /// 背景：此前的 schema 把 `step` 设为 required+integer → 模型在无明确步号时合法返回
+    /// `step:null` 会被误拒（`GUARD_REJECTED/schema: $.step: 期望 integer，实际 null`）。
+    /// 该 schema 内联在 main.rs 的 ai-sandbox 分支，此处用等价 schema 锁定其判据。
+    #[test]
+    fn ai_sandbox_schema_tolerates_null_step() {
+        let sc = json!({"type":"object","required":["state","verdict"],
+            "properties":{"step":{},"state":{"type":"object"},
+            "verdict":{"type":"string"},"note":{"type":"string"}}});
+        // 模型返回 step=null（无步号）→ 必须通过
+        let null_step = json!({"step":null,"state":{"chapter":0},"verdict":"目标不明确"});
+        assert!(validate_schema(&null_step, &sc).is_empty(), "null-step 不应被拒：{:?}", validate_schema(&null_step, &sc));
+        // step 完全缺失 → 也通过（非必填）
+        let no_step = json!({"state":{"chapter":0},"verdict":"ok"});
+        assert!(validate_schema(&no_step, &sc).is_empty());
+        // 语义核心缺失 → 必须拒
+        assert!(!validate_schema(&json!({"step":0}), &sc).is_empty(), "缺 state/verdict 应被拒");
+        assert!(!validate_schema(&json!({"state":{}}), &sc).is_empty(), "缺 verdict 应被拒");
+        // state 允许扩展字段（无 additionalProperties:false）
+        let rich = json!({"state":{"a":1,"b":{"c":2}},"verdict":"ok","extra":"x"});
+        assert!(validate_schema(&rich, &sc).is_empty());
+    }
+
     #[test]
     fn collect_entity_ids_paths() {
         let inst = json!({"state_delta":[{"entity":"A"},{"entity":"B"}],"new_relations":[{"a":"C","b":"D"}]});

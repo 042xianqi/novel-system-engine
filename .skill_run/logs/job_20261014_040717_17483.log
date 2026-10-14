@@ -1,0 +1,28 @@
+==== 数据库路径 ====
+/sdcard/Download/小说相关备份/projects/projects/系统/资料库/novel.db
+==== 记忆子系统 5 表 ====
+  long_term_memory: 8 行
+  mid_term_snapshot: 0 行
+  short_term_memory: 0 行
+  chapter_meta: 0 行
+  system_config: 6 行
+总表数: 70
+==== system_config 种子 ====
+  mem.memory_inject_max_token = 24000
+  mem.model_context_window = 128000
+  mem.model_max_output = 32000
+  mem.short_term_window = 8
+  mem.snapshot_interval = 30
+  mem.total_input_max_token = 96000
+==== long_term_memory 条目 ====
+  世界观铁则 / 全局世界观铁则 (799 字符)
+  角色静态档案 / 全局角色档案库 (712 字符)
+  锚点元 / 跨卷线锚点表 (1790 字符)
+  顶层设定 / 整本概括 (2256 字符)
+  顶层设定 / 故事脊梁 (1925 字符)
+  分卷大纲 / 叙事总纲 (2185 字符)
+  分卷大纲 / 宏大对抗总规划 (1392 字符)
+  分卷大纲 / 规划约束护栏 (1442 字符)
+long_term_memory 条数: 8
+char_state 行数(既有表，应不变): 239
+RESULT=DB_SANITY_DONE

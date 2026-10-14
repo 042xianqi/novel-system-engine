@@ -2,11 +2,19 @@
 """记忆子系统素材导入工具（需求文档 §五 · 一次性导入）。
 
 用法:
-    python3 tools/memory/import_ltm.py <库根>            # 导入 L0/L0.5/L1/L2 + 锚点
+    python3 tools/memory/import_ltm.py <库根>            # 导入
     python3 tools/memory/import_ltm.py <库根> --dry-run  # 只打印，不写库
+    python3 tools/memory/import_ltm.py --dry-run --lib <库根>   # 等价别名
 
-原则（§五.2）: 运行期不再读 md；本工具是**唯一**的 md → DB 入口。
-导入后修改设定请走 DB（system_config / long_term_memory），md 仅作外部备份。
+**注意：库根参数不可省略**（下面的 SOURCES 是库根内相对路径）。
+
+# 单源原则（2026-10-14 修「素材双份」问题）
+
+本脚本是 md → `long_term_memory` 的**唯一入口**，且**只读唯一权威源目录**：
+    `02_资料库/_规范/全局铁则/`（3 个 md）
+
+副本（`05_管线框架/prompts/l5_正文.md` 内嵌的「全局铁则」段）**不在导入列表内**，
+仅作人工查阅备份，文件头已标注「禁止编辑」。修改设定请改权威源后重跑本脚本。
 """
 import json
 import os
@@ -14,6 +22,7 @@ import sqlite3
 import sys
 
 # ── L0-L2 素材 → long_term_memory（category, key, 相对路径, priority）
+#    【唯一权威源】以下路径是程序读取的全部来源；任何副本不得进入本列表。
 SOURCES = [
     ("顶层设定", "整本概括", "03_叙事规划/00_整本概括.md", 10),
     ("顶层设定", "故事脊梁", "03_叙事规划/00_故事脊梁.md", 11),
@@ -25,12 +34,29 @@ SOURCES = [
 # 跨卷锚点元（§二 SYS_LAYER_1「跨卷锚点元规则」，来自细纲目录既有表）
 ANCHOR_PATH = "03_叙事规划/细纲/跨卷线锚点表.md"
 
-# 全局铁则素材（本轮 v5 新建）
+# 全局铁则素材【唯一权威源目录】
+#   禁止把 `05_管线框架/prompts/l5_正文.md` 的内嵌副本列入此处（双源不同步风险）。
 IRONLAW_DIR = "02_资料库/_规范/全局铁则"
 IRONLAW_FILES = [
     ("世界观铁则", "全局世界观铁则", "_全局世界观铁则.md", 1),
     ("角色静态档案", "全局角色档案库", "_全局角色档案库.md", 2),
 ]
+
+# 明确屏蔽的副本（防止将来误加回导入列表）
+FORBIDDEN_SOURCES = ["05_管线框架/prompts/l5_正文.md"]
+
+
+def assert_no_duplicate_source():
+    """守卫：确保没有把副本列进导入列表（双源不同步的根因）。"""
+    all_paths = [p for _, _, p, _ in SOURCES]
+    all_paths += [f"{IRONLAW_DIR}/{f}" for _, _, f, _ in IRONLAW_FILES]
+    all_paths.append(ANCHOR_PATH)
+    for bad in FORBIDDEN_SOURCES:
+        if bad in all_paths:
+            raise SystemExit(f"[FATAL] 导入列表含副本 {bad}：违反单源原则")
+    dup = {p for p in all_paths if all_paths.count(p) > 1}
+    if dup:
+        raise SystemExit(f"[FATAL] 导入列表有重复条目: {dup}")
 
 
 def read(root, rel):
@@ -42,11 +68,24 @@ def read(root, rel):
 
 
 def main():
-    if len(sys.argv) < 2:
+    argv = sys.argv[1:]
+    dry = "--dry-run" in argv
+    # 库根：支持位置参数，也支持 `--lib <dir>`（与 ne-agent 的 `--lib` 风格一致）
+    root = None
+    for i, a in enumerate(argv):
+        if a == "--lib" and i + 1 < len(argv):
+            root = argv[i + 1]
+            break
+    if root is None:
+        pos = [a for a in argv if not a.startswith("--")]
+        if pos:
+            root = pos[0]
+    if root is None:
         print(__doc__)
+        print("错误：缺少库根参数。例：python3 tools/memory/import_ltm.py <库根> --dry-run")
         return 2
-    root = sys.argv[1]
-    dry = "--dry-run" in sys.argv
+    # 单源守卫（防止副本被误加回导入列表）
+    assert_no_duplicate_source()
     db = os.path.join(root, "novel.db")
     if not os.path.exists(db):
         print(f"库根无 novel.db: {root}")

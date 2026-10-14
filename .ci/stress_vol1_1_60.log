@@ -37,3 +37,396 @@
   · 记忆警告：锚点出现多个候选词 ["锚点", "面板"]，未写入快照（待人工复核）
   · chapter_meta 已存档（in≈778 / out≈2125 token）
 --- 正在生成 第6章 ---
+  · 情绪回写 CHAR-99-001: ch6 dominant=fear
+  · 情绪回写 CHAR-99-097: ch6 dominant=—
+  · 记忆回写：提取 1 项，警告 2，裁旧 0 章
+  · 记忆警告：伤势出现多个候选词 ["伤口", "断"]，未写入快照（待人工复核）
+  · 记忆警告：锚点出现多个候选词 ["面板", "推演"]，未写入快照（待人工复核）
+  · chapter_meta 已存档（in≈777 / out≈1839 token）
+--- 正在生成 第7章 ---
+  · P1-PARAGRAPH_FIX 修改段落数：18（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch7 dominant=calm
+  · 情绪回写 CHAR-99-001: ch7 dominant=fear
+  · 情绪回写 CHAR-99-097: ch7 dominant=—
+  · 记忆回写：提取 3 项，警告 0，裁旧 0 章
+  · chapter_meta 已存档（in≈810 / out≈2385 token）
+--- 正在生成 第8章 ---
+  · P1-PARAGRAPH_FIX 修改段落数：18（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch8 dominant=calm
+  · 情绪回写 CHAR-99-001: ch8 dominant=fear
+  · 情绪回写 CHAR-99-097: ch8 dominant=—
+  · 记忆回写：提取 3 项，警告 0，裁旧 0 章
+  · chapter_meta 已存档（in≈818 / out≈2261 token）
+--- 正在生成 第9章 ---
+  · P1-PARAGRAPH_FIX 修改段落数：12（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch9 dominant=calm
+  · 情绪回写 CHAR-99-001: ch9 dominant=fear
+  · 情绪回写 CHAR-99-097: ch9 dominant=—
+  · 记忆回写：提取 1 项，警告 0，裁旧 1 章
+  · chapter_meta 已存档（in≈836 / out≈1811 token）
+--- 正在生成 第10章 ---
+  · 情绪回写 CHAR-90-038: ch10 dominant=calm
+  · 情绪回写 CHAR-99-001: ch10 dominant=fear
+  · 情绪回写 CHAR-99-097: ch10 dominant=—
+  · 记忆回写：提取 0 项，警告 1，裁旧 2 章
+  · 记忆警告：锚点出现多个候选词 ["面板", "推演"]，未写入快照（待人工复核）
+  · chapter_meta 已存档（in≈821 / out≈1970 token）
+--- 正在生成 第11章 ---
+  · 情绪回写 CHAR-99-001: ch11 dominant=fear
+  · 情绪回写 CHAR-99-097: ch11 dominant=—
+  · 记忆回写：提取 1 项，警告 2，裁旧 3 章
+  · 记忆警告：伤势出现多个候选词 ["伤口", "断"]，未写入快照（待人工复核）
+  · 记忆警告：道具出现多个候选词 ["草药", "布条"]，未写入快照（待人工复核）
+  · chapter_meta 已存档（in≈783 / out≈1717 token）
+--- 正在生成 第12章 ---
+  · 情绪回写 CHAR-90-038: ch12 dominant=calm
+  · 情绪回写 CHAR-99-001: ch12 dominant=fear
+  · 情绪回写 CHAR-99-097: ch12 dominant=—
+  · 记忆回写：提取 1 项，警告 1，裁旧 4 章
+  · 记忆警告：道具出现多个候选词 ["草药", "竹篓"]，未写入快照（待人工复核）
+  · chapter_meta 已存档（in≈802 / out≈2437 token）
+--- 正在生成 第13章 ---
+  · 情绪回写 CHAR-99-001: ch13 dominant=fear
+  · 情绪回写 CHAR-99-097: ch13 dominant=—
+  · 记忆回写：提取 0 项，警告 2，裁旧 5 章
+  · 记忆警告：伤势出现多个候选词 ["伤口", "包扎", "断"]，未写入快照（待人工复核）
+  · 记忆警告：道具出现多个候选词 ["草药", "铜钱", "布条"]，未写入快照（待人工复核）
+  · chapter_meta 已存档（in≈793 / out≈1842 token）
+--- 正在生成 第14章 ---
+  · 情绪回写 CHAR-90-038: ch14 dominant=calm
+  · 情绪回写 CHAR-99-001: ch14 dominant=fear
+  · 情绪回写 CHAR-99-097: ch14 dominant=—
+  · 记忆回写：提取 2 项，警告 1，裁旧 6 章
+  · 记忆警告：道具出现多个候选词 ["草药", "铜钱", "布条"]，未写入快照（待人工复核）
+  · chapter_meta 已存档（in≈798 / out≈1913 token）
+--- 正在生成 第15章 ---
+  · P1-PARAGRAPH_FIX 修改段落数：11（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch15 dominant=calm
+  · 情绪回写 CHAR-99-001: ch15 dominant=fear
+  · 情绪回写 CHAR-99-097: ch15 dominant=—
+  · 记忆回写：提取 2 项，警告 0，裁旧 7 章
+  · chapter_meta 已存档（in≈786 / out≈1739 token）
+--- 正在生成 第16章 ---
+  · 情绪回写 CHAR-99-001: ch16 dominant=fear
+  · 记忆回写：提取 0 项，警告 3，裁旧 8 章
+  · 记忆警告：伤势出现多个候选词 ["淤", "断"]，未写入快照（待人工复核）
+  · 记忆警告：道具出现多个候选词 ["铜钱", "布条"]，未写入快照（待人工复核）
+  · 记忆警告：锚点出现多个候选词 ["面板", "推演"]，未写入快照（待人工复核）
+  · chapter_meta 已存档（in≈787 / out≈2161 token）
+--- 正在生成 第17章 ---
+  · 情绪回写 CHAR-90-038: ch17 dominant=calm
+  · 情绪回写 CHAR-99-001: ch17 dominant=fear
+  · 记忆回写：提取 0 项，警告 2，裁旧 9 章
+  · 记忆警告：伤势出现多个候选词 ["淤", "断"]，未写入快照（待人工复核）
+  · 记忆警告：锚点出现多个候选词 ["面板", "推演"]，未写入快照（待人工复核）
+  · chapter_meta 已存档（in≈807 / out≈1895 token）
+--- 正在生成 第18章 ---
+  · P1-PARAGRAPH_FIX 修改段落数：6（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch18 dominant=calm
+  · 情绪回写 CHAR-99-001: ch18 dominant=fear
+  · 记忆回写：提取 1 项，警告 1，裁旧 10 章
+  · 记忆警告：锚点出现多个候选词 ["面板", "推演"]，未写入快照（待人工复核）
+  · chapter_meta 已存档（in≈785 / out≈1468 token）
+--- 正在生成 第19章 ---
+  · P1-PARAGRAPH_FIX 修改段落数：8（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch19 dominant=calm
+  · 情绪回写 CHAR-99-001: ch19 dominant=fear
+  · 记忆回写：提取 1 项，警告 1，裁旧 11 章
+  · 记忆警告：锚点出现多个候选词 ["面板", "推演"]，未写入快照（待人工复核）
+  · chapter_meta 已存档（in≈789 / out≈1587 token）
+--- 正在生成 第20章 ---
+  · P1-PARAGRAPH_FIX 修改段落数：15（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch20 dominant=calm
+  · 情绪回写 CHAR-99-001: ch20 dominant=fear
+  · 记忆回写：提取 1 项，警告 1，裁旧 12 章
+  · 记忆警告：锚点出现多个候选词 ["面板", "推演"]，未写入快照（待人工复核）
+  · chapter_meta 已存档（in≈789 / out≈1958 token）
+--- 正在生成 第21章 ---
+  · P1-PARAGRAPH_FIX 修改段落数：13（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch21 dominant=calm
+  · 情绪回写 CHAR-99-001: ch21 dominant=fear
+  · 记忆回写：提取 2 项，警告 1，裁旧 13 章
+  · 记忆警告：锚点出现多个候选词 ["锚点", "面板", "推演"]，未写入快照（待人工复核）
+  · chapter_meta 已存档（in≈795 / out≈1637 token）
+--- 正在生成 第22章 ---
+  · P1-PARAGRAPH_FIX 修改段落数：18（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch22 dominant=calm
+  · 情绪回写 CHAR-99-001: ch22 dominant=fear
+  · 记忆回写：提取 2 项，警告 1，裁旧 14 章
+  · 记忆警告：锚点出现多个候选词 ["面板", "推演"]，未写入快照（待人工复核）
+  · chapter_meta 已存档（in≈793 / out≈1931 token）
+--- 正在生成 第23章 ---
+  · P1 P1_PARAGRAPH: P1-PARAGRAPH_FIX 修改段落数：2
+  · P1-PARAGRAPH_FIX 修改段落数：2（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch23 dominant=calm
+  · 情绪回写 CHAR-99-001: ch23 dominant=fear
+  · 记忆回写：提取 1 项，警告 0，裁旧 15 章
+  · chapter_meta 已存档（in≈788 / out≈491 token）
+--- 正在生成 第24章 ---
+  · P1 P1_PARAGRAPH: P1-PARAGRAPH_FIX 修改段落数：13
+  · P1-PARAGRAPH_FIX 修改段落数：13（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch24 dominant=calm
+  · 情绪回写 CHAR-99-001: ch24 dominant=fear
+  · 记忆回写：提取 2 项，警告 0，裁旧 16 章
+  · chapter_meta 已存档（in≈792 / out≈1738 token）
+--- 正在生成 第25章 ---
+  · 情绪回写 CHAR-90-038: ch25 dominant=calm
+  · 情绪回写 CHAR-99-001: ch25 dominant=fear
+  · 记忆回写：提取 1 项，警告 2，裁旧 17 章
+  · 记忆警告：修为出现多个候选词 ["炼气", "凡人"]，未写入快照（待人工复核）
+  · 记忆警告：锚点出现多个候选词 ["锚点", "面板"]，未写入快照（待人工复核）
+  · chapter_meta 已存档（in≈797 / out≈2489 token）
+--- 正在生成 第26章 ---
+  · P1-PARAGRAPH_FIX 修改段落数：11（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch26 dominant=calm
+  · 情绪回写 CHAR-99-001: ch26 dominant=fear
+  · 情绪回写 CHAR-99-097: ch26 dominant=—
+  · 记忆回写：提取 3 项，警告 0，裁旧 18 章
+  · chapter_meta 已存档（in≈790 / out≈2224 token）
+--- 正在生成 第27章 ---
+  · P1-PARAGRAPH_FIX 修改段落数：21（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch27 dominant=calm
+  · 情绪回写 CHAR-99-001: ch27 dominant=fear
+  · 情绪回写 CHAR-99-097: ch27 dominant=—
+  · 记忆回写：提取 4 项，警告 0，裁旧 19 章
+  · chapter_meta 已存档（in≈789 / out≈2304 token）
+--- 正在生成 第28章 ---
+  · P1-PARAGRAPH_FIX 修改段落数：6（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch28 dominant=calm
+  · 情绪回写 CHAR-99-001: ch28 dominant=fear
+  · 情绪回写 CHAR-99-097: ch28 dominant=—
+  · 记忆回写：提取 1 项，警告 0，裁旧 20 章
+  · chapter_meta 已存档（in≈784 / out≈1515 token）
+--- 正在生成 第29章 ---
+  · P1-PARAGRAPH_FIX 修改段落数：13（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch29 dominant=calm
+  · 情绪回写 CHAR-99-001: ch29 dominant=fear
+  · 情绪回写 CHAR-99-097: ch29 dominant=—
+  · 记忆回写：提取 2 项，警告 0，裁旧 21 章
+  · chapter_meta 已存档（in≈789 / out≈1800 token）
+--- 正在生成 第30章 ---
+  · P1-PARAGRAPH_FIX 修改段落数：20（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch30 dominant=calm
+  · 情绪回写 CHAR-99-001: ch30 dominant=fear
+  · 情绪回写 CHAR-99-097: ch30 dominant=—
+  · 记忆回写：提取 2 项，警告 0，裁旧 22 章，快照 SNAP-0030
+  · chapter_meta 已存档（in≈792 / out≈2365 token）
+--- 正在生成 第31章 ---
+  · P1-PARAGRAPH_FIX 修改段落数：17（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch31 dominant=calm
+  · 情绪回写 CHAR-99-001: ch31 dominant=fear
+  · 记忆回写：提取 1 项，警告 1，裁旧 23 章
+  · 记忆警告：道具出现多个候选词 ["草药", "铜钱"]，未写入快照（待人工复核）
+  · chapter_meta 已存档（in≈2196 / out≈2073 token）
+--- 正在生成 第32章 ---
+  · 情绪回写 CHAR-90-038: ch32 dominant=calm
+  · 情绪回写 CHAR-99-001: ch32 dominant=fear
+  · 记忆回写：提取 1 项，警告 2，裁旧 24 章
+  · 记忆警告：道具出现多个候选词 ["草药", "竹篓"]，未写入快照（待人工复核）
+  · 记忆警告：锚点出现多个候选词 ["锚点", "面板"]，未写入快照（待人工复核）
+  · chapter_meta 已存档（in≈2195 / out≈2403 token）
+--- 正在生成 第33章 ---
+  · P1 P1_PARAGRAPH: P1-PARAGRAPH_FIX 修改段落数：20
+  · P1-PARAGRAPH_FIX 修改段落数：20（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch33 dominant=calm
+  · 情绪回写 CHAR-99-001: ch33 dominant=fear
+  · 记忆回写：提取 3 项，警告 0，裁旧 25 章
+  · chapter_meta 已存档（in≈2190 / out≈1922 token）
+--- 正在生成 第34章 ---
+  · P1 P1_PARAGRAPH: P1-PARAGRAPH_FIX 修改段落数：18
+  · P1-PARAGRAPH_FIX 修改段落数：18（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch34 dominant=calm
+  · 情绪回写 CHAR-99-001: ch34 dominant=fear
+  · 记忆回写：提取 2 项，警告 0，裁旧 26 章
+  · chapter_meta 已存档（in≈2194 / out≈1892 token）
+--- 正在生成 第35章 ---
+  · P1 P1_PARAGRAPH: P1-PARAGRAPH_FIX 修改段落数：17
+  · P1-PARAGRAPH_FIX 修改段落数：17（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch35 dominant=calm
+  · 情绪回写 CHAR-99-001: ch35 dominant=fear
+  · 记忆回写：提取 2 项，警告 0，裁旧 27 章
+  · chapter_meta 已存档（in≈2198 / out≈2194 token）
+--- 正在生成 第36章 ---
+  · 情绪回写 CHAR-90-038: ch36 dominant=calm
+  · 情绪回写 CHAR-99-001: ch36 dominant=fear
+  · 情绪回写 CHAR-99-097: ch36 dominant=—
+  · 记忆回写：提取 0 项，警告 1，裁旧 28 章
+  · 记忆警告：伤势出现多个候选词 ["包扎", "断"]，未写入快照（待人工复核）
+  · chapter_meta 已存档（in≈2229 / out≈1808 token）
+--- 正在生成 第37章 ---
+  · P1-PARAGRAPH_FIX 修改段落数：15（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch37 dominant=calm
+  · 情绪回写 CHAR-99-001: ch37 dominant=fear
+  · 情绪回写 CHAR-99-097: ch37 dominant=—
+  · 记忆回写：提取 2 项，警告 0，裁旧 29 章
+  · chapter_meta 已存档（in≈2225 / out≈2022 token）
+--- 正在生成 第38章 ---
+  · P1-PARAGRAPH_FIX 修改段落数：15（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch38 dominant=calm
+  · 情绪回写 CHAR-99-001: ch38 dominant=fear
+  · 情绪回写 CHAR-99-097: ch38 dominant=—
+  · 记忆回写：提取 2 项，警告 0，裁旧 30 章
+  · chapter_meta 已存档（in≈2220 / out≈1896 token）
+--- 正在生成 第39章 ---
+  · P1-PARAGRAPH_FIX 修改段落数：10（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch39 dominant=calm
+  · 情绪回写 CHAR-99-001: ch39 dominant=fear
+  · 情绪回写 CHAR-99-097: ch39 dominant=—
+  · 记忆回写：提取 1 项，警告 0，裁旧 31 章
+  · chapter_meta 已存档（in≈2225 / out≈1650 token）
+--- 正在生成 第40章 ---
+  · P1-PARAGRAPH_FIX 修改段落数：17（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch40 dominant=calm
+  · 情绪回写 CHAR-99-001: ch40 dominant=fear
+  · 情绪回写 CHAR-99-097: ch40 dominant=—
+  · 记忆回写：提取 1 项，警告 0，裁旧 32 章
+  · chapter_meta 已存档（in≈2232 / out≈1945 token）
+--- 正在生成 第41章 ---
+  · P1-PARAGRAPH_FIX 修改段落数：15（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch41 dominant=calm
+  · 情绪回写 CHAR-99-001: ch41 dominant=fear
+  · 记忆回写：提取 0 项，警告 1，裁旧 33 章
+  · 记忆警告：锚点出现多个候选词 ["面板", "推演"]，未写入快照（待人工复核）
+  · chapter_meta 已存档（in≈2227 / out≈2374 token）
+--- 正在生成 第42章 ---
+  · P1 P1_PARAGRAPH: P1-PARAGRAPH_FIX 修改段落数：10
+  · P1-PARAGRAPH_FIX 修改段落数：10（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch42 dominant=calm
+  · 情绪回写 CHAR-99-001: ch42 dominant=fear
+  · 记忆回写：提取 2 项，警告 0，裁旧 34 章
+  · chapter_meta 已存档（in≈2225 / out≈1751 token）
+--- 正在生成 第43章 ---
+  · 情绪回写 CHAR-90-038: ch43 dominant=calm
+  · 情绪回写 CHAR-99-001: ch43 dominant=fear
+  · 记忆回写：提取 0 项，警告 2，裁旧 35 章
+  · 记忆警告：道具出现多个候选词 ["灵石", "布条"]，未写入快照（待人工复核）
+  · 记忆警告：锚点出现多个候选词 ["锚点", "面板", "推演"]，未写入快照（待人工复核）
+  · chapter_meta 已存档（in≈2220 / out≈1511 token）
+--- 正在生成 第44章 ---
+  · P1-PARAGRAPH_FIX 修改段落数：14（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch44 dominant=calm
+  · 情绪回写 CHAR-99-001: ch44 dominant=fear
+  · 记忆回写：提取 0 项，警告 1，裁旧 36 章
+  · 记忆警告：锚点出现多个候选词 ["锚点", "面板"]，未写入快照（待人工复核）
+  · chapter_meta 已存档（in≈2224 / out≈1767 token）
+--- 正在生成 第45章 ---
+  · P1-PARAGRAPH_FIX 修改段落数：16（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch45 dominant=calm
+  · 情绪回写 CHAR-99-001: ch45 dominant=fear
+  · 记忆回写：提取 1 项，警告 1，裁旧 37 章
+  · 记忆警告：锚点出现多个候选词 ["锚点", "面板", "推演"]，未写入快照（待人工复核）
+  · chapter_meta 已存档（in≈2229 / out≈1771 token）
+--- 正在生成 第46章 ---
+  · P1-PARAGRAPH_FIX 修改段落数：9（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch46 dominant=calm
+  · 情绪回写 CHAR-99-001: ch46 dominant=fear
+  · 情绪回写 CHAR-99-097: ch46 dominant=—
+  · 记忆回写：提取 2 项，警告 0，裁旧 38 章
+  · chapter_meta 已存档（in≈2231 / out≈1245 token）
+--- 正在生成 第47章 ---
+  · P1-PARAGRAPH_FIX 修改段落数：16（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch47 dominant=calm
+  · 情绪回写 CHAR-99-001: ch47 dominant=fear
+  · 情绪回写 CHAR-99-097: ch47 dominant=—
+  · 记忆回写：提取 3 项，警告 0，裁旧 39 章
+  · chapter_meta 已存档（in≈2226 / out≈1922 token）
+--- 正在生成 第48章 ---
+  · 情绪回写 CHAR-90-038: ch48 dominant=calm
+  · 情绪回写 CHAR-99-001: ch48 dominant=fear
+  · 情绪回写 CHAR-99-097: ch48 dominant=—
+  · 记忆回写：提取 3 项，警告 1，裁旧 40 章
+  · 记忆警告：道具出现多个候选词 ["草药", "铜钱"]，未写入快照（待人工复核）
+  · chapter_meta 已存档（in≈2221 / out≈2613 token）
+--- 正在生成 第49章 ---
+  · P1-PARAGRAPH_FIX 修改段落数：13（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch49 dominant=calm
+  · 情绪回写 CHAR-99-001: ch49 dominant=fear
+  · 情绪回写 CHAR-99-097: ch49 dominant=—
+  · 记忆回写：提取 1 项，警告 0，裁旧 41 章
+  · chapter_meta 已存档（in≈2225 / out≈1272 token）
+--- 正在生成 第50章 ---
+  · P1-PARAGRAPH_FIX 修改段落数：10（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch50 dominant=calm
+  · 情绪回写 CHAR-99-001: ch50 dominant=fear
+  · 情绪回写 CHAR-99-097: ch50 dominant=—
+  · 记忆回写：提取 2 项，警告 0，裁旧 42 章
+  · chapter_meta 已存档（in≈2233 / out≈1313 token）
+--- 正在生成 第51章 ---
+  · P1 G15_family_consistency: 称谓「弟弟」提及「来镇上找」≠canon「陈默」（家庭定版·后续不得改）
+  · P1-PARAGRAPH_FIX 修改段落数：9（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch51 dominant=calm
+  · 情绪回写 CHAR-99-001: ch51 dominant=fear
+  · 记忆回写：提取 1 项，警告 0，裁旧 43 章
+  · chapter_meta 已存档（in≈2244 / out≈1536 token）
+--- 正在生成 第52章 ---
+  · P1 G15_family_consistency: 称谓「弟弟」提及「十四岁那」≠canon「陈默」（家庭定版·后续不得改）
+  · P1-PARAGRAPH_FIX 修改段落数：12（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch52 dominant=calm
+  · 情绪回写 CHAR-99-001: ch52 dominant=fear
+  · 记忆回写：提取 2 项，警告 0，裁旧 44 章
+  · chapter_meta 已存档（in≈2245 / out≈1307 token）
+--- 正在生成 第53章 ---
+  · P1 G15_family_consistency: 称谓「弟弟」提及「性子随你」≠canon「陈默」（家庭定版·后续不得改）
+  · P1-PARAGRAPH_FIX 修改段落数：14（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch53 dominant=calm
+  · 情绪回写 CHAR-99-001: ch53 dominant=fear
+  · 记忆回写：提取 2 项，警告 0，裁旧 45 章
+  · chapter_meta 已存档（in≈2240 / out≈1812 token）
+--- 正在生成 第54章 ---
+  · P1 G15_family_consistency: 称谓「弟弟」提及「退路留好」≠canon「陈默」（家庭定版·后续不得改）
+  · P1-PARAGRAPH_FIX 修改段落数：5（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch54 dominant=calm
+  · 情绪回写 CHAR-99-001: ch54 dominant=fear
+  · 记忆回写：提取 0 项，警告 0，裁旧 46 章
+  · chapter_meta 已存档（in≈2245 / out≈1465 token）
+--- 正在生成 第55章 ---
+  · P1-PARAGRAPH_FIX 修改段落数：19（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch55 dominant=calm
+  · 情绪回写 CHAR-99-001: ch55 dominant=fear
+  · 记忆回写：提取 1 项，警告 1，裁旧 47 章
+  · 记忆警告：锚点出现多个候选词 ["面板", "推演"]，未写入快照（待人工复核）
+  · chapter_meta 已存档（in≈2246 / out≈1975 token）
+--- 正在生成 第56章 ---
+  · P1 P1_PARAGRAPH: P1-PARAGRAPH_FIX 修改段落数：16
+  · P1-PARAGRAPH_FIX 修改段落数：16（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch56 dominant=calm
+  · 情绪回写 CHAR-99-001: ch56 dominant=fear
+  · 记忆回写：提取 2 项，警告 0，裁旧 48 章
+  · chapter_meta 已存档（in≈2197 / out≈2085 token）
+--- 正在生成 第57章 ---
+  · P1 P1_PARAGRAPH: P1-PARAGRAPH_FIX 修改段落数：9
+  · P1-PARAGRAPH_FIX 修改段落数：9（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch57 dominant=calm
+  · 情绪回写 CHAR-99-001: ch57 dominant=fear
+  · 记忆回写：提取 2 项，警告 0，裁旧 49 章
+  · chapter_meta 已存档（in≈2203 / out≈1168 token）
+--- 正在生成 第58章 ---
+  · P1 P1_PARAGRAPH: P1-PARAGRAPH_WARN 逗号句号比值超出参考区间，建议人工复核文笔节奏
+  · P1-PARAGRAPH_FIX 修改段落数：22（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch58 dominant=calm
+  · 情绪回写 CHAR-99-001: ch58 dominant=fear
+  · 记忆回写：提取 1 项，警告 0，裁旧 50 章
+  · chapter_meta 已存档（in≈2198 / out≈2353 token）
+--- 正在生成 第59章 ---
+  · P1 P1_PARAGRAPH: P1-PARAGRAPH_FIX 修改段落数：11
+  · P1-PARAGRAPH_FIX 修改段落数：11（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch59 dominant=calm
+  · 情绪回写 CHAR-99-001: ch59 dominant=fear
+  · 记忆回写：提取 1 项，警告 0，裁旧 51 章
+  · chapter_meta 已存档（in≈2203 / out≈1737 token）
+--- 正在生成 第60章 ---
+  · P1 P1_PARAGRAPH: P1-PARAGRAPH_FIX 修改段落数：16
+  · P1-PARAGRAPH_FIX 修改段落数：16（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch60 dominant=calm
+  · 情绪回写 CHAR-99-001: ch60 dominant=fear
+  · 记忆回写：提取 1 项，警告 0，裁旧 52 章，快照 SNAP-0060
+  · chapter_meta 已存档（in≈2199 / out≈2116 token）
+
+===== 压力测试完成 (fail=0) =====
+请核查：
+1. mid_term_snapshot 是否自动生成（30/60 章触发快照）
+2. chapter_meta 表 60 条记录完整（原始细纲/压缩细纲/token统计/status）
+3. short_term_memory 窗口正确裁剪，不无限膨胀
+4. post_update 实体提取，歧义带警告，无 AI 脑补
+5. 回滚功能：指定快照 ID 做一次人工回滚测试
+RESULT=STRESS_DONE fail=0

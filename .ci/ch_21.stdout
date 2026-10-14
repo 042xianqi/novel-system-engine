@@ -1,0 +1,15 @@
+第 21 章（卷01） 1849 字 · 门禁 REJECT
+  已落盘：/root/stress_lib/04_正文/卷01/第21章.md
+  P0 1 · P1 4
+  P1-PARAGRAPH_FIX 修改段落数：13
+  · P0 G03_shuang_interval: 滚动5章0大爽点
+  · P1 G02_hook_density: 章末钩密度不足（命中0<1）
+  · P1 G07_OOC: WORLD_CONSISTENCY_CANON [CHAR-90-038] kbid=16; term='炼气'; ta…
+  · P1 G13_scoring_67dim: 库规模未达标：人物数量达标(242/249)，地点数量达标(41/146)，事件数量达标(98/156)
+  · P1 P1_PARAGRAPH: P1-PARAGRAPH_FIX 修改段落数：13
+  · P1-PARAGRAPH_FIX 修改段落数：13（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch21 dominant=calm
+  · 情绪回写 CHAR-99-001: ch21 dominant=fear
+  · 记忆回写：提取 2 项，警告 1，裁旧 13 章
+  · 记忆警告：锚点出现多个候选词 ["锚点", "面板", "推演"]，未写入快照（待人工复核）
+  · chapter_meta 已存档（in≈795 / out≈1637 token）

@@ -1,0 +1,36 @@
+nohup: ignoring input
+warning: unused variable: `x`
+   --> crates/ne-engine/src/ctx.rs:226:29
+    |
+226 | ...f let Some(x)=v { any=true; }
+    |               ^ help: if this is intentional, prefix it with an underscore: `_x`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `CANON_NAMES` is never used
+  --> crates/ne-engine/src/gate14.rs:44:7
+   |
+44 | const CANON_NAMES: [&str; 4] = [...
+   |       ^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ne-engine` (lib) generated 2 warnings (run `cargo fix --lib -p ne-engine` to apply 1 suggestion)
+warning: unused import: `super::*`
+ --> crates/ne-agent/src/session_tests.rs:5:9
+  |
+5 |     use super::*;
+  |         ^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ne-agent` (lib test) generated 1 warning (run `cargo fix --lib -p ne-agent --tests` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 0.40s
+     Running unittests src/lib.rs (target/release/deps/ne_agent-0691704e02c4d7b6)
+
+running 2 tests
+test memory_system::tests::rollback_missing_snapshot_errors ... ok
+test memory_system::tests::rollback_restores_char_state ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 267 filtered out; finished in 0.00s
+

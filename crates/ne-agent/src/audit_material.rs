@@ -257,32 +257,93 @@ pub fn audit_chapter(lib_root: &Path, volume: &str, chapter: u32) -> Result<Chap
         status: Status::NotQueried,
         evidence: "生成链走 budget::select_materials（按 card_refs 顺序遍历+预算）。rank_cards 仅用于 ne-mcp:ne_inject 预览。".into(),
     });
-    // ── ⑦ L0/L1/L1x/L2：全仓库无代码读它们 → 完全没查询。
-    for (name, path) in [
-        ("L0 整本概括", "03_叙事规划/00_整本概括.md"),
-        ("L1 叙事总纲", "03_叙事规划/00_叙事总纲.md"),
-        ("L1x 宏大对抗总规划", "03_叙事规划/00_宏大对抗总规划.md"),
-        ("L2 分卷大纲", "03_叙事规划/分卷大纲/"),
+    // LTM 已入库键清单（category/key），供 ⑦ 判定。
+    let lt_keys: std::collections::HashSet<String> = {
+        let mut st = conn
+            .prepare("SELECT category, key FROM long_term_memory")
+            .unwrap();
+        st.query_map([], |r| Ok(format!("{}/{}", r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .unwrap()
+            .filter_map(|x| x.ok())
+            .collect()
+    };
+    // ── ⑦ L0/L1/L1x/L2：磁盘原文件仍未被生成链读；但同内容的 LTM 条目已入 LAYER_1。
+    for (name, path, ltm_key) in [
+        ("L0 整本概括", "03_叙事规划/00_整本概括.md", "顶层设定/整本概括"),
+        ("L0.5 故事脊梁", "03_叙事规划/00_故事脊梁.md", "顶层设定/故事脊梁"),
+        ("L1 叙事总纲", "03_叙事规划/00_叙事总纲.md", "分卷大纲/叙事总纲"),
+        ("L1x 宏大对抗总规划", "03_叙事规划/00_宏大对抗总规划.md", "分卷大纲/宏大对抗总规划"),
+        ("护栏 规划约束", "03_叙事规划/00_规划约束护栏.md", "分卷大纲/规划约束护栏"),
     ] {
+        // LTM 是否已入库（决定能否进 LAYER_1）
+        let ltm_hit = lt_keys.contains(ltm_key);
         let exist = lib_root.join(path).exists();
         checks.push(Check {
-            item: format!("{name}（{path}）"),
-            status: Status::NotQueried,
-            evidence: format!("磁盘存在={exist}；但生成链路无任何代码读取它（已静态核实）"),
+            item: format!("{name} → {ltm_key}"),
+            status: if ltm_hit { Status::Hit } else { Status::NotQueried },
+            evidence: format!(
+                "LTM 入库={ltm_hit}（走 LAYER_1）；磁盘原文件={exist}（本链路仍不直读磁盘）"
+            ),
         });
     }
     // SYS_LAYER_1 实际取材（世界观铁则/角色静态档案）。
-    let lt_rows: i64 = conn
+    // 逐类统计 LAYER_1 实际取材（与 build_layer1 的白名单一致）。
+    let layer1_cats = ["世界观铁则", "角色静态档案", "顶层设定", "分卷大纲", "锚点元"];
+    let layer1_total: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM long_term_memory WHERE category IN ('世界观铁则','角色静态档案')",
+            "SELECT COUNT(*) FROM long_term_memory WHERE category IN
+             ('世界观铁则','角色静态档案','顶层设定','分卷大纲','锚点元')",
             [],
             |r| r.get(0),
         )
         .unwrap_or(0);
+    let mut per_cat = Vec::new();
+    for cat in layer1_cats {
+        let (n, chs): (i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(SUM(LENGTH(content)),0) FROM long_term_memory WHERE category=?1",
+                rusqlite::params![cat],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap_or((0, 0));
+        per_cat.push(format!("{cat}={n}条/{chs}字"));
+    }
     checks.push(Check {
-        item: "SYS_LAYER_1 实际取材（long_term_memory 世界观/角色）".into(),
-        status: if lt_rows > 0 { Status::Hit } else { Status::Empty },
-        evidence: format!("命中 {lt_rows} 条；命中则不走内置 fallback"),
+        item: "SYS_LAYER_1 取材（世界观/角色/顶层设定/分卷大纲/锚点元）".into(),
+        status: if layer1_total > 0 { Status::Hit } else { Status::Empty },
+        evidence: format!("共 {layer1_total} 条；{}", per_cat.join("，")),
+    });
+    // 明细：L0/L1/L1x 是否真的进了 LAYER_1（原先它们是 NotQueried）。
+    let l0l1: Vec<(String, String, i64)> = {
+        let mut st = conn
+            .prepare(
+                "SELECT category, key, LENGTH(content) FROM long_term_memory
+                 WHERE category IN ('顶层设定','分卷大纲') ORDER BY priority, category, key",
+            )
+            .unwrap();
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .filter_map(|x| x.ok())
+            .collect()
+    };
+    for (cat, key, n) in &l0l1 {
+        checks.push(Check {
+            item: format!("LAYER_1 条目：{cat}/{key}"),
+            status: Status::Hit,
+            evidence: format!("已纳入 build_layer1 白名单并注入（{n} 字）"),
+        });
+    }
+    // 锚点表注入量：从 preprocess 实际文本里数锚点块行数。
+    let anchor_inject_chars = cmd
+        .memory_inject
+        .split("【跨卷锚点当前进度】")
+        .nth(1)
+        .map(|x| x.chars().count())
+        .unwrap_or(0);
+    checks.push(Check {
+        item: "跨卷锚点表注入（block_c，上限 600 字）".into(),
+        status: if anchor_inject_chars > 0 { Status::Hit } else { Status::Empty },
+        evidence: format!("实际注入 {anchor_inject_chars} 字（修复前仅首行 24 字）"),
     });
 
     Ok(ChapterAudit {

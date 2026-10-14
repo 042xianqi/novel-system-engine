@@ -96,12 +96,14 @@ impl LayeredSystemPrompt {
     }
 }
 
-/// 从 `long_term_memory` 读世界观铁则 + 角色档案，拼成 LAYER_1。
+/// 从 `long_term_memory` 读世界观铁则 + 角色档案 + 顶层设定(L0/L0.5) + 分卷大纲(L1/L1x) + 锚点元，拼成 LAYER_1。
+/// 按 priority 升序注入。
 /// 表空 → 回落内置常量。
 pub fn build_layer1(conn: &Connection) -> String {
     let mut stmt = match conn.prepare(
         "SELECT category, key, content FROM long_term_memory
-         WHERE category IN ('世界观铁则','角色静态档案') ORDER BY priority, category, key",
+         WHERE category IN ('世界观铁则','角色静态档案','顶层设定','分卷大纲','锚点元')
+         ORDER BY priority, category, key",
     ) {
         Ok(s) => s,
         Err(_) => return SYS_LAYER_1_FALLBACK.to_string(),

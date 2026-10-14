@@ -352,9 +352,37 @@ fn build_block_c(conn: &Connection, volume: &str, chapter: u32) -> Result<String
     if anchors.is_empty() {
         s.push_str("  （锚点元表未导入）\n");
     } else {
-        for (k, v) in anchors {
-            let one = v.lines().next().unwrap_or("");
-            s.push_str(&format!("  {k}：{}\n", one.chars().take(80).collect::<String>()));
+        // 锚点表全量注入；整体上限 600 字，超限按【行边界】截断，绝不切半行。
+        const ANCHOR_CAP: usize = 600;
+        let mut body = String::new();
+        for (k, v) in &anchors {
+            body.push_str(&format!("  【{k}】\n"));
+            for line in v.lines() {
+                let t = line.trim_end();
+                if t.trim().is_empty() {
+                    continue;
+                }
+                body.push_str("  ");
+                body.push_str(t);
+                body.push('\n');
+            }
+        }
+        if body.chars().count() > ANCHOR_CAP {
+            let mut out = String::new();
+            let mut used = 0usize;
+            for line in body.lines() {
+                let n = line.chars().count() + 1;
+                if used + n > ANCHOR_CAP {
+                    break;
+                }
+                out.push_str(line);
+                out.push('\n');
+                used += n;
+            }
+            out.push_str("  （…锚点表余下部分超 600 字上限，未注入；完整表见 long_term_memory 锚点元）\n");
+            s.push_str(&out);
+        } else {
+            s.push_str(&body);
         }
     }
     Ok(s.trim_end().to_string())

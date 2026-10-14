@@ -955,7 +955,7 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool, 
             st["incremental_scan_ready"] = serde_json::json!(true);
             st["batch_inspect_ready"] = serde_json::json!(true);
             // 工具链版本标记（仅标识，无逻辑作用）
-            st["toolchain_epoch"] = serde_json::json!(15);
+            st["toolchain_epoch"] = serde_json::json!(16);
             st["tag_note_ready"] = serde_json::json!(true);
             st["diff_snap_ready"] = serde_json::json!(true);
             st["webpanel_ready"] = serde_json::json!(true);
@@ -1446,6 +1446,34 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                     if json { println!("{}", serde_json::json!({"deleted": ok, "run_id": run_id})); }
                     else { println!("{}推演记录 #{}", if ok { "已删除" } else { "未找到" }, run_id); }
                 }
+            }
+        }
+        WorldGovCmd::Status { lib: _ } => {
+            use ne_agent::governance::overview;
+            let r = overview::overview(&conn, lib_root)?;
+            if json { println!("{}", serde_json::to_string_pretty(&r)?); }
+            else {
+                println!("== world-gov 终态总览（epoch {}）==", r["toolchain_epoch"]);
+                println!("资料库: {}  卡数: {}", r["lib_root"], r["library"]["cards"]);
+                println!("基线: {} 条 指纹 {}", r["baseline"]["entries"], r["baseline"]["fingerprint"]);
+                println!("三重锁: {}", r["triple_lock"]["status"]);
+                println!("── 隔离表（与主索引物理隔离）──");
+                if let Some(m) = r["isolated_tables"].as_object() {
+                    for (k, v) in m { println!("  {k:<16} {}", v); }
+                }
+                println!("── 关系网 ──  边 {}  悬空 {}  已建 {}",
+                    r["graph"]["edges"], r["graph"]["dangling"], r["graph"]["meta"]["built_ts"].is_i64());
+                println!("── 沙盘 ──  记录 {}  ok {}", r["sandbox"]["runs"], r["sandbox"]["check_ok"]);
+                println!("── 闭环链 ──");
+                if let Some(c) = r["chain"].as_array() {
+                    for x in c {
+                        println!("  [{}] {}{}", if x["ready"] == true { "✓" } else { "·" },
+                            x["step"].as_str().unwrap_or(""),
+                            if x["locked_by_default"] == true { "（默认锁死）" } else { "" });
+                    }
+                }
+                println!("── 零污染证明 ── {}", if r["no_pollution"]["ok"] == true { "✅ 主索引未被污染" } else { "⚠ 见 --json 缺项" });
+                println!("{}", r["note"].as_str().unwrap_or(""));
             }
         }
         WorldGovCmd::Trace { key, dry_run: _, lib: _ } => {

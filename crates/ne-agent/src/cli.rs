@@ -738,6 +738,13 @@ pub enum WorldGovCmd {
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,
     },
+    /// 【调试】终态总览（只读聚合全批次产物：能力/隔离表/关系网/沙盘/三重锁/闭环链）
+    #[command(hide = true)]
+    Status {
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand, Debug)]

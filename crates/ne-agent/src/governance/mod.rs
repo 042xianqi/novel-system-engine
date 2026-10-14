@@ -28,6 +28,7 @@ pub mod llm_client;
 pub mod conflict_store;
 pub mod rel_graph;
 pub mod sandbox;
+pub mod overview;
 pub mod pipeline;
 pub mod pipeline_store;
 pub mod progress;

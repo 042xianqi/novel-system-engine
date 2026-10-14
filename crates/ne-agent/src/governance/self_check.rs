@@ -236,6 +236,15 @@ pub fn run(conn: &Connection, lib_root: &Path, fix: bool, older_than_days: u64) 
         "detail": sbs,
     }));
 
+    // ⑭ 终态零污染证明（第 16 批）：主表在 + 辅助表名不冲突（只读）
+    let ov = super::overview::overview(conn, lib_root).unwrap_or(json!({}));
+    let proof = ov.get("no_pollution").cloned().unwrap_or(json!({"ok": false}));
+    items.push(json!({
+        "name": "no_pollution",
+        "ok": proof["ok"] == true,
+        "detail": proof,
+    }));
+
     let failed = items.iter().filter(|x| x["ok"] == false).count();
     Ok(json!({
         "command": "world-gov self-check",
@@ -245,7 +254,7 @@ pub fn run(conn: &Connection, lib_root: &Path, fix: bool, older_than_days: u64) 
         "failed": failed,
         "all_ok": failed == 0,
         "items": items,
-        "toolchain_epoch": 15,
+        "toolchain_epoch": 16,
         "note": "自检只读为主；--fix 仅创建缺失目录，绝不 ALTER 表/删任务/改资料库。",
     }))
 }
@@ -286,7 +295,7 @@ pub fn capabilities() -> Value {
         "real_semantic_triple_lock": true,
         "rel_graph_ready": true,
         "sandbox_ready": true,
-        "toolchain_epoch": 15,
+        "toolchain_epoch": 16,
     })
 }
 
@@ -356,7 +365,7 @@ mod tests {
     #[test]
     fn capabilities_marker() {
         let c = capabilities();
-        assert_eq!(c["toolchain_epoch"], 15);
+        assert_eq!(c["toolchain_epoch"], 16);
         assert_eq!(c["selfcheck_ready"], true);
         assert_eq!(c["tag_note_ready"], true);
         assert_eq!(c["diff_snap_ready"], true);

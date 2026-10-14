@@ -520,6 +520,19 @@ pub fn novel_chapter_with_memory(
             ne_engine::llm::Message::user(prompt),
         ]
     };
+    // 上下文膨胀监控（§：只告警，不截断、不阻断、不改裁剪逻辑）。
+    // 位置：build_prompt 组装完毕、即将送出生成之前。
+    {
+        const WARN_CHARS: usize = 85_000;
+        let sys_chars = msgs[0].content.chars().count();
+        let user_chars = msgs[1].content.chars().count();
+        let total_chars = sys_chars + user_chars;
+        if total_chars >= WARN_CHARS {
+            eprintln!(
+                "WARN[context-bloat] 第{chapter}章 总输入 {total_chars} 字                  （system={sys_chars} + user={user_chars}）≥ 告警线 {WARN_CHARS} 字；                 仅告警，未截断，继续生成。"
+            );
+        }
+    }
     // 总输入 token 校验（§一：超限直接报错终止，禁止调用模型）
     if let Some(m) = &mem {
         let cfg = m.cfg.clone();

@@ -1,0 +1,15 @@
+第 24 章（卷01） 2873 字 · 门禁 REJECT
+  已落盘：/root/stress_lib/04_正文/卷01/第24章.md
+  P0 1 · P1 6
+  P1-PARAGRAPH_FIX 修改段落数：21
+  · P0 G03_shuang_interval: 滚动5章0大爽点
+  · P1 G02_hook_density: 章末钩密度不足（命中0<1）
+  · P1 G13_scoring_67dim: 确定性维度不达标：["AI词"]
+  · P1 G13_scoring_67dim: 库规模未达标：人物数量达标(242/249)，地点数量达标(41/146)，事件数量达标(98/156)
+  · P1 G15_family_consistency: 称谓「弟弟」提及「还是没有」≠canon「陈默」（家庭定版·后续不得改）
+  · P1 P1_PARAGRAPH: P1-PARAGRAPH_FIX 修改段落数：21
+  · P1-PARAGRAPH_FIX 修改段落数：21（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch24 dominant=calm
+  · 情绪回写 CHAR-99-001: ch24 dominant=fear
+  · 记忆回写：提取 3 项，警告 0，裁旧 52 章
+  · chapter_meta 已存档（in≈1140 / out≈2544 token）

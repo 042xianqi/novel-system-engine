@@ -477,7 +477,7 @@ pub fn build_prompt<C: ChapterCtx>(ctx: &C, chapter: u32, volume: &str) -> Resul
     let anchors = ch.get("anchors").cloned().unwrap_or_else(|| json!({}));
     let wire_block = build_wire_injection(ctx, &inj, volume, chapter, scene);
 
-    Ok(format!(
+    let prompt = format!(
         "── 第{chapter}章 {title} ──\n\
          【场景】{scene}  手法路由：{dim}\n\
          【字数】{MIN_WORDS}-{MAX_WORDS} 字；单段≤200；全章18-25段\n\
@@ -485,7 +485,19 @@ pub fn build_prompt<C: ChapterCtx>(ctx: &C, chapter: u32, volume: &str) -> Resul
          【细纲】\n{outline}\n\n\
          {base}\n\n{kb_block}\n\n{wire_block}\n",
         anchors
-    ))
+);
+    // 上下文膨胀监控（build_prompt 末尾）：仅对 user 侧 prompt 告警，
+    // 合计口径由调用方（task.rs）负责。只告警、不截断、不阻断。
+    {
+        const WARN_CHARS: usize = 85_000;
+        let n = prompt.chars().count();
+        if n >= WARN_CHARS {
+            eprintln!(
+                "WARN[context-bloat] build_prompt 第{chapter}章 user 侧 {n} 字 ≥ 告警线 {WARN_CHARS} 字；仅告警，未截断。"
+            );
+        }
+    }
+    Ok(prompt)
 }
 
 /// 组装接线注入块（库根缺失时返回空串，不阻断）。

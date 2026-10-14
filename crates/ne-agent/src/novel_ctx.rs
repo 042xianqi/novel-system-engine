@@ -407,6 +407,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// 膨胀告警：prompt 超 85k 字时触发 WARN，但**绝不截断**（长度一字不减）。
+    #[test]
+    fn context_bloat_warns_without_truncating() {
+        let d = fake_lib("bloat");
+        // 把模板撑到 >85k 字符（用 ASCII 凑量，1 字符=1 计数）
+        let filler = "A".repeat(90_000);
+        std::fs::write(
+            d.join("05_管线框架/prompts/l5_正文.md"),
+            format!("【模板】正文写作指令
+{filler}"),
+        )
+        .unwrap();
+        let c = NovelCtx::open(&d).unwrap();
+        let p = ne_engine::chapter::build_prompt(&c, 1, "卷01").unwrap();
+        // 未截断：填充串完整保留
+        assert!(p.contains(&filler), "告警不得截断 prompt");
+        assert!(p.chars().count() >= 85_000, "应达到告警线，实际 {}", p.chars().count());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn prev_tail_reads_previous_chapter() {
         let d = fake_lib("tail");

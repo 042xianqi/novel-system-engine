@@ -18,6 +18,8 @@
 //! 子模块：`probe_cache` —— 探针缓存层（07_勘误工坊/probe_cache/）。
 //! 子模块：`probe_export` —— 探针打包导出（零依赖 USTAR+gzip(stored) → .wg-probe.tar.gz）。
 //! 子模块：`self_check` —— 健康自检（--fix 仅建目录）。
+//! 子模块：`note_tag_store` —— 人工标记体系（item_tag/item_note；与主索引完全隔离）。
+pub mod note_tag_store;
 pub mod pipeline;
 pub mod pipeline_store;
 pub mod progress;
@@ -96,6 +98,8 @@ pub fn open_gov(lib_root: &Path) -> Result<Connection> {
     conn.execute_batch(include_str!("../governance_schema.sql"))?;
     ensure_library_index_cols(&conn)?;
     ensure_risk_index_cols(&conn)?;
+    // 人工标记体系（第 10 批）：幂等建表，与主索引完全隔离
+    note_tag_store::ensure_tables(&conn)?;
     Ok(conn)
 }
 

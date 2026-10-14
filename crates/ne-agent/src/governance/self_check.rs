@@ -183,6 +183,14 @@ pub fn run(conn: &Connection, lib_root: &Path, fix: bool, older_than_days: u64) 
     let cache = probe_cache::status(lib_root, older_than_days).unwrap_or(json!({}));
     items.push(json!({"name": "probe_cache", "ok": true, "detail": cache}));
 
+    // ⑧ 人工标记体系（第 10 批）：item_tag/item_note 表结构 + 脏数据
+    let nts = super::note_tag_store::table_check(conn).unwrap_or(json!({"ok": false, "error": "检查失败"}));
+    items.push(json!({
+        "name": "note_tag_store",
+        "ok": nts["ok"] == true,
+        "detail": nts,
+    }));
+
     let failed = items.iter().filter(|x| x["ok"] == false).count();
     Ok(json!({
         "command": "world-gov self-check",
@@ -192,7 +200,7 @@ pub fn run(conn: &Connection, lib_root: &Path, fix: bool, older_than_days: u64) 
         "failed": failed,
         "all_ok": failed == 0,
         "items": items,
-        "toolchain_epoch": 9,
+        "toolchain_epoch": 10,
         "note": "自检只读为主；--fix 仅创建缺失目录，绝不 ALTER 表/删任务/改资料库。",
     }))
 }
@@ -226,7 +234,8 @@ pub fn capabilities() -> Value {
         "cache_ready": true,
         "probe_export_ready": true,
         "selfcheck_ready": true,
-        "toolchain_epoch": 9,
+        "tag_note_ready": true,
+        "toolchain_epoch": 10,
     })
 }
 
@@ -296,7 +305,8 @@ mod tests {
     #[test]
     fn capabilities_marker() {
         let c = capabilities();
-        assert_eq!(c["toolchain_epoch"], 9);
+        assert_eq!(c["toolchain_epoch"], 10);
         assert_eq!(c["selfcheck_ready"], true);
+        assert_eq!(c["tag_note_ready"], true);
     }
 }

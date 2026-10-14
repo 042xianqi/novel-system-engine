@@ -153,14 +153,29 @@ pub fn parse_since(val: &str, lib_root: &Path) -> Result<(Option<i64>, String)> 
 }
 
 /// 组装批量预览报告（**纯读**，不写任何文件/任务）。
+/// `tag_filter`（可选）：人工标签筛选（第 10 批）；`None`/空 = 不过滤（默认行为不变）。
 pub fn build_batch_report(
     conn: &Connection,
     lib_root: &Path,
     source: &BatchSource,
     all_layers: bool,
     dry_run: bool,
+    tag_filter: Option<&crate::governance::note_tag_store::TagFilter>,
 ) -> Result<Value> {
     let (keys, degraded) = resolve_keys(conn, lib_root, source, all_layers)?;
+    // 标签筛选：默认不过滤（None/空 → 全放行，向后兼容）
+    let before = keys.len();
+    let keys: Vec<String> = match tag_filter {
+        Some(f) if !f.is_empty() => {
+            use crate::governance::note_tag_store as nts;
+            match nts::keys_matching(conn, f)? {
+                Some(set) => keys.into_iter().filter(|k| set.contains(k)).collect(),
+                None => keys,
+            }
+        }
+        _ => keys,
+    };
+    let tag_filtered = before - keys.len();
     Ok(json!({
         "command": "world-gov inspect-batch",
         "mode": "batch_preview",
@@ -169,7 +184,9 @@ pub fn build_batch_report(
             "batch_size": keys.len(),
             "all_layers": all_layers,
             "since_degraded": degraded,
+            "tag_filtered": tag_filtered,
         },
+        "tag_filter": tag_filter.map(|f| f.describe()).unwrap_or(json!(null)),
         "keys": keys,
         "plan": {
             "per_key_action": "生成 inspect-card 探针 → 可选入队（不自动推理、不自动 step）",
@@ -264,7 +281,7 @@ mod tests {
         let conn = mem_conn();
         let lib = std::env::temp_dir();
         // since 模式
-        let r = build_batch_report(&conn, &lib, &BatchSource::Since(2000), false, true).unwrap();
+        let r = build_batch_report(&conn, &lib, &BatchSource::Since(2000), false, true, None).unwrap();
         assert_eq!(r["counts"]["batch_size"], 2);
         assert_eq!(r["source_kind"], "since");
         assert_eq!(r["dry_run"], true);
@@ -272,7 +289,7 @@ mod tests {
         let f = lib.join(format!("wg_batch_{}.txt", std::process::id()));
         std::fs::write(&f, "K1\nK2\nK3\n").unwrap();
         let r2 = build_batch_report(
-            &conn, &lib, &BatchSource::IdList(f.to_string_lossy().to_string()), false, true,
+            &conn, &lib, &BatchSource::IdList(f.to_string_lossy().to_string()), false, true, None,
         ).unwrap();
         assert_eq!(r2["counts"]["batch_size"], 3);
         assert_eq!(r2["source_kind"], "id-list");
@@ -286,10 +303,29 @@ mod tests {
         let f = lib.join(format!("wg_scan_{}.json", std::process::id()));
         std::fs::write(&f, r#"{"probe_items":[{"key":"S1"},{"key":"S2"}]}"#).unwrap();
         let r = build_batch_report(
-            &conn, &lib, &BatchSource::FromScan(f.to_string_lossy().to_string()), false, true,
+            &conn, &lib, &BatchSource::FromScan(f.to_string_lossy().to_string()), false, true, None,
         ).unwrap();
         assert_eq!(r["counts"]["batch_size"], 2);
         assert_eq!(r["source_kind"], "from-scan");
+        let _ = std::fs::remove_file(&f);
+    }
+
+    #[test]
+    fn batch_tag_filter_selects_keys() {
+        use crate::governance::note_tag_store as nts;
+        let conn = mem_conn();
+        nts::add_tags(&conn, "A-2", &["剧情关键".into()], "manual").unwrap();
+        let lib = std::env::temp_dir();
+        let f = lib.join(format!("wg_batch_tag_{}.txt", std::process::id()));
+        std::fs::write(&f, "A-1\nA-2\nL3-1\n").unwrap();
+        let filter = nts::TagFilter::build(&["剧情关键".into()], &[]).unwrap();
+        let r = build_batch_report(
+            &conn, &lib, &BatchSource::IdList(f.to_string_lossy().to_string()),
+            false, true, Some(&filter),
+        ).unwrap();
+        assert_eq!(r["counts"]["batch_size"], 1, "仅 A-2 带标签");
+        assert_eq!(r["counts"]["tag_filtered"], 2);
+        assert_eq!(r["keys"][0], "A-2");
         let _ = std::fs::remove_file(&f);
     }
 }

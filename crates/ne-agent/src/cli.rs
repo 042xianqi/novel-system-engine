@@ -530,6 +530,12 @@ pub enum WorldGovCmd {
         /// 强制无视缓存，全量重生成
         #[arg(long)]
         invalidate_cache: bool,
+        /// 只扫含该标签的条目（第 10 批；可重复；默认不过滤）
+        #[arg(long = "with-tag", value_name = "TAG")]
+        with_tag: Vec<String>,
+        /// 排除含该标签的条目（第 10 批；可重复）
+        #[arg(long = "without-tag", value_name = "TAG")]
+        without_tag: Vec<String>,
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,
     },
@@ -623,6 +629,12 @@ pub enum WorldGovCmd {
         /// 关闭层过滤（默认只取 L2/L3/L4）
         #[arg(long)]
         all_layers: bool,
+        /// 只取含该标签的条目（第 10 批；可重复；默认不过滤）
+        #[arg(long = "with-tag", value_name = "TAG")]
+        with_tag: Vec<String>,
+        /// 排除含该标签的条目（第 10 批；可重复）
+        #[arg(long = "without-tag", value_name = "TAG")]
+        without_tag: Vec<String>,
         /// 资料库根
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,
@@ -653,6 +665,107 @@ pub enum WorldGovCmd {
         /// 资料库根
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,
+    },
+    /// 【调试】人工标签（add|rm|list|filter|export|import；只动 item_tag，与主索引隔离）
+    #[command(hide = true)]
+    Tag {
+        #[command(subcommand)]
+        cmd: TagCmd,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
+    /// 【调试】人工备注（set|get|list|export|import；只动 item_note，与主索引隔离）
+    #[command(hide = true)]
+    Note {
+        #[command(subcommand)]
+        cmd: NoteCmd,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum TagCmd {
+    /// 给条目加标签（可多个）
+    Add {
+        /// 条目 key（如 CHAR-10-001）
+        key: String,
+        /// 一个或多个标签
+        #[arg(required = true, value_name = "TAG")]
+        tags: Vec<String>,
+    },
+    /// 删某条目的某个标签
+    Rm {
+        key: String,
+        tag: String,
+    },
+    /// 列标签（可按键/按标签过滤）
+    List {
+        #[arg(long)]
+        key: Option<String>,
+        #[arg(long)]
+        tag: Option<String>,
+    },
+    /// 只看某标签匹配的 key 列表（可管道给其他命令）
+    Filter {
+        #[arg(long = "tag")]
+        tag: String,
+    },
+    /// 导出全部标签库备份（JSON）
+    Export {
+        #[arg(long = "to", value_name = "PATH")]
+        to: PathBuf,
+    },
+    /// 从备份导入标签库
+    Import {
+        #[arg(value_name = "PATH")]
+        path: PathBuf,
+        #[arg(long)]
+        dry_run: bool,
+        /// 覆盖（先清空被导入 key 的现有标签）
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum NoteCmd {
+    /// 设置/更新条目备注（新建或部分更新）
+    Set {
+        /// 条目 key
+        key: String,
+        /// 复核状态：unreviewed|ok|suspect|false_positive|critical
+        #[arg(long)]
+        status: Option<String>,
+        /// 自由备注文本
+        #[arg(long)]
+        content: Option<String>,
+    },
+    /// 取某条目备注
+    Get {
+        #[arg(long)]
+        key: String,
+    },
+    /// 列备注（可按状态过滤）
+    List {
+        #[arg(long)]
+        status: Option<String>,
+    },
+    /// 导出全部备注库备份（JSON）
+    Export {
+        #[arg(long = "to", value_name = "PATH")]
+        to: PathBuf,
+    },
+    /// 从备份导入备注库
+    Import {
+        #[arg(value_name = "PATH")]
+        path: PathBuf,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -693,6 +806,12 @@ pub enum ProbeExportCmd {
         /// 只含某任务产生的探针
         #[arg(long)]
         job_id: Option<String>,
+        /// 只打包含该标签的条目（第 10 批；可重复；默认不过滤）
+        #[arg(long = "with-tag", value_name = "TAG")]
+        with_tag: Vec<String>,
+        /// 排除含该标签的条目（第 10 批；可重复）
+        #[arg(long = "without-tag", value_name = "TAG")]
+        without_tag: Vec<String>,
         /// 只算数量不生成包
         #[arg(long)]
         dry_run: bool,
@@ -750,6 +869,12 @@ pub enum AuditExportCmd {
         /// 零风险时不报错（跳过空报告）
         #[arg(long)]
         ignore_empty: bool,
+        /// 只导出含该标签条目的风险（第 10 批；可重复；默认不过滤）
+        #[arg(long = "with-tag", value_name = "TAG")]
+        with_tag: Vec<String>,
+        /// 排除含该标签条目的风险（第 10 批；可重复）
+        #[arg(long = "without-tag", value_name = "TAG")]
+        without_tag: Vec<String>,
     },
     /// 列出已有报告（只列文件名 + 时间，不读内容）
     List,

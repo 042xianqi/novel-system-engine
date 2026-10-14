@@ -13,7 +13,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use crate::cli::{Cli, Cmd, LibraryCtlCmd, McpCmd, ModelsCmd, QueueCmd, VaultCmd, WorldGovCmd, AuditExportCmd, CacheCmd, ProbeExportCmd, SelfCheckCmd};
+use crate::cli::{Cli, Cmd, LibraryCtlCmd, McpCmd, ModelsCmd, QueueCmd, VaultCmd, WorldGovCmd, AuditExportCmd, CacheCmd, ProbeExportCmd, SelfCheckCmd, TagCmd, NoteCmd};
 use ne_agent::{RuntimeConfig, Vault};
 use std::path::{Path, PathBuf};
 mod cli;
@@ -913,6 +913,20 @@ fn world_gov_emit(
     ne_agent::world_gov::emit_semantic_findings(conn, &format!("world-gov {label} --enqueue"), findings)
 }
 
+/// 导出路径防护（第 10 批）：拒绝含 `..` 的路径；相对路径解析到 lib_root 下。
+/// `--to` 允许绝对路径（用户显式指定），但仍拒绝 `..` 段。
+fn safe_export_path(lib_root: &Path, to: &Path) -> Result<PathBuf> {
+    let s = to.to_string_lossy();
+    if s.contains("..") {
+        anyhow::bail!("导出路径不得含 '..'（防路径逃逸）：{s}");
+    }
+    if to.is_absolute() {
+        Ok(to.to_path_buf())
+    } else {
+        Ok(lib_root.join(to))
+    }
+}
+
 fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool, quiet: bool) -> Result<()> {
     use ne_agent::world_gov;
     use ne_agent::governance::{get_semantic_gate, semantic_gate_status};
@@ -930,7 +944,8 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool, 
             st["incremental_scan_ready"] = serde_json::json!(true);
             st["batch_inspect_ready"] = serde_json::json!(true);
             // 工具链版本标记（仅标识，无逻辑作用）
-            st["toolchain_epoch"] = serde_json::json!(9);
+            st["toolchain_epoch"] = serde_json::json!(10);
+            st["tag_note_ready"] = serde_json::json!(true);
             // 第 9 批能力标记
             for (k, v) in ne_agent::governance::self_check::capabilities().as_object().cloned().unwrap_or_default() {
                 st[k] = v;
@@ -1066,8 +1081,11 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                 println!("（共 {} 层上层约束；详见 --json）", r["chain_len"]);
             }
         }
-        WorldGovCmd::ScanLibrary { semantic, slice, dry_run, enqueue, persist, all_layers, since, write_snapshot, no_cache, invalidate_cache, lib: _ } => {
+        WorldGovCmd::ScanLibrary { semantic, slice, dry_run, enqueue, persist, all_layers, since, write_snapshot, no_cache, invalidate_cache, with_tag, without_tag, lib: _ } => {
             if *enqueue {
+                if !with_tag.is_empty() || !without_tag.is_empty() {
+                    anyhow::bail!("--with-tag/--without-tag 仅适用于 scan（不加 --enqueue）；入队为整片聚合任务，无法按标签细分");
+                }
                 let (sn, sm) = match slice.as_deref() {
                     Some(s) => world_gov::parse_slice_strict(s).map_err(|e| anyhow::anyhow!("{e}"))?,
                     None => (1, 1),
@@ -1077,6 +1095,8 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                     Some((sn as u32, sm as u32)), None, probe, None, *persist, json,
                     &format!("scan-library slice={sn}/{sm}"));
             }
+            // 标签筛选（第 10 批；空 = 不过滤）
+            let tag_filter = ne_agent::governance::note_tag_store::TagFilter::build(with_tag, without_tag)?;
             // 解析 --since（支持 last；无快照时降级全扫）
             let (since_ts, since_note) = match since {
                 Some(v) => {
@@ -1087,7 +1107,7 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
             };
             // 进度：粗估（stderr；--quiet 静默）
             ne_agent::governance::progress::emit(quiet, "scan-library", 0, 1, None);
-            let r = world_gov::scan_library(&conn, lib_root, slice.as_deref(), *semantic, *dry_run, *all_layers, since_ts)?;
+            let r = world_gov::scan_library(&conn, lib_root, slice.as_deref(), *semantic, *dry_run, *all_layers, since_ts, Some(&tag_filter))?;
             ne_agent::governance::progress::emit(quiet, "scan-library", 1, 1, Some(0));
             // 探针缓存：把本片 probe_items 写入缓存（默认开启；--no-cache 关闭；--invalidate-cache 强制重写）
             // 缓存 key = hash(layer+key+src_mtime+baseline_fingerprint)；命中即复用，不重算。
@@ -1272,6 +1292,18 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
             };
             // ③ 组装（纯规则层：零外呼、零推理、零落盘）
             let built = pb::build_by_kind(kind, &payload)?;
+            // ③.5 人工注解（第 10 批）：预览时附带该条目已有标签/备注（只读，不改 prompt 正文）
+            let ann = ne_agent::governance::note_tag_store::all_annotations(&conn).unwrap_or_default();
+            let mut ann_keys: Vec<&String> = ann.keys().collect();
+            ann_keys.sort_by(|a, b| b.len().cmp(&a.len()));
+            // 参考文本：整个探针 JSON（含 key/正文引用），用于匹配注解 key
+            let probe_text = serde_json::to_string(&payload).unwrap_or_default();
+            let mut human_annotations: Vec<serde_json::Value> = Vec::new();
+            for k in ann_keys {
+                if probe_text.contains(k.as_str()) {
+                    human_annotations.push(serde_json::json!({"key": k, "tags": ann[k]["tags"], "note": ann[k]["note"]}));
+                }
+            }
             // --export-probe DIR：把预览对应的探针 JSON 落盘（方便调试）
             if let Some(dir) = export_probe {
                 std::fs::create_dir_all(dir)?;
@@ -1291,11 +1323,20 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                     "system": built.system,
                     "user": if *full { built.user.clone() }
                             else { built.user.chars().take(800).collect::<String>() },
-                    "note": "规则层预览：零外呼、不写库、不推理。",
+                    "human_annotations": human_annotations,
+                    "note": "规则层预览：零外呼、不写库、不推理。human_annotations 仅展示人工标记，不注入 prompt 正文。",
                 }))?);
             } else {
                 println!("== prompt-preview（规则层预览；零外呼/零推理/零落盘）==");
                 println!("类型: {kind}");
+                if !human_annotations.is_empty() {
+                    println!("── 人工标记（{} 条；仅展示，不注入 prompt）──", human_annotations.len());
+                    for a in &human_annotations {
+                        println!("  {} tags={} status={}",
+                            a["key"].as_str().unwrap_or(""),
+                            a["tags"], a["note"]["status"].as_str().unwrap_or("-"));
+                    }
+                }
                 println!(
                     "片段数: {}  截断段: {}  user 总量: {} 字  总量降级: {}",
                     built.stats.section_count, built.stats.truncated_sections,
@@ -1330,13 +1371,15 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
             use ne_agent::governance::report_builder as rb;
             let lf = rb::scan_layer_filter_text(false);
             match cmd {
-                AuditExportCmd::New { format, dry_run, only_semantic, only_structural, law_hash, job_id, ignore_empty } => {
+                AuditExportCmd::New { format, dry_run, only_semantic, only_structural, law_hash, job_id, ignore_empty, with_tag, without_tag } => {
                     let fmt = rb::ReportFormat::parse(format)?;
                     let filter = rb::ExportFilter {
                         only_semantic: *only_semantic,
                         only_structural: *only_structural,
                         law_hash: law_hash.clone(),
                         job_id: job_id.clone(),
+                        with_tag: with_tag.clone(),
+                        without_tag: without_tag.clone(),
                     };
                     // 纯读组装（不落盘、不推理、不写库）
                     let rep = rb::build_report(&conn, lib_root, &lf, false, &filter)?;
@@ -1423,7 +1466,7 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                 }
             }
         }
-        WorldGovCmd::InspectBatch { from_scan, id_list, since, dry_run, enqueue, persist, all_layers, lib: _ } => {
+        WorldGovCmd::InspectBatch { from_scan, id_list, since, dry_run, enqueue, persist, all_layers, with_tag, without_tag, lib: _ } => {
             use ne_agent::governance::inspect_batch as ib;
             use ne_agent::governance::progress;
             // 三模式互斥
@@ -1446,7 +1489,8 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                 }
             };
             progress::emit(quiet, "inspect-batch", 0, 1, None);
-            let report = ib::build_batch_report(&conn, lib_root, &source, *all_layers, *dry_run)?;
+            let tag_filter = ne_agent::governance::note_tag_store::TagFilter::build(with_tag, without_tag)?;
+            let report = ib::build_batch_report(&conn, lib_root, &source, *all_layers, *dry_run, Some(&tag_filter))?;
             let keys: Vec<String> = report["keys"].as_array().map(|a| {
                 a.iter().filter_map(|v| v.as_str().map(String::from)).collect()
             }).unwrap_or_default();
@@ -1513,9 +1557,21 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
         WorldGovCmd::ProbeExport { cmd, lib: _ } => {
             use ne_agent::governance::probe_export as pe;
             match cmd {
-                ProbeExportCmd::Create { out, only_layers, since, from_scan, job_id, dry_run } => {
+                ProbeExportCmd::Create { out, only_layers, since, from_scan, job_id, with_tag, without_tag, dry_run } => {
                     // 收集探针来源：scan 探针文件 + 缓存项（world-gov 生成的结构化探针）
+                    let tag_filter = ne_agent::governance::note_tag_store::TagFilter::build(with_tag, without_tag)?;
+                    let tag_set = match tag_filter.is_empty() {
+                        false => ne_agent::governance::note_tag_store::keys_matching(&conn, &tag_filter)?,
+                        true => None,
+                    };
+                    let tag_ok = |key: &str| -> bool {
+                        match &tag_set {
+                            None => true,
+                            Some(set) => set.contains(key),
+                        }
+                    };
                     let mut items: Vec<(String, serde_json::Value)> = Vec::new();
+                    let mut tag_filtered = 0usize;
                     if let Some(src) = from_scan {
                         let p = if Path::new(src).is_absolute() { PathBuf::from(src) } else { lib_root.join(src) };
                         let raw = std::fs::read_to_string(&p).with_context(|| format!("读取 scan 探针失败: {}", p.display()))?;
@@ -1526,6 +1582,7 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                                 let layer = it["layer"].as_str().unwrap_or("");
                                 if let Some(lf) = &lay_filter { if !lf.iter().any(|x| x == layer) { continue; } }
                                 let key = it["key"].as_str().unwrap_or("unknown");
+                                if !tag_ok(key) { tag_filtered += 1; continue; }
                                 let safe: String = key.chars().map(|c| if c.is_ascii_alphanumeric() || c=='-' || c=='_' { c } else { '_' }).collect();
                                 items.push((format!("probe-{safe}.json"), it.clone()));
                             }
@@ -1539,6 +1596,8 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                             if p.extension().map(|x| x == "json").unwrap_or(false) {
                                 if let Ok(txt) = std::fs::read_to_string(&p) {
                                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+                                        let ckey = v["key"].as_str().unwrap_or("");
+                                        if !ckey.is_empty() && !tag_ok(ckey) { tag_filtered += 1; continue; }
                                         items.push((format!("probe-cache-{}.json", p.file_stem().unwrap().to_string_lossy()), v));
                                     }
                                 }
@@ -1549,11 +1608,13 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                     let manifest = serde_json::json!({
                         "version": pe::WG_PROBE_VERSION,
                         "created_at": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
-                        "toolchain_epoch": 9,
+                        "toolchain_epoch": 10,
                         "layers": only_layers.clone().unwrap_or_else(|| "all".into()),
                         "since_anchor": since,
                         "baseline_fingerprint": world_gov::read_baseline_fingerprint(lib_root).unwrap_or_else(|| "(none)".into()),
                         "item_count": items.len(),
+                        "tag_filter": tag_filter.describe(),
+                        "tag_filtered": tag_filtered,
                         "entries": items.iter().map(|(n,_)| n.clone()).collect::<Vec<_>>(),
                         "note": "只含 world-gov 生成的结构化探针；不含资料库原始源文件。",
                     });
@@ -1620,6 +1681,181 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                             }
                         }
                         if *fix { println!("（--fix：只创建缺失目录，未 ALTER 表/未删任务）"); }
+                    }
+                }
+            }
+        }
+        WorldGovCmd::Tag { cmd, lib: _ } => {
+            use ne_agent::governance::note_tag_store as nts;
+            match cmd {
+                TagCmd::Add { key, tags } => {
+                    let (ins, skip) = nts::add_tags(&conn, key, tags, "manual")?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                            "command": "world-gov tag add", "key": key,
+                            "inserted": ins, "skipped_existing": skip, "source": "manual",
+                        }))?);
+                    } else {
+                        println!("== tag add: {key} ==\n新增 {ins} 个标签，跳过已存在 {skip} 个");
+                    }
+                }
+                TagCmd::Rm { key, tag } => {
+                    let n = nts::rm_tag(&conn, key, tag)?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                            "command": "world-gov tag rm", "key": key, "tag": tag, "removed": n,
+                        }))?);
+                    } else if n == 0 {
+                        println!("未找到 {key} 的标签 '{tag}'（无改动）");
+                    } else {
+                        println!("已删除 {key} 的标签 '{tag}'");
+                    }
+                }
+                TagCmd::List { key, tag } => {
+                    let rows = nts::list_tags(&conn, key.as_deref(), tag.as_deref())?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                            "command": "world-gov tag list", "count": rows.len(), "tags": rows,
+                        }))?);
+                    } else {
+                        println!("== tag list（{} 条）==", rows.len());
+                        for r in &rows {
+                            println!("  {}  [{}]  source={}",
+                                r["key"].as_str().unwrap_or(""),
+                                r["tag"].as_str().unwrap_or(""),
+                                r["source"].as_str().unwrap_or(""));
+                        }
+                    }
+                }
+                TagCmd::Filter { tag } => {
+                    let f = nts::TagFilter::build(std::slice::from_ref(tag), &[])?;
+                    let set = nts::keys_matching(&conn, &f)?.unwrap_or_default();
+                    let mut keys: Vec<String> = set.into_iter().collect();
+                    keys.sort();
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                            "command": "world-gov tag filter", "tag": tag,
+                            "count": keys.len(), "keys": keys,
+                        }))?);
+                    } else {
+                        // 纯行输出：可 `| xargs` / 管道给其他命令
+                        for k in &keys { println!("{k}"); }
+                    }
+                }
+                TagCmd::Export { to } => {
+                    let dump = nts::export_tags(&conn)?;
+                    // 路径防护：拒绝含 .. 或指向目录
+                    let p = safe_export_path(lib_root, to)?;
+                    if let Some(parent) = p.parent() { std::fs::create_dir_all(parent)?; }
+                    std::fs::write(&p, serde_json::to_string_pretty(&dump)?)?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                            "command": "world-gov tag export", "path": p.display().to_string(),
+                            "count": dump["count"],
+                        }))?);
+                    } else {
+                        println!("== tag export ==\n已写: {}（{} 条标签）", p.display(), dump["count"]);
+                    }
+                }
+                TagCmd::Import { path, dry_run, force } => {
+                    let raw = std::fs::read_to_string(path)
+                        .with_context(|| format!("读取导入文件失败: {}", path.display()))?;
+                    let r = nts::import_tags(&conn, &raw, *dry_run, *force)?;
+                    if json { println!("{}", serde_json::to_string_pretty(&r)?); }
+                    else {
+                        println!("== tag import{} ==", if *dry_run { "（--dry-run）" } else { "" });
+                        println!("文件 {} 条 → 写入 {}，跳过 {}，拒绝 {}",
+                            r["total_in_file"], r["inserted"], r["skipped_existing"],
+                            r["rejected"].as_array().map(|a| a.len()).unwrap_or(0));
+                        if let Some(rej) = r["rejected"].as_array() {
+                            for x in rej.iter().take(10) { println!("  [拒] {}", x.as_str().unwrap_or("")); }
+                        }
+                    }
+                }
+            }
+        }
+        WorldGovCmd::Note { cmd, lib: _ } => {
+            use ne_agent::governance::note_tag_store as nts;
+            match cmd {
+                NoteCmd::Set { key, status, content } => {
+                    let r = nts::set_note(&conn, key, status.as_deref(), content.as_deref())?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                            "command": "world-gov note set", "key": key, "note": r,
+                        }))?);
+                    } else {
+                        println!("== note set: {key} ==\n状态: {}  内容: {} 字",
+                            r["status"].as_str().unwrap_or(""),
+                            r["content"].as_str().map(|s| s.chars().count()).unwrap_or(0));
+                    }
+                }
+                NoteCmd::Get { key } => {
+                    match nts::get_note(&conn, key)? {
+                        Some(n) => {
+                            if json {
+                                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                                    "command": "world-gov note get", "key": key, "found": true, "note": n,
+                                }))?);
+                            } else {
+                                println!("== note get: {key} ==");
+                                println!("状态: {}", n["status"].as_str().unwrap_or(""));
+                                println!("内容:\n{}", n["content"].as_str().unwrap_or(""));
+                            }
+                        }
+                        None => {
+                            if json {
+                                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                                    "command": "world-gov note get", "key": key, "found": false,
+                                }))?);
+                            } else {
+                                println!("{key} 无备注");
+                            }
+                        }
+                    }
+                }
+                NoteCmd::List { status } => {
+                    let rows = nts::list_notes(&conn, status.as_deref())?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                            "command": "world-gov note list", "count": rows.len(), "notes": rows,
+                        }))?);
+                    } else {
+                        println!("== note list（{} 条）==", rows.len());
+                        for r in &rows {
+                            let c = r["content"].as_str().unwrap_or("");
+                            let shown: String = c.chars().take(40).collect();
+                            println!("  {}  [{}]  {}", r["key"].as_str().unwrap_or(""),
+                                r["status"].as_str().unwrap_or(""), shown);
+                        }
+                    }
+                }
+                NoteCmd::Export { to } => {
+                    let dump = nts::export_notes(&conn)?;
+                    let p = safe_export_path(lib_root, to)?;
+                    if let Some(parent) = p.parent() { std::fs::create_dir_all(parent)?; }
+                    std::fs::write(&p, serde_json::to_string_pretty(&dump)?)?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                            "command": "world-gov note export", "path": p.display().to_string(),
+                            "count": dump["count"],
+                        }))?);
+                    } else {
+                        println!("== note export ==\n已写: {}（{} 条备注）", p.display(), dump["count"]);
+                    }
+                }
+                NoteCmd::Import { path, dry_run, force } => {
+                    let raw = std::fs::read_to_string(path)
+                        .with_context(|| format!("读取导入文件失败: {}", path.display()))?;
+                    let r = nts::import_notes(&conn, &raw, *dry_run, *force)?;
+                    if json { println!("{}", serde_json::to_string_pretty(&r)?); }
+                    else {
+                        println!("== note import{} ==", if *dry_run { "（--dry-run）" } else { "" });
+                        println!("文件 {} 条 → 新增 {}，更新 {}，跳过 {}，拒绝 {}",
+                            r["total_in_file"], r["inserted"], r["updated"], r["skipped_existing"],
+                            r["rejected"].as_array().map(|a| a.len()).unwrap_or(0));
+                        if let Some(rej) = r["rejected"].as_array() {
+                            for x in rej.iter().take(10) { println!("  [拒] {}", x.as_str().unwrap_or("")); }
+                        }
                     }
                 }
             }

@@ -75,6 +75,15 @@ pub struct ReportItem {
     pub confidence: f32,
     /// 溯源说明（law 哈希、来源命令、时间等）
     pub provenance_notes: String,
+    /// 该风险正文中命中的已注解条目 key（第 10 批；无注解为空）
+    #[serde(default)]
+    pub annotated_keys: Vec<String>,
+    /// 命中条目携带的人工标签（并集；第 10 批）
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// 命中条目的复核状态（并集；出现多个取最高优先；第 10 批）
+    #[serde(default)]
+    pub note_status: Option<String>,
 }
 
 /// 一份完整审计报告。
@@ -99,6 +108,10 @@ pub struct ExportFilter {
     pub law_hash: Option<String>,
     /// 只看某任务产生的风险
     pub job_id: Option<String>,
+    /// 只保留命中「含该标签条目」的风险（第 10 批；AND 语义；空 = 不过滤）
+    pub with_tag: Vec<String>,
+    /// 排除命中「含该标签条目」的风险（第 10 批；空 = 不排除）
+    pub without_tag: Vec<String>,
 }
 
 impl ExportFilter {
@@ -108,6 +121,8 @@ impl ExportFilter {
             "only_structural": self.only_structural,
             "law_hash": self.law_hash,
             "job_id": self.job_id,
+            "with_tag": self.with_tag,
+            "without_tag": self.without_tag,
         })
     }
 }
@@ -258,6 +273,9 @@ fn risk_to_item(r: &RiskRow, filter: &ExportFilter) -> Option<ReportItem> {
         verdict: r.level.clone(),
         confidence: 0.0,
         provenance_notes,
+        annotated_keys: Vec::new(),
+        tags: Vec::new(),
+        note_status: None,
     })
 }
 
@@ -307,7 +325,60 @@ pub fn build_report(
         .optional()?
         .unwrap_or(0);
     let rows = read_risks(conn, filter.only_semantic, filter.only_structural)?;
-    let items: Vec<ReportItem> = rows.iter().filter_map(|r| risk_to_item(r, filter)).collect();
+    // 人工注解索引（第 10 批）：message 文本里出现的已注解 key → tags/note
+    let ann = super::note_tag_store::all_annotations(conn).unwrap_or_default();
+    // 参考 key 集合（按长度降序，避免较短的 key 抢先命中子串）
+    let mut ann_keys: Vec<&String> = ann.keys().collect();
+    ann_keys.sort_by(|a, b| b.len().cmp(&a.len()));
+    let with_tag: Vec<String> = filter.with_tag.iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let without_tag: Vec<String> = filter.without_tag.iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let mut tag_filtered = 0usize;
+    let mut items: Vec<ReportItem> = Vec::new();
+    for r in rows.iter() {
+        let mut it = match risk_to_item(r, filter) {
+            Some(x) => x,
+            None => continue,
+        };
+        // 注解匹配：扫描 message 中出现的已注解 key
+        let hits: Vec<String> = ann_keys
+            .iter()
+            .filter(|k| r.message.contains(k.as_str()))
+            .map(|k| (*k).clone())
+            .collect();
+        let mut tags: Vec<String> = Vec::new();
+        let mut statuses: Vec<String> = Vec::new();
+        for k in &hits {
+            if let Some(a) = ann.get(k) {
+                if let Some(arr) = a["tags"].as_array() {
+                    for t in arr {
+                        if let Some(s) = t.as_str() {
+                            if !tags.contains(&s.to_string()) {
+                                tags.push(s.to_string());
+                            }
+                        }
+                    }
+                }
+                if let Some(s) = a["note"]["status"].as_str() {
+                    if !s.is_empty() && !statuses.contains(&s.to_string()) {
+                        statuses.push(s.to_string());
+                    }
+                }
+            }
+        }
+        // 标签过滤（AND 语义：with 全含；without 全不含）
+        if !with_tag.is_empty() && !with_tag.iter().all(|t| tags.contains(t)) {
+            tag_filtered += 1;
+            continue;
+        }
+        if !without_tag.is_empty() && without_tag.iter().any(|t| tags.contains(t)) {
+            tag_filtered += 1;
+            continue;
+        }
+        it.annotated_keys = hits;
+        it.tags = tags;
+        it.note_status = pick_status(&statuses);
+        items.push(it);
+    }
     let jobs = read_jobs(conn, filter.job_id.as_deref());
     let seed = format!(
         "{baseline}|{layer_filter}|{all_layers}|sem={semantic_n}|struct={structural_n}|items={}",
@@ -325,10 +396,21 @@ pub fn build_report(
         "risks_semantic_total": semantic_n,
         "risks_structural_total": structural_n,
         "items_exported": items.len(),
+        "tag_filtered": tag_filtered,
         "jobs_seen": jobs.len(),
         "jobs_by_state": count_jobs_by_state(&jobs),
     });
     Ok(AuditReport { meta, filters: filter.describe(), counts, items })
+}
+
+/// 多个复核状态并存时取「最高优先」（critical > suspect > false_positive > unreviewed > ok）。
+/// 只用于报告展示，不改变任何数据。
+fn pick_status(statuses: &[String]) -> Option<String> {
+    const ORDER: &[&str] = &["critical", "suspect", "false_positive", "unreviewed", "ok"];
+    ORDER
+        .iter()
+        .find(|s| statuses.iter().any(|x| x == *s))
+        .map(|s| s.to_string())
 }
 
 fn count_jobs_by_state(jobs: &[SemanticJob]) -> Value {
@@ -373,6 +455,14 @@ pub fn render_minimal_md(rep: &AuditReport) -> String {
             it.risk_id, it.item_loc, it.job_id.as_deref().unwrap_or("-"),
             it.verdict, if it.law_ref.is_empty() { "-" } else { &it.law_ref }, it.confidence
         ));
+        if !it.tags.is_empty() || it.note_status.is_some() {
+            s.push_str(&format!(
+                "  human: tags=[{}] status={} keys=[{}]\n",
+                it.tags.join(","),
+                it.note_status.as_deref().unwrap_or("-"),
+                it.annotated_keys.join(",")
+            ));
+        }
         s.push_str(&format!("  provenance: {}\n", it.provenance_notes));
     }
     s.push_str("\n> 本报告只出证据与计数，供人判读；不自动修改任何资料库内容。\n");
@@ -552,6 +642,41 @@ mod tests {
         assert_eq!(extract_law_hash("x :: law#deadbeef :: y"), Some("deadbeef".into()));
         assert_eq!(extract_law_hash("no hash here"), None);
         assert_eq!(extract_law_hash("law#"), None);
+    }
+
+    #[test]
+    fn tag_filter_and_annotation_on_report_items() {
+        use crate::governance::note_tag_store as nts;
+        let conn = mem_conn();
+        // 两条风险：message 分别提到 CHAR-10-001 与 LOC-99-001
+        record_risk_semantic(&conn, "world_gov", None, None, "s1", "WARN",
+            "悬空引用：CHAR-10-001 :: law#aaaa0001 :: e", "L0原话").unwrap();
+        record_risk_semantic(&conn, "world_gov", None, None, "s2", "WARN",
+            "悬空引用：LOC-99-001 :: law#bbbb0002 :: e", "L0原话").unwrap();
+        // 只给 CHAR-10-001 打标签+备注
+        nts::add_tags(&conn, "CHAR-10-001", &["待复核".into()], "manual").unwrap();
+        nts::set_note(&conn, "CHAR-10-001", Some("suspect"), Some("刻意设定")).unwrap();
+        let lib = std::env::temp_dir().join("wg_report_tag_lib");
+        // 无标签过滤：两条都在，且 CHAR 项带注解
+        let r = build_report(&conn, &lib, "L2/L3/L4", false, &ExportFilter::default()).unwrap();
+        assert_eq!(r.items.len(), 2);
+        let char_item = r.items.iter().find(|i| i.provenance_notes.contains("law_hash=aaaa0001")).unwrap();
+        assert_eq!(char_item.annotated_keys, vec!["CHAR-10-001".to_string()]);
+        assert_eq!(char_item.tags, vec!["待复核".to_string()]);
+        assert_eq!(char_item.note_status.as_deref(), Some("suspect"));
+        let loc_item = r.items.iter().find(|i| i.provenance_notes.contains("law_hash=bbbb0002")).unwrap();
+        assert!(loc_item.tags.is_empty(), "LOC 项无标签");
+        assert!(loc_item.annotated_keys.is_empty(), "未被注解的 key 不进 annotated_keys");
+        // --with-tag 待复核 → 仅 CHAR 项
+        let f = ExportFilter { with_tag: vec!["待复核".into()], ..Default::default() };
+        let r2 = build_report(&conn, &lib, "L2/L3/L4", false, &f).unwrap();
+        assert_eq!(r2.items.len(), 1, "只留命中带标签条目的风险");
+        assert_eq!(r2.counts["tag_filtered"], 1);
+        // --without-tag 待复核 → 仅 LOC 项
+        let f2 = ExportFilter { without_tag: vec!["待复核".into()], ..Default::default() };
+        let r3 = build_report(&conn, &lib, "L2/L3/L4", false, &f2).unwrap();
+        assert_eq!(r3.items.len(), 1);
+        assert!(r3.items[0].provenance_notes.contains("law_hash=bbbb0002"));
     }
 
     #[test]

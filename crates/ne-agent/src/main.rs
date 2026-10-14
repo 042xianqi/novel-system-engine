@@ -1359,12 +1359,20 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                     (serde_json::json!({"status":"BACKEND_ERROR","kind":kind,"message":message}), 0, 0, "BACKEND_ERROR"),
             };
             // 仅成功/缓存命中 → 提取顶层 verdict（宽容解析）并落冲突库 + emit findings（第 17.4 批）
+            // 第 18.5 批：CacheHit 去重——同 probe_hash 的相同输出且该卡已有 pending 观点时复用现有记录。
             let mut conflict_id = None;
             if status == "OK" || status == "CACHE_HIT" {
                 // 宽容解析：即便模型外面套了 markdown，也抠出含 verdict 的 JSON 对象
                 let parsed = world_gov::parse_semantic_verdict(key, &verdict.to_string());
                 let has_verdict = parsed.get("verdict").is_some();
-                if has_verdict {
+                let existing = if status == "CACHE_HIT" {
+                    cs::find_pending_by_probe(&conn, key)?
+                } else {
+                    None
+                };
+                if let Some(existing) = existing {
+                    conflict_id = Some(existing);
+                } else if has_verdict {
                     conflict_id = Some(cs::insert(&conn, &cs::NewConflict {
                         probe_key: key.clone(),
                         snap_id: snap_id.clone(),
@@ -2526,19 +2534,30 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                         sp::Outcome::CacheHit { content, .. } => (Some(content.clone()), 0i64, 0i64),
                         _ => (None, 0i64, 0i64),
                     };
+                    let is_cache_hit = matches!(outcome, sp::Outcome::CacheHit { .. });
+                    let mut existing = None;
+                    if is_cache_hit {
+                        // 第 18.5 批：CacheHit 去重——已有同卡 pending 观点时复用，不重复 insert。
+                        existing = cs::find_pending_by_probe(&conn, k)?;
+                    }
                     if let Some(content) = content_opt {
                         // 宽容解析顶层 verdict（第 17.4 批统一契约）
                         let parsed = world_gov::parse_semantic_verdict(k, &content.to_string());
                         if parsed.get("verdict").is_some() {
-                            conflict_id = Some(cs::insert(&conn, &cs::NewConflict {
-                                probe_key: k.clone(), snap_id: snap_id.clone(), baseline_fp: baseline_fp.clone(),
-                                verdict: parsed.clone(), raw_prompt: built.user.clone(),
-                                raw_response: content.to_string(),
-                                token_in: tok_in, token_out: tok_out,
-                            })?);
-                            let mut f = parsed.clone();
-                            if f.get("key").is_none() { f["key"] = serde_json::json!(k); }
-                            world_gov_emit(&conn, "inspect-batch", &[f])?;
+                            match existing {
+                                Some(eid) => { conflict_id = Some(eid); }
+                                None => {
+                                    conflict_id = Some(cs::insert(&conn, &cs::NewConflict {
+                                        probe_key: k.clone(), snap_id: snap_id.clone(), baseline_fp: baseline_fp.clone(),
+                                        verdict: parsed.clone(), raw_prompt: built.user.clone(),
+                                        raw_response: content.to_string(),
+                                        token_in: tok_in, token_out: tok_out,
+                                    })?);
+                                    let mut f = parsed.clone();
+                                    if f.get("key").is_none() { f["key"] = serde_json::json!(k); }
+                                    world_gov_emit(&conn, "inspect-batch", &[f])?;
+                                }
+                            }
                             parsed_verdict = parsed["verdict"].clone();
                         }
                     }

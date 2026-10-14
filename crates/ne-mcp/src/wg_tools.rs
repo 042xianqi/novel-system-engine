@@ -129,31 +129,44 @@ fn infer_one(
         sp::Outcome::CacheHit { content, .. } => (Some(content.clone()), 0i64, 0i64),
         _ => (None, 0i64, 0i64),
     };
+    let is_cache_hit = matches!(outcome, sp::Outcome::CacheHit { .. });
     let mut conflict_id = None;
     let mut verdict = Value::Null;
+    // 第 18.5 批：CacheHit 去重——命中缓存意味着同 probe_hash 的完全相同输出，
+    // 若该卡已有 pending 观点则跳过 insert（零信息增量，避免重复入库放大复核噪音）。
+    let mut cache_dedup = false;
+    if is_cache_hit {
+        if let Some(existing) = cs::find_pending_by_probe(conn, key)? {
+            conflict_id = Some(existing);
+            cache_dedup = true;
+        }
+    }
     if let Some(content) = content_opt {
         let parsed = ne_agent::world_gov::parse_semantic_verdict(key, &content.to_string());
         if parsed.get("verdict").is_some() {
-            conflict_id = Some(cs::insert(conn, &cs::NewConflict {
-                probe_key: key.to_string(),
-                snap_id: snap_id.clone(),
-                baseline_fp: baseline_fp.clone(),
-                verdict: parsed.clone(),
-                raw_prompt: built.user.clone(),
-                raw_response: content.to_string(),
-                token_in: tok_in,
-                token_out: tok_out,
-            })?);
-            let mut f = parsed.clone();
-            if f.get("key").is_none() {
-                f["key"] = json!(key);
+            if conflict_id.is_none() {
+                conflict_id = Some(cs::insert(conn, &cs::NewConflict {
+                    probe_key: key.to_string(),
+                    snap_id: snap_id.clone(),
+                    baseline_fp: baseline_fp.clone(),
+                    verdict: parsed.clone(),
+                    raw_prompt: built.user.clone(),
+                    raw_response: content.to_string(),
+                    token_in: tok_in,
+                    token_out: tok_out,
+                })?);
+                let mut f = parsed.clone();
+                if f.get("key").is_none() {
+                    f["key"] = json!(key);
+                }
+                let _ = ne_agent::world_gov::emit_semantic_findings(conn, "world-gov inspect [mcp]", &[f]);
             }
-            let _ = ne_agent::world_gov::emit_semantic_findings(conn, "world-gov inspect [mcp]", &[f]);
             verdict = parsed["verdict"].clone();
         }
     }
     Ok(json!({
         "command": "wg_inspect_card", "key": key, "status": status,
+        "cache_dedup": cache_dedup,
         "pipeline": oj, "verdict": verdict, "conflict_id": conflict_id,
         "audit": {"probe_hash": probe_hash, "baseline_fp": baseline_fp, "snap_id": snap_id},
     }))

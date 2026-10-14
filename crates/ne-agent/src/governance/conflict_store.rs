@@ -87,6 +87,21 @@ pub fn insert(conn: &Connection, c: &NewConflict) -> Result<i64> {
     Ok(conn.last_insert_rowid())
 }
 
+/// 第 18.5 批：查某卡是否已有 pending 观点（CacheHit 去重用）。
+///
+/// 背景：`Outcome::CacheHit` 意味着同 probe_hash 的**完全相同输出**——对同一张卡
+/// 重复推理（如幂等续跑）会命中缓存，此时重复 insert 相同观点是零信息增量的
+/// 脏数据。观点库由人终审，重复项只会放大复核噪音。
+/// 返回该卡最新一条 pending 记录的 id（无则 None）。
+pub fn find_pending_by_probe(conn: &Connection, probe_key: &str) -> Result<Option<i64>> {
+    ensure_table(conn)?;
+    let mut stmt = conn.prepare(
+        "SELECT id FROM conflict_records WHERE probe_key=?1 AND review_status='pending' ORDER BY id DESC LIMIT 1",
+    )?;
+    let mut rows = stmt.query_map(params![probe_key], |r| r.get::<_, i64>(0))?;
+    Ok(rows.next().transpose()?)
+}
+
 fn row_to_json(r: &rusqlite::Row) -> rusqlite::Result<Value> {
     let verdict_json: String = r.get(5)?;
     let verdict: Value = serde_json::from_str(&verdict_json).unwrap_or(json!({}));
@@ -239,6 +254,30 @@ mod tests {
             token_in: 100,
             token_out: 20,
         }
+    }
+
+    #[test]
+    fn find_pending_by_probe_dedup() {
+        let c = mem();
+        // 无记录 → None
+        assert_eq!(find_pending_by_probe(&c, "CHAR-10-001").unwrap(), None);
+        // 插入一条 pending → 命中
+        let id1 = insert(&c, &sample()).unwrap();
+        assert_eq!(find_pending_by_probe(&c, "CHAR-10-001").unwrap(), Some(id1));
+        // 已复核（false_alarm）→ 不再算 pending
+        set_review(&c, id1, "false_alarm").unwrap();
+        assert_eq!(find_pending_by_probe(&c, "CHAR-10-001").unwrap(), None);
+        // 多条 pending 时返回最新（id 最大）一条
+        let id2 = insert(&c, &sample()).unwrap();
+        let id3 = insert(&c, &sample()).unwrap();
+        assert_eq!(find_pending_by_probe(&c, "CHAR-10-001").unwrap(), Some(id3));
+        let _ = id2;
+        // 其他卡互不影响
+        let mut other = sample();
+        other.probe_key = "CHAR-10-002".into();
+        let id4 = insert(&c, &other).unwrap();
+        assert_eq!(find_pending_by_probe(&c, "CHAR-10-002").unwrap(), Some(id4));
+        assert_eq!(find_pending_by_probe(&c, "CHAR-10-001").unwrap(), Some(id3));
     }
 
     #[test]

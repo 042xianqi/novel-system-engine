@@ -295,6 +295,32 @@ pub enum Cmd {
         #[command(subcommand)]
         cmd: PipelineCmd,
     },
+    /// 【规约适配】顶层快照入口（= `world-gov diff snap` 别名，对齐规约 `snap create`）
+    ///
+    /// 第 18 批：底层完全复用 `world-gov diff snap`，不另起逻辑。
+    Snap {
+        #[command(subcommand)]
+        cmd: DiffSnapCmd,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
+    /// 【规约适配】顶层 Web 面板入口（= `world-gov web` 别名，对齐规约 `web serve`）
+    Web {
+        #[command(subcommand)]
+        cmd: WebCmd,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
+    /// 【规约适配】顶层沙盘入口（= `world-gov sandbox` 别名，对齐规约 `sandbox spawn`）
+    Sandbox {
+        #[command(subcommand)]
+        cmd: SandboxCmd,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
     /// 管理持久化任务（状态机 + CAS）
     Task {
         #[command(subcommand)]
@@ -880,7 +906,7 @@ pub enum GraphCmd {
         limit: usize,
     },
 }
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
 pub enum SandboxCmd {
     /// 跑一次多步确定性推演（--save 才落库；数值可重放）
     Run {
@@ -943,7 +969,7 @@ pub enum SandboxCmd {
 }
 
 /// sandbox trace 子命令。
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
 pub enum SandboxTraceCmd {
     /// 列出某次推演的逐步轨迹（--run 指定 run_id）
     List {
@@ -1077,7 +1103,7 @@ pub enum LlmConfigCmd {
         force: bool,
     },
 }
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
 pub enum WebCmd {
     /// 启动面板（前台阻塞；Ctrl-C 退出）
     Serve {
@@ -1094,7 +1120,7 @@ pub enum WebCmd {
     },
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
 pub enum DiffCmd {
     /// 快照管理：create | list | delete | export
     Snap {
@@ -1122,7 +1148,7 @@ pub enum DiffCmd {
     },
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
 pub enum DiffSnapCmd {
     /// 拍快照（只存索引+元信息哈希，不复制正文）
     Create {
@@ -1491,5 +1517,63 @@ mod pipeline_alias_tests {
             }
             _ => panic!("应解析为 Web::Serve"),
         }
+    }
+
+    /// 第 18 批补齐：**顶层** `snap create --label X --json` 可解析（对齐规约）。
+    #[test]
+    fn top_snap_create_parses() {
+        let cli = Cli::try_parse_from(["ne-agent", "snap", "create", "--label", "verify-base", "--json"])
+            .expect("顶层 snap create 应可解析");
+        match cli.cmd {
+            Cmd::Snap { cmd: DiffSnapCmd::Create { ref label }, .. } => {
+                assert_eq!(label.as_deref(), Some("verify-base"));
+            }
+            _ => panic!("应解析为 Cmd::Snap(DiffSnapCmd::Create)"),
+        }
+    }
+
+    /// 顶层 `snap list` / `snap delete <id>` 也可用（同 world-gov diff snap 子命令）。
+    #[test]
+    fn top_snap_list_delete_parse() {
+        let cli = Cli::try_parse_from(["ne-agent", "snap", "list"]).unwrap();
+        assert!(matches!(cli.cmd, Cmd::Snap { cmd: DiffSnapCmd::List, .. }));
+        let cli2 = Cli::try_parse_from(["ne-agent", "snap", "delete", "abc"]).unwrap();
+        assert!(matches!(cli2.cmd, Cmd::Snap { cmd: DiffSnapCmd::Delete { .. }, .. }));
+    }
+
+    /// 顶层 `web serve --port 8270 --health-check-only` 可解析（对齐规约）。
+    #[test]
+    fn top_web_serve_health_check_parses() {
+        let cli = Cli::try_parse_from(["ne-agent", "web", "serve", "--port", "8270", "--health-check-only"])
+            .expect("顶层 web serve 应可解析");
+        match cli.cmd {
+            Cmd::Web { cmd: WebCmd::Serve { health_check_only, port, .. }, .. } => {
+                assert!(health_check_only);
+                assert_eq!(port, 8270);
+            }
+            _ => panic!("应解析为 Cmd::Web(WebCmd::Serve)"),
+        }
+    }
+
+    /// 顶层 `sandbox spawn --from-snap X --ai-sandbox --dry-run` 可解析（对齐规约）。
+    #[test]
+    fn top_sandbox_spawn_ai_parses() {
+        let cli = Cli::try_parse_from([
+            "ne-agent", "sandbox", "spawn", "--from-snap", "abc123", "--ai-sandbox", "--dry-run",
+        ])
+        .expect("顶层 sandbox spawn 应可解析");
+        match cli.cmd {
+            Cmd::Sandbox { cmd: SandboxCmd::Spawn { ai_sandbox, dry_run, .. }, .. } => {
+                assert!(ai_sandbox && dry_run);
+            }
+            _ => panic!("应解析为 Cmd::Sandbox(SandboxCmd::Spawn)"),
+        }
+    }
+
+    /// 顶层 `sandbox run --quick warn` 等其他子命令也复用同一枚举。
+    #[test]
+    fn top_sandbox_run_parses() {
+        let cli = Cli::try_parse_from(["ne-agent", "sandbox", "run", "--quick", "warn"]).unwrap();
+        assert!(matches!(cli.cmd, Cmd::Sandbox { cmd: SandboxCmd::Run { .. }, .. }));
     }
 }

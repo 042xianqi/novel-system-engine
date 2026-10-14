@@ -161,6 +161,22 @@ fn run() -> Result<()> {
             let lib_root = cli.work_root.clone().unwrap_or_else(|| vault.workspace());
             run_pipeline(&vault, &lib_root, cmd, cli.json, cli.quiet)
         }
+        // 【规约适配】顶层别名：构造等价的 WorldGovCmd 并委托 run_world_gov（完全复用底层，不另起逻辑）
+        Cmd::Snap { cmd, lib } => {
+            let lib_root = lib.clone().or_else(|| cli.work_root.clone()).unwrap_or_else(|| vault.workspace());
+            let wg = WorldGovCmd::Diff { cmd: DiffCmd::Snap { cmd: cmd.clone() }, lib: None };
+            run_world_gov(&vault, &lib_root, &wg, cli.json, cli.quiet)
+        }
+        Cmd::Web { cmd, lib } => {
+            let lib_root = lib.clone().or_else(|| cli.work_root.clone()).unwrap_or_else(|| vault.workspace());
+            let wg = WorldGovCmd::Web { cmd: cmd.clone(), lib: None };
+            run_world_gov(&vault, &lib_root, &wg, cli.json, cli.quiet)
+        }
+        Cmd::Sandbox { cmd, lib } => {
+            let lib_root = lib.clone().or_else(|| cli.work_root.clone()).unwrap_or_else(|| vault.workspace());
+            let wg = WorldGovCmd::Sandbox { cmd: cmd.clone(), lib: None };
+            run_world_gov(&vault, &lib_root, &wg, cli.json, cli.quiet)
+        }
         Cmd::Task { cmd } => cmds::run_task(&vault, cmd, cli.json),
         Cmd::Subagent { file, session, max_tasks } => {
             cmds::run_subagent(&vault, file, session.as_deref(), *max_tasks, cli.json)

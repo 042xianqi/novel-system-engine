@@ -60,8 +60,13 @@ while IFS= read -r KEY; do
 
     # 逐卡真实核验；非 0 退出码不中止整轮（记 FAIL 继续）
     # 注意：必须 `--semantic --real-semantic` 双开关——只给 real-semantic 会停在 PROBE_READY（不推理）
+    # DRY_RUN=1 时不真实外呼（用 dry_run_mock 后端跑同一条链路），用于无网预演调度/休眠/审计。
     RC=0
-    OUT=$("$B" --work-root "$WORK_ROOT" world-gov inspect-card --key "$KEY" --semantic --real-semantic --json 2>/dev/null) || RC=$?
+    if [ "${DRY_RUN:-0}" = "1" ]; then
+        OUT=$("$B" --work-root "$WORK_ROOT" world-gov inspect-card --key "$KEY" --semantic --json 2>/dev/null) || RC=$?
+    else
+        OUT=$("$B" --work-root "$WORK_ROOT" world-gov inspect-card --key "$KEY" --semantic --real-semantic --json 2>/dev/null) || RC=$?
+    fi
     if [ "$RC" -ne 0 ] || [ -z "$OUT" ]; then
         echo "⚠️  $KEY 返回非 0 退出码（rc=$RC），继续下一张"
         FAIL=$((FAIL + 1))

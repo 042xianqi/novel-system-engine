@@ -13,12 +13,14 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use crate::cli::{Cli, Cmd, LibraryCtlCmd, McpCmd, ModelsCmd, VaultCmd};
+use crate::cli::{Cli, Cmd, LibraryCtlCmd, McpCmd, ModelsCmd, VaultCmd, WorldGovCmd};
 use ne_agent::{RuntimeConfig, Vault};
 use std::path::{Path, PathBuf};
-
 mod cli;
 mod cmds;
+
+/// 法理链文本（与 ne_agent::world_gov::LAW_CHAIN 保持一致的展示用简写）。
+const LAW_CHAIN_TEXT: &str = "L0 ≫ L0.5 ≫ L1 ≫ L1x ≫ ANCHOR ≫ GUARD ≫ L3 ≫ L4";
 
 fn main() {
     if let Err(e) = run() {
@@ -105,6 +107,10 @@ fn run() -> Result<()> {
         Cmd::LibraryCtl { cmd } => {
             let lib_root = cli.work_root.clone().unwrap_or_else(|| vault.workspace());
             run_library_ctl(&lib_root, cmd, cli.json)
+        }
+        Cmd::WorldGov { cmd } => {
+            let lib_root = cli.work_root.clone().unwrap_or_else(|| vault.workspace());
+            run_world_gov(&vault, &lib_root, cmd, cli.json)
         }
         Cmd::AuditChapterCompliance { from, to, volume, lib, semantic } => {
             let lib_root = lib.clone().unwrap_or_else(|| vault.workspace());
@@ -809,6 +815,134 @@ fn run_library_ctl(lib_root: &Path, cmd: &LibraryCtlCmd, json: bool) -> Result<(
     };
     if json { println!("{}", serde_json::to_string_pretty(&out)?); }
     else { println!("{}", serde_json::to_string_pretty(&out)?); }
+    Ok(())
+}
+
+/// world-gov —— 世界观法务官（独立外挂；默认零模型只产探针包；--semantic 才调模型）。
+fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool) -> Result<()> {
+    use ne_agent::world_gov;
+    let conn = ne_agent::governance::open_gov(lib_root)?;
+    match cmd {
+        WorldGovCmd::Bootstrap { dry_run, lib: _ } => {
+            let r = world_gov::bootstrap(&conn, lib_root, *dry_run)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&r)?);
+            } else {
+                println!("== 世界观法理基线（{} 条上层条目）==", r["entry_count"]);
+                println!("基线指纹: {}", r["baseline_fingerprint"]);
+                println!("法理链: {}", LAW_CHAIN_TEXT);
+                if let Some(entries) = r["entries"].as_array() {
+                    for e in entries {
+                        println!("\n[{:5}] {}（{} 字）{}", e["layer"], e["key"], e["chars"], e["fingerprint"]);
+                        println!("  摘要: {}", e["summary"].as_str().unwrap_or(""));
+                        if let Some(bs) = e["boundaries"].as_array() {
+                            if !bs.is_empty() {
+                                println!("  边界/禁止域线索 {} 条：", bs.len());
+                                for b in bs.iter().take(6) {
+                                    println!("    · {}", b.as_str().unwrap_or(""));
+                                }
+                            }
+                        }
+                    }
+                }
+                if *dry_run {
+                    println!("\n[--dry-run] 未写 world_baseline.json");
+                } else {
+                    println!("\n已写入: {}/07_勘误工坊/world_baseline.json", lib_root.display());
+                }
+            }
+        }
+        WorldGovCmd::InspectCard { key, semantic, dry_run, lib: _ } => {
+            let r = world_gov::inspect_card(&conn, lib_root, key)?;
+            if r["status"] == "NOT_FOUND" {
+                if json { println!("{}", serde_json::to_string_pretty(&r)?); }
+                else { println!("未找到 key={key}（不做任何判定）"); }
+                return Ok(());
+            }
+            if !*semantic {
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&r)?);
+                } else {
+                    let p = &r["probe_pack"];
+                    println!("== 探针包 probe_pack（零模型；交上层 agent 或 --semantic 裁决）==");
+                    println!("key={} layer={} chars={} codes={}",
+                        p["key"], p["layer"], p["card_chars"], p["card_codes"]);
+                    println!("候选上层法理 {} 条（按优先级降序）：",
+                        p["candidate_laws"].as_array().map(|a| a.len()).unwrap_or(0));
+                    if let Some(laws) = p["candidate_laws"].as_array() {
+                        for l in laws {
+                            println!("  [{:5}] {}  overlap={:?}  依据: {}",
+                                l["layer"], l["key"], l["char_overlap"],
+                                l["basis_snippet"].as_str().unwrap_or("").chars().take(60).collect::<String>());
+                        }
+                    }
+                    if let Some(qs) = p["questions"].as_array() {
+                        println!("待裁决问题：");
+                        for q in qs { println!("  ? {}", q.as_str().unwrap_or("")); }
+                    }
+                }
+                return Ok(());
+            }
+            // --semantic：显式开关才走到这里
+            if *dry_run {
+                let (sys, usr) = world_gov::semantic_messages(&r["probe_pack"]);
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                        "dry_run": true, "system": sys, "user_chars": usr.chars().count(),
+                    }))?);
+                } else {
+                    println!("[--dry-run] 只打印将发送的 prompt，不调模型、不写库：");
+                    println!("── system ──\n{sys}\n── user（{} 字）──\n{}", usr.chars().count(),
+                        usr.chars().take(500).collect::<String>());
+                }
+                return Ok(());
+            }
+            let (sys, usr) = world_gov::semantic_messages(&r["probe_pack"]);
+            let llm = RuntimeConfig::load(vault.root())?.llm_params(&vault.llm_dir())?;
+            let msgs = vec![
+                ne_engine::llm::Message::system(sys),
+                ne_engine::llm::Message::user(usr),
+            ];
+            let out = ne_engine::llm::call(&llm, &msgs)?;
+            let verdict = world_gov::parse_semantic_verdict(key, &out.content);
+            // 语义风险入库（is_semantic=1）；UNCERTAIN 不入风险库
+            let v = verdict["verdict"].as_str().unwrap_or("UNCERTAIN");
+            if v == "HIGH-RISK" || v == "WARN" {
+                let law = verdict["findings"][0]["law_ref"].as_str().unwrap_or("");
+                ne_agent::governance::record_risk_semantic(&conn, "world_gov",
+                    None, None, "world-gov inspect-card", v,
+                    &format!("语义检视 {key}: {v}（依据: {law}）"), law)?;
+            }
+            if json {
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "command": "world-gov inspect-card", "key": key, "semantic": true,
+                    "verdict": verdict,
+                }))?);
+            } else {
+                println!("== 语义检视结论 key={key} verdict={v} ==");
+                println!("{}", serde_json::to_string_pretty(&verdict)?);
+            }
+        }
+        WorldGovCmd::Trace { key, lib: _ } => {
+            let r = world_gov::trace(&conn, lib_root, key)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&r)?);
+            } else if r["status"] == "NOT_FOUND" {
+                println!("未找到 key={key}");
+            } else {
+                println!("== 法理溯源链 ==");
+                println!("{}", r["visual"].as_str().unwrap_or(""));
+                println!("（共 {} 层上层约束；详见 --json）", r["chain_len"]);
+            }
+        }
+        WorldGovCmd::ScanLibrary { semantic, slice: _, dry_run: _, lib: _ } => {
+            let _ = semantic;
+            anyhow::bail!("scan-library 属第 2 批交付（重算力语义扫描），本轮未实现；第 1 批已交付 bootstrap/inspect-card/trace。");
+        }
+        WorldGovCmd::CheckOutline { volume: _, semantic: _, dry_run: _, lib: _ } => {
+            anyhow::bail!("check-outline 属第 2 批交付（卷细纲法理评估），本轮未实现。");
+        }
+    }
     Ok(())
 }
 

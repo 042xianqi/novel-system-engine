@@ -69,7 +69,56 @@ pub fn open_gov(lib_root: &Path) -> Result<Connection> {
     let conn = Connection::open(lib_root.join("novel.db"))?;
     conn.execute_batch(include_str!("governance_schema.sql"))?;
     ensure_library_index_cols(&conn)?;
+    ensure_risk_index_cols(&conn)?;
     Ok(conn)
+}
+
+/// 幂等补齐 risk_index 的语义治理列（is_semantic/law_basis）；已存在则跳过。
+/// 区分【结构脏点（library-ctl，is_semantic=0）】与【世界观法理脏点（world-gov，is_semantic=1）】。
+pub fn ensure_risk_index_cols(conn: &Connection) -> Result<()> {
+    let mut have = std::collections::HashSet::new();
+    {
+        let mut st = conn.prepare("PRAGMA table_info(risk_index)")?;
+        let it = st.query_map([], |r| r.get::<_, String>(1))?;
+        for x in it.filter_map(|v| v.ok()) { have.insert(x); }
+    }
+    if !have.contains("is_semantic") {
+        conn.execute("ALTER TABLE risk_index ADD COLUMN is_semantic INTEGER NOT NULL DEFAULT 0", [])?;
+    }
+    if !have.contains("law_basis") {
+        conn.execute("ALTER TABLE risk_index ADD COLUMN law_basis TEXT DEFAULT ''", [])?;
+    }
+    Ok(())
+}
+
+/// 写入一条**语义类**风险（world-gov 专用；is_semantic=1 并携带法理依据原话）。
+/// 幂等规则与 record_risk 一致。
+pub fn record_risk_semantic(
+    conn: &Connection,
+    risk_type: &str,
+    volume: Option<&str>,
+    chapter: Option<u32>,
+    source: &str,
+    level: &str,
+    message: &str,
+    law_basis: &str,
+) -> Result<()> {
+    let exists: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM risk_index WHERE risk_type=?1 AND IFNULL(volume,'')=IFNULL(?2,'')
+               AND IFNULL(chapter,0)=IFNULL(?3,0) AND message=?4 AND resolved=0 LIMIT 1",
+            params![risk_type, volume, chapter, message],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if exists.is_none() {
+        conn.execute(
+            "INSERT INTO risk_index(risk_type,volume,chapter,source,message,level,is_semantic,law_basis)
+             VALUES(?1,?2,?3,?4,?5,?6,1,?7)",
+            params![risk_type, volume, chapter, source, message, level, law_basis],
+        )?;
+    }
+    Ok(())
 }
 
 /// 幂等补齐 library_index 的新列（title/tags）；已存在则跳过。
@@ -623,12 +672,12 @@ pub fn refs_graph(conn: &Connection, lib_root: &Path, volume: &str) -> Result<Va
     Ok(json!({"volume": volume, "chapters": per_chapter.len(), "per_chapter": per_chapter}))
 }
 
-/// 风险清单（支持只看未解决）。
+/// 风险清单（支持只看未解决）；输出按 结构脏点(is_semantic=0) / 语义脏点(is_semantic=1) 分组。
 pub fn risk_list(conn: &Connection, unresolved_only: bool) -> Result<Value> {
     let sql = if unresolved_only {
-        "SELECT id,risk_type,IFNULL(volume,''),IFNULL(chapter,0),source,level,message,ts,resolved FROM risk_index WHERE resolved=0 ORDER BY level DESC, id DESC"
+        "SELECT id,risk_type,IFNULL(volume,''),IFNULL(chapter,0),source,level,message,ts,resolved,IFNULL(is_semantic,0),IFNULL(law_basis,'') FROM risk_index WHERE resolved=0 ORDER BY level DESC, id DESC"
     } else {
-        "SELECT id,risk_type,IFNULL(volume,''),IFNULL(chapter,0),source,level,message,ts,resolved FROM risk_index ORDER BY id DESC"
+        "SELECT id,risk_type,IFNULL(volume,''),IFNULL(chapter,0),source,level,message,ts,resolved,IFNULL(is_semantic,0),IFNULL(law_basis,'') FROM risk_index ORDER BY id DESC"
     };
     let mut st = conn.prepare(sql)?;
     let rows: Vec<Value> = st.query_map([], |r| Ok(json!({
@@ -637,6 +686,8 @@ pub fn risk_list(conn: &Connection, unresolved_only: bool) -> Result<Value> {
         "source": r.get::<_,String>(4)?, "level": r.get::<_,String>(5)?,
         "message": r.get::<_,String>(6)?, "ts": r.get::<_,String>(7)?,
         "resolved": r.get::<_,i64>(8)?,
+        "is_semantic": r.get::<_,i64>(9)?,
+        "law_basis": r.get::<_,String>(10)?,
     }))).map(|it| it.filter_map(|x| x.ok()).collect()).unwrap_or_default();
     let counts: BTreeMap<String, i64> = {
         let mut m = BTreeMap::new();
@@ -647,7 +698,15 @@ pub fn risk_list(conn: &Connection, unresolved_only: bool) -> Result<Value> {
         }
         m
     };
-    Ok(json!({"total": rows.len(), "unresolved_by_level": counts, "items": rows}))
+    let structural: Vec<&Value> = rows.iter().filter(|r| r["is_semantic"].as_i64().unwrap_or(0) == 0).collect();
+    let semantic: Vec<&Value> = rows.iter().filter(|r| r["is_semantic"].as_i64().unwrap_or(0) == 1).collect();
+    Ok(json!({
+        "total": rows.len(),
+        "unresolved_by_level": counts,
+        "structural_count": structural.len(),
+        "semantic_count": semantic.len(),
+        "items": rows,
+    }))
 }
 
 // ────────────────────────────────── 5. lib-checkpoint

@@ -256,6 +256,11 @@ pub enum Cmd {
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,
     },
+    /// 世界观认知治理层（独立外挂；语义默认关，只产证据与建议）
+    WorldGov {
+        #[command(subcommand)]
+        cmd: WorldGovCmd,
+    },
     /// 管理外部 MCP 服务
     Mcp {
         #[command(subcommand)]
@@ -434,6 +439,66 @@ pub enum ModelsCmd {
     Check,
 }
 
+
+#[derive(Subcommand, Debug)]
+pub enum WorldGovCmd {
+    /// 建立世界观法理基线（只存摘要指纹，不存原文；不修改任何文件）
+    Bootstrap {
+        /// 沙盘：只输出报告，不写 world_baseline.json
+        #[arg(long)]
+        dry_run: bool,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
+    /// 单卡深度检视（默认产探针包；--semantic 才调模型）
+    InspectCard {
+        /// 卡片 key（如 CHAR-90-038）
+        #[arg(long)]
+        key: String,
+        /// 开启才调模型做语义裁决
+        #[arg(long)]
+        semantic: bool,
+        /// 沙盘：--semantic 时只打印将发送的 prompt，不调模型
+        #[arg(long)]
+        dry_run: bool,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
+    /// 法理溯源链（key ← 受约束于 ← 上层 ← L0 源头）
+    Trace {
+        #[arg(long)]
+        key: String,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
+    /// 【预留·第 2 批】全库语义脏点扫描（--semantic + --slice 分批）
+    ScanLibrary {
+        /// 显式开关；开启才调模型
+        #[arg(long)]
+        semantic: bool,
+        /// 分批：N/M（如 1/4）
+        #[arg(long)]
+        slice: Option<String>,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
+    /// 【预留·第 2 批】卷细纲法理评估（只出报告不改细纲）
+    CheckOutline {
+        #[arg(long, default_value = "卷01")]
+        volume: String,
+        #[arg(long)]
+        semantic: bool,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
+}
 
 #[derive(Subcommand, Debug)]
 pub enum LibraryCtlCmd {

@@ -45,6 +45,7 @@ pub mod vault;
 pub mod web;
 pub mod web_html;
 pub mod web_search;
+pub mod world_gov;
 
 pub use config::RuntimeConfig;
 pub use vault::Vault;

@@ -101,7 +101,7 @@ fn run() -> Result<()> {
             return r;
         }
         Cmd::AuditLayerHealth { semantic, lib } => {
-            let lib_root = lib.clone().unwrap_or_else(|| vault.workspace());
+            let lib_root = lib.clone().or_else(|| cli.work_root.clone()).unwrap_or_else(|| vault.workspace());
             run_layer_health(&lib_root, *semantic, cli.json)
         }
         Cmd::LibraryCtl { cmd } => {
@@ -113,23 +113,23 @@ fn run() -> Result<()> {
             run_world_gov(&vault, &lib_root, cmd, cli.json)
         }
         Cmd::AuditChapterCompliance { from, to, volume, lib, semantic } => {
-            let lib_root = lib.clone().unwrap_or_else(|| vault.workspace());
+            let lib_root = lib.clone().or_else(|| cli.work_root.clone()).unwrap_or_else(|| vault.workspace());
             run_compliance(&vault, &lib_root, *from, *to, volume, *semantic, cli.json)
         }
         Cmd::AuditRefs { volume, lib } => {
-            let lib_root = lib.clone().unwrap_or_else(|| vault.workspace());
+            let lib_root = lib.clone().or_else(|| cli.work_root.clone()).unwrap_or_else(|| vault.workspace());
             run_refs(&lib_root, volume, cli.json)
         }
         Cmd::AuditRiskList { all, lib } => {
-            let lib_root = lib.clone().unwrap_or_else(|| vault.workspace());
+            let lib_root = lib.clone().or_else(|| cli.work_root.clone()).unwrap_or_else(|| vault.workspace());
             run_risk_list(&lib_root, !*all, cli.json)
         }
         Cmd::LibCheckpoint { lib, out } => {
-            let lib_root = lib.clone().unwrap_or_else(|| vault.workspace());
+            let lib_root = lib.clone().or_else(|| cli.work_root.clone()).unwrap_or_else(|| vault.workspace());
             run_checkpoint(&lib_root, out.clone(), cli.json)
         }
         Cmd::AuditMaterialCoverage { from, to, volume, lib } => {
-            let lib_root = lib.clone().unwrap_or_else(|| vault.workspace());
+            let lib_root = lib.clone().or_else(|| cli.work_root.clone()).unwrap_or_else(|| vault.workspace());
             if let Some(to) = to {
                 let rep = ne_agent::audit_material::audit_batch(&lib_root, volume, *from, *to)?;
                 if cli.json {
@@ -923,7 +923,7 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool) 
                 println!("{}", serde_json::to_string_pretty(&verdict)?);
             }
         }
-        WorldGovCmd::Trace { key, lib: _ } => {
+        WorldGovCmd::Trace { key, dry_run: _, lib: _ } => {
             let r = world_gov::trace(&conn, lib_root, key)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&r)?);

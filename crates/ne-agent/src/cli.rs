@@ -466,10 +466,13 @@ pub enum WorldGovCmd {
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,
     },
-    /// 法理溯源链（key ← 受约束于 ← 上层 ← L0 源头）
+    /// 法理溯源链（key ← 受约束于 ← 上层 ← L0 源头；纯只读）
     Trace {
         #[arg(long)]
         key: String,
+        /// 兼容沙盘写法：本命令纯只读，接受但无副作用
+        #[arg(long)]
+        dry_run: bool,
         /// 资料库根
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,

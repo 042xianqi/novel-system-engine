@@ -821,8 +821,22 @@ fn run_library_ctl(lib_root: &Path, cmd: &LibraryCtlCmd, json: bool) -> Result<(
 /// world-gov —— 世界观法务官（独立外挂；默认零模型只产探针包；--semantic 才调模型）。
 fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool) -> Result<()> {
     use ne_agent::world_gov;
+    use ne_agent::governance::{get_semantic_gate, semantic_gate_status};
     let conn = ne_agent::governance::open_gov(lib_root)?;
     match cmd {
+        WorldGovCmd::GateCheck { semantic } => {
+            let st = semantic_gate_status(*semantic);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&st)?);
+            } else {
+                println!("== 语义门控状态 ==");
+                println!("① 编译期 SEMANTIC_ENABLE_GATE: {}", st["compile_gate"]);
+                println!("② 命令行 --semantic:            {}", st["cli_semantic"]);
+                println!("③ NOVEL_SEMANTIC_UNLOCK=yes:    {}（raw: {}）", st["env_unlock"], st["env_raw"]);
+                println!("→ {}", st["status"]);
+            }
+            return Ok(());
+        }
         WorldGovCmd::Bootstrap { dry_run, lib: _ } => {
             let r = world_gov::bootstrap(&conn, lib_root, *dry_run)?;
             if json {
@@ -883,12 +897,13 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool) 
                 }
                 return Ok(());
             }
-            // --semantic：显式开关才走到这里
+            // --semantic：dry-run 沙盘不发请求，永远放行预览；真实请求才过门控
             if *dry_run {
                 let (sys, usr) = world_gov::semantic_messages(&r["probe_pack"]);
                 if json {
                     println!("{}", serde_json::to_string_pretty(&serde_json::json!({
                         "dry_run": true, "system": sys, "user_chars": usr.chars().count(),
+                        "gate": semantic_gate_status(*semantic),
                     }))?);
                 } else {
                     println!("[--dry-run] 只打印将发送的 prompt，不调模型、不写库：");
@@ -897,31 +912,30 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool) 
                 }
                 return Ok(());
             }
-            let (sys, usr) = world_gov::semantic_messages(&r["probe_pack"]);
-            let llm = RuntimeConfig::load(vault.root())?.llm_params(&vault.llm_dir())?;
-            let msgs = vec![
-                ne_engine::llm::Message::system(sys),
-                ne_engine::llm::Message::user(usr),
-            ];
-            let out = ne_engine::llm::call(&llm, &msgs)?;
-            let verdict = world_gov::parse_semantic_verdict(key, &out.content);
-            // 语义风险入库（is_semantic=1）；UNCERTAIN 不入风险库
-            let v = verdict["verdict"].as_str().unwrap_or("UNCERTAIN");
-            if v == "HIGH-RISK" || v == "WARN" {
-                let law = verdict["findings"][0]["law_ref"].as_str().unwrap_or("");
-                ne_agent::governance::record_risk_semantic(&conn, "world_gov",
-                    None, None, "world-gov inspect-card", v,
-                    &format!("语义检视 {key}: {v}（依据: {law}）"), law)?;
+            // 真实请求：三条件门控收口，未解锁一律 requested_but_locked（绝不裸调 llm::call）
+            if !get_semantic_gate(*semantic) {
+                let st = semantic_gate_status(*semantic);
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                        "command": "world-gov inspect-card", "key": key,
+                        "status": "REQUESTED_BUT_LOCKED",
+                        "probe_pack": r["probe_pack"],
+                        "gate": st,
+                    }))?);
+                } else {
+                    println!("[门控拦截] --semantic 真实请求未解锁（用 world-gov gate-check 查三条件真值）：");
+                    println!("  ① 编译期 SEMANTIC_ENABLE_GATE: {}", st["compile_gate"]);
+                    println!("  ② 命令行 --semantic:            {}", st["cli_semantic"]);
+                    println!("  ③ NOVEL_SEMANTIC_UNLOCK=yes:    {}（raw: {}）", st["env_unlock"], st["env_raw"]);
+                    println!("本次不发起任何真实模型请求，仅产探针包（可用 --dry-run 预览将发送的 prompt）。");
+                }
+                return Ok(());
             }
-            if json {
-                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                    "command": "world-gov inspect-card", "key": key, "semantic": true,
-                    "verdict": verdict,
-                }))?);
-            } else {
-                println!("== 语义检视结论 key={key} verdict={v} ==");
-                println!("{}", serde_json::to_string_pretty(&verdict)?);
-            }
+            // 【TODO·放行令后填充】真实 prompt 组装 + llm::call 调用留在这里；
+            // 走到此处前提：get_semantic_gate()==true（三条件全开）。
+            anyhow::bail!(
+                "门控已开但真实 LLM 请求逻辑尚未实现（等待放行令）；本次请求未发出，未消耗任何 token。"
+            );
         }
         WorldGovCmd::Trace { key, dry_run: _, lib: _ } => {
             let r = world_gov::trace(&conn, lib_root, key)?;

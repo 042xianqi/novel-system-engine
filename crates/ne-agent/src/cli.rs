@@ -477,6 +477,13 @@ pub enum WorldGovCmd {
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,
     },
+    /// 【调试】门控状态检查：打印三条件真值（hidden，不出现在 help）
+    #[command(hide = true)]
+    GateCheck {
+        /// 显式携带 --semantic 模拟"命令行已开"场景
+        #[arg(long)]
+        semantic: bool,
+    },
     /// 【预留·第 2 批】全库语义脏点扫描（--semantic + --slice 分批）
     ScanLibrary {
         /// 显式开关；开启才调模型

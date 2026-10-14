@@ -400,15 +400,44 @@ pub fn trace(conn: &Connection, lib_root: &Path, key: &str) -> Result<Value> {
 
 // ────────────────────────────────── 4. world-gov scan-library（骨架）
 
-/// 解析 `--slice N/M`（N=第几片从 1 起，M=总片数）。非法输入返回 None。
-pub fn parse_slice(s: &str) -> Option<(usize, usize)> {
-    let (a, b) = s.split_once('/')?;
-    let n: usize = a.trim().parse().ok()?;
-    let m: usize = b.trim().parse().ok()?;
-    if n == 0 || m == 0 || n > m {
-        return None;
+/// 解析 `--slice N/M`（N=第几片从 1 起，M=总片数）。
+/// 边界防御：分母<2 拒绝（分1片等于没分）；非数字/空段拒绝；N>M 拒绝。
+/// 返回 Err(友好文案)，调用方退出非 0——**禁止静默截断**。
+pub fn parse_slice_strict(s: &str) -> Result<(usize, usize), String> {
+    let t = s.trim();
+    if t.is_empty() {
+        return Err("--slice 不能为空，格式应为 N/M（如 1/4）".into());
     }
-    Some((n, m))
+    let (a, b) = t
+        .split_once('/')
+        .ok_or_else(|| format!("--slice 缺少 '/'：格式应为 N/M（如 1/4），收到: {s}"))?;
+    let bad_num = |x: &str| format!("--slice 含非数字段：'{x}'（格式 N/M，如 1/4）");
+    let n: usize = a.trim().parse().map_err(|_| bad_num(a))?;
+    let m: usize = b.trim().parse().map_err(|_| bad_num(b))?;
+    if m < 2 {
+        return Err(format!("--slice 分母必须 ≥2（分 1 片等于没分批），收到: {s}"));
+    }
+    if n == 0 {
+        return Err("--slice 起始片 N 必须 ≥1".into());
+    }
+    if n > m {
+        return Err(format!("--slice 越界：N({n}) 不得大于 M({m})"));
+    }
+    Ok((n, m))
+}
+
+/// 校验分片粒度：单分片条数不得超过 max_items（防一次性爆算力）。
+/// 超限返回 Err，调用方应提示调大 M。
+pub fn check_slice_granularity(n: usize, m: usize, total: usize, max_items: usize) -> Result<(), String> {
+    let size = total.div_ceil(m.max(1));
+    if size > max_items {
+        return Err(format!(
+            "单分片 {size} 条超过上限 {max_items}（全库 {total} 条 / {m} 片）；请调大 M（建议 ≥ {}）",
+            total.div_ceil(max_items)
+        ));
+    }
+    let _ = n;
+    Ok(())
 }
 
 /// 第 n 片（共 m 片）在 len 条列表上的连续区间 [start, end)。
@@ -421,7 +450,10 @@ pub fn slice_range(n: usize, m: usize, len: usize) -> (usize, usize) {
 }
 
 /// 把（未来的）语义项路由进 risk_index：WARN/HIGH-RISK 入语义桶（is_semantic=1 + law_basis）；
-/// UNCERTAIN/OK **不入库**（铁则：拿不准不强行归为风险）。返回入库条数。
+/// UNCERTAIN/OK **不入库**（铁则：拿不准不强行归为风险）。返回真实入库条数。
+///
+/// 幂等键 = risk_type + source + message；message 由 **key + kind + verdict + law_hash** 复合构成，
+/// 同一条语义风险（同 key 同判定同依据）重复路由不会重复刷库。
 pub fn emit_semantic_findings(
     conn: &Connection,
     source_cmd: &str,
@@ -436,7 +468,19 @@ pub fn emit_semantic_findings(
         let key = f["key"].as_str().unwrap_or("");
         let kind = f["kind"].as_str().unwrap_or("语义风险");
         let law = f["law_ref"].as_str().unwrap_or("");
-        let msg = format!("语义{kind}: {key} :: {}", f["explain"].as_str().unwrap_or(""));
+        // law_hash：依据文本的轻量指纹（FNV-1a 截 8 hex），使幂等键对"依据被改写"敏感
+        let law_hash = {
+            let mut h: u64 = 0xcbf29ce484222325;
+            for b in law.as_bytes() {
+                h ^= *b as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
+            format!("{h:08x}")
+        };
+        let msg = format!(
+            "语义{kind}[{v}] {key} :: law#{law_hash} :: {}",
+            f["explain"].as_str().unwrap_or("")
+        );
         if crate::governance::record_risk_semantic(
             conn, "world_gov", None, None, source_cmd, v, &msg, law,
         )? {
@@ -460,9 +504,7 @@ pub fn scan_library(
     dry_run: bool,
 ) -> Result<Value> {
     let (sn, sm) = match slice {
-        Some(s) => parse_slice(s).ok_or_else(|| {
-            anyhow::anyhow!("--slice 格式应为 N/M（如 1/4），N≥1 且 N≤M；收到: {s}")
-        })?,
+        Some(s) => parse_slice_strict(s).map_err(|e| anyhow::anyhow!("{e}"))?,
         None => (1, 1),
     };
     let mut stmt = conn.prepare(
@@ -482,6 +524,8 @@ pub fn scan_library(
         .filter_map(|x| x.ok())
         .collect();
     let total = all.len();
+    // 粒度防御：单分片 >250 条拒绝（防一次性爆算力），提示调大 M
+    check_slice_granularity(sn, sm, total, 250).map_err(|e| anyhow::anyhow!("{e}"))?;
     let (start, end) = slice_range(sn, sm, total);
     let probe_items: Vec<Value> = all[start..end].to_vec();
 
@@ -523,6 +567,29 @@ pub fn scan_library(
 
 // ────────────────────────────────── 5. world-gov check-outline（骨架）
 
+/// 卷名合法性防护：仅允许 `卷01`~`卷99`（防路径逃逸/绝对路径注入）。
+/// 用 strip_prefix 而非字节切片——"卷"是 3 字节 UTF-8，`[1..]` 会切在字符中间 panic。
+pub fn validate_volume_name(volume: &str) -> Result<(), String> {
+    let digits = match volume.strip_prefix('卷') {
+        Some(d) => d,
+        None => {
+            return Err(format!(
+                "卷名非法：'{volume}'（仅允许 卷01~卷99；拒绝 ../、绝对路径等注入）"
+            ))
+        }
+    };
+    let shape_ok = !digits.is_empty()
+        && digits.len() <= 2
+        && digits.chars().all(|c| c.is_ascii_digit());
+    let n = digits.parse::<u32>().ok();
+    if !(shape_ok && matches!(n, Some(1..=99))) {
+        return Err(format!(
+            "卷名非法：'{volume}'（仅允许 卷01~卷99；拒绝 ../、绝对路径等注入）"
+        ));
+    }
+    Ok(())
+}
+
 /// check-outline 骨架：输出**卷细纲探针包**（零模型；只出报告不改细纲）。
 ///
 /// 定位该卷 L3 细纲 → 附上层法理基线摘要 + 越界/自洽/L4支撑三问 + verdict_rule；
@@ -534,6 +601,8 @@ pub fn check_outline(
     semantic: bool,
     dry_run: bool,
 ) -> Result<Value> {
+    // 路径逃逸防护：仅允许 卷01~卷99
+    validate_volume_name(volume).map_err(|e| anyhow::anyhow!("{e}"))?;
     let mut stmt = conn.prepare(
         "SELECT key,IFNULL(source,''),IFNULL(title,''),chars FROM library_index
          WHERE layer='L3' AND (source LIKE '%'||?1||'%' OR key LIKE '%'||?1||'%')
@@ -570,6 +639,11 @@ pub fn check_outline(
     }
 
     let baseline = baseline_entries(conn)?;
+    if files.is_empty() {
+        return Err(anyhow::anyhow!(
+            "未找到卷 {volume} 的 L3 细纲（library_index 层无匹配文件）；请确认卷号或先跑 library-ctl init"
+        ));
+    }
     let baseline_brief: Vec<Value> = baseline
         .iter()
         .map(|e| json!({
@@ -712,12 +786,12 @@ mod tests {
 
     #[test]
     fn parse_slice_accepts_valid_and_rejects_bad() {
-        assert_eq!(parse_slice("1/4"), Some((1, 4)));
-        assert_eq!(parse_slice("4/4"), Some((4, 4)));
-        assert_eq!(parse_slice("0/4"), None, "N 必须 ≥1");
-        assert_eq!(parse_slice("5/4"), None, "N 不得大于 M");
-        assert_eq!(parse_slice("abc"), None);
-        assert_eq!(parse_slice("2/"), None);
+        assert_eq!(parse_slice_strict("1/4").unwrap(), (1, 4));
+        assert_eq!(parse_slice_strict("4/4").unwrap(), (4, 4));
+        assert!(parse_slice_strict("0/4").is_err(), "N 必须 ≥1");
+        assert!(parse_slice_strict("5/4").is_err(), "N 不得大于 M");
+        assert!(parse_slice_strict("abc").is_err());
+        assert!(parse_slice_strict("2/").is_err());
     }
 
     #[test]
@@ -764,5 +838,82 @@ mod tests {
         let n2 = emit_semantic_findings(&conn, "s", &f).unwrap();
         assert_eq!(n1, 1);
         assert_eq!(n2, 0, "同 finding 重复路由必须幂等");
+    }
+
+    // ─────── 第 2 批加固：门控 + 边界防御 ───────
+
+    #[test]
+    fn gate_logic_all_8_combinations() {
+        use crate::governance::gate_logic;
+        // 三条件全真才开门；8 种组合全覆盖
+        assert!(!gate_logic(false, false, false));
+        assert!(!gate_logic(false, false, true));
+        assert!(!gate_logic(false, true, false));
+        assert!(!gate_logic(false, true, true), "编译侧 false 时其余再真也不开门");
+        assert!(!gate_logic(true, false, false));
+        assert!(!gate_logic(true, false, true));
+        assert!(!gate_logic(true, true, false));
+        assert!(gate_logic(true, true, true), "唯一开门组合");
+    }
+
+    #[test]
+    fn semantic_gate_compile_default_is_false() {
+        // 编译侧硬开关默认必须 false（防误提交 true）
+        assert!(!crate::governance::SEMANTIC_ENABLE_GATE);
+    }
+
+    #[test]
+    fn parse_slice_strict_rejects_all_bad_shapes() {
+        // 分母 < 2
+        assert!(parse_slice_strict("1/1").is_err(), "分1片等于没分批");
+        // 非数字 / 空段 / 缺斜杠
+        assert!(parse_slice_strict("a/b").is_err());
+        assert!(parse_slice_strict("2/").is_err());
+        assert!(parse_slice_strict("/4").is_err());
+        assert!(parse_slice_strict("abc").is_err());
+        assert!(parse_slice_strict("").is_err());
+        // 越界 / 零
+        assert!(parse_slice_strict("5/4").is_err(), "N 不得大于 M");
+        assert!(parse_slice_strict("0/4").is_err(), "N 必须 ≥1");
+        // 合法
+        assert_eq!(parse_slice_strict("1/4").unwrap(), (1, 4));
+        assert_eq!(parse_slice_strict("4/4").unwrap(), (4, 4));
+    }
+
+    #[test]
+    fn slice_granularity_blocks_oversized_slice() {
+        // 684 条 / 2 片 = 342 条/片 > 250 上限 → 拒绝
+        assert!(check_slice_granularity(1, 2, 684, 250).is_err());
+        // 684 / 4 = 171 ≤ 250 → 放行
+        assert!(check_slice_granularity(1, 4, 684, 250).is_ok());
+        // 边界：恰好 250 放行，251 拒绝
+        assert!(check_slice_granularity(1, 2, 500, 250).is_ok());
+        assert!(check_slice_granularity(1, 2, 501, 250).is_err());
+    }
+
+    #[test]
+    fn volume_name_blocks_path_escape() {
+        assert!(validate_volume_name("卷01").is_ok());
+        assert!(validate_volume_name("卷99").is_ok());
+        // 路径逃逸 / 注入 / 越界数字
+        assert!(validate_volume_name("../etc").is_err(), "路径逃逸必须被拦");
+        assert!(validate_volume_name("/etc/passwd").is_err());
+        assert!(validate_volume_name("卷100").is_err(), "仅允许 卷01~卷99");
+        assert!(validate_volume_name("卷0").is_err());
+        assert!(validate_volume_name("卷").is_err());
+        assert!(validate_volume_name("卷ab").is_err());
+        assert!(validate_volume_name("").is_err());
+    }
+
+    #[test]
+    fn emit_idempotent_key_changes_when_law_changes() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("governance_schema.sql")).unwrap();
+        crate::governance::ensure_risk_index_cols(&conn).unwrap();
+        let f1 = vec![serde_json::json!({"key":"K","verdict":"HIGH-RISK","kind":"k","law_ref":"铁则原文A","explain":"e"})];
+        let f2 = vec![serde_json::json!({"key":"K","verdict":"HIGH-RISK","kind":"k","law_ref":"铁则原文B","explain":"e"})];
+        assert_eq!(emit_semantic_findings(&conn, "s", &f1).unwrap(), 1);
+        assert_eq!(emit_semantic_findings(&conn, "s", &f1).unwrap(), 0, "同 key+verdict+law 重复 → 幂等拦");
+        assert_eq!(emit_semantic_findings(&conn, "s", &f2).unwrap(), 1, "依据文本变化 → law_hash 变 → 允许新入库");
     }
 }

@@ -123,6 +123,42 @@ pub fn record_risk_semantic(
     }
 }
 
+// ────────────────────────────────── 语义总门控（集中收口）
+
+/// 编译期硬开关：**默认 false**。
+/// ⚠️ 禁止直接改成 true 绕过运行时条件；三条件全真才允许真实模型请求。
+pub const SEMANTIC_ENABLE_GATE: bool = false;
+
+/// 门控拒绝时的统一提示文案。
+pub const SEMANTIC_LOCKED_MSG: &str =
+    "requested_but_locked（三条件未同时成立：SEMANTIC_ENABLE_GATE && --semantic && NOVEL_SEMANTIC_UNLOCK=yes）";
+
+/// 门控纯逻辑（可测）：三条件全真才开门。
+pub fn gate_logic(compile_gate: bool, cli_semantic: bool, env_unlock: bool) -> bool {
+    compile_gate && cli_semantic && env_unlock
+}
+
+/// 门控集中收口：所有将来要调模型的点必须经过它，**禁止裸 call llm::call**。
+pub fn get_semantic_gate(cli_semantic: bool) -> bool {
+    let env_ok = std::env::var("NOVEL_SEMANTIC_UNLOCK").map(|v| v == "yes").unwrap_or(false);
+    gate_logic(SEMANTIC_ENABLE_GATE, cli_semantic, env_ok)
+}
+
+/// 门控状态明细（gate-check 用）：打印三条件真值。
+pub fn semantic_gate_status(cli_semantic: bool) -> Value {
+    let env_raw = std::env::var("NOVEL_SEMANTIC_UNLOCK").unwrap_or_default();
+    let env_ok = env_raw == "yes";
+    let open = gate_logic(SEMANTIC_ENABLE_GATE, cli_semantic, env_ok);
+    json!({
+        "compile_gate": SEMANTIC_ENABLE_GATE,
+        "cli_semantic": cli_semantic,
+        "env_unlock": env_ok,
+        "env_raw": if env_raw.is_empty() { "(未设置)".to_string() } else { env_raw },
+        "open": open,
+        "status": if open { "OPEN（允许真实模型请求）".to_string() } else { SEMANTIC_LOCKED_MSG.to_string() },
+    })
+}
+
 /// 幂等补齐 library_index 的新列（title/tags）；已存在则跳过。
 fn ensure_library_index_cols(conn: &Connection) -> Result<()> {
     let mut have = std::collections::HashSet::new();

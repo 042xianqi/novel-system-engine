@@ -521,6 +521,9 @@ pub enum WorldGovCmd {
         /// 增量扫描：Unix 时间戳数字，或 `last`（读 .scan_snapshot.json 的上次锚点）
         #[arg(long)]
         since: Option<String>,
+        /// 基于版本快照做增量（自该快照以来 增/改 的条目；第 11 批）
+        #[arg(long = "since-snap")]
+        since_snap: Option<String>,
         /// 扫描成功后写回 .scan_snapshot.json（时间锚点 + 统计 + 指纹；--dry-run 时不写）
         #[arg(long)]
         write_snapshot: bool,
@@ -683,6 +686,65 @@ pub enum WorldGovCmd {
         /// 资料库根
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,
+    },
+    /// 【调试】差异快照（snap create/list/delete/export | show | filter-changed；逻辑快照不复制正文）
+    #[command(hide = true)]
+    Diff {
+        #[command(subcommand)]
+        cmd: DiffCmd,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DiffCmd {
+    /// 快照管理：create | list | delete | export
+    Snap {
+        #[command(subcommand)]
+        cmd: DiffSnapCmd,
+    },
+    /// 对比两快照：added / removed / modified
+    Show {
+        /// 基线快照 id
+        snap_a: String,
+        /// 目标快照 id
+        snap_b: String,
+    },
+    /// 输出自某快照以来改动（增/改）的 key 列表（可管道进 scan/inspect-batch）
+    FilterChanged {
+        /// 锚点快照 id
+        #[arg(long = "since-snap")]
+        since_snap: String,
+        /// 自动给改动条目打标签（仅打标签，不做任何自动校验）
+        #[arg(long)]
+        auto_tag_changed: bool,
+        /// 自动打的标签名（默认「最近变更」）
+        #[arg(long, default_value = "最近变更")]
+        tag: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DiffSnapCmd {
+    /// 拍快照（只存索引+元信息哈希，不复制正文）
+    Create {
+        /// 可命名：v1-初始设定 / v2-修改北境势力
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// 列出全部快照
+    List,
+    /// 删除快照（只删本表行，不动任何业务数据）
+    Delete {
+        snap_id: String,
+    },
+    /// 导出该快照对应探针集合（复用 probe-export；--to 目录）
+    Export {
+        snap_id: String,
+        #[arg(long = "to", value_name = "DIR")]
+        to: PathBuf,
     },
 }
 
@@ -875,6 +937,9 @@ pub enum AuditExportCmd {
         /// 排除含该标签条目的风险（第 10 批；可重复）
         #[arg(long = "without-tag", value_name = "TAG")]
         without_tag: Vec<String>,
+        /// 绑定版本快照锚点（第 11 批）：报告记录「基于世界哪一版」
+        #[arg(long = "snap", value_name = "SNAP_ID")]
+        snap: Option<String>,
     },
     /// 列出已有报告（只列文件名 + 时间，不读内容）
     List,

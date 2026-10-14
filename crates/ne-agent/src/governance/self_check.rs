@@ -191,6 +191,14 @@ pub fn run(conn: &Connection, lib_root: &Path, fix: bool, older_than_days: u64) 
         "detail": nts,
     }));
 
+    // ⑨ 差异快照（第 11 批）：lib_snapshot 表结构 + 废弃快照提示
+    let ds = super::diff_snapshot::table_check(conn, 30).unwrap_or(json!({"ok": false, "error": "检查失败"}));
+    items.push(json!({
+        "name": "lib_snapshot",
+        "ok": ds["ok"] == true,
+        "detail": ds,
+    }));
+
     let failed = items.iter().filter(|x| x["ok"] == false).count();
     Ok(json!({
         "command": "world-gov self-check",
@@ -200,7 +208,7 @@ pub fn run(conn: &Connection, lib_root: &Path, fix: bool, older_than_days: u64) 
         "failed": failed,
         "all_ok": failed == 0,
         "items": items,
-        "toolchain_epoch": 10,
+        "toolchain_epoch": 11,
         "note": "自检只读为主；--fix 仅创建缺失目录，绝不 ALTER 表/删任务/改资料库。",
     }))
 }
@@ -235,7 +243,8 @@ pub fn capabilities() -> Value {
         "probe_export_ready": true,
         "selfcheck_ready": true,
         "tag_note_ready": true,
-        "toolchain_epoch": 10,
+        "diff_snap_ready": true,
+        "toolchain_epoch": 11,
     })
 }
 
@@ -305,8 +314,9 @@ mod tests {
     #[test]
     fn capabilities_marker() {
         let c = capabilities();
-        assert_eq!(c["toolchain_epoch"], 10);
+        assert_eq!(c["toolchain_epoch"], 11);
         assert_eq!(c["selfcheck_ready"], true);
         assert_eq!(c["tag_note_ready"], true);
+        assert_eq!(c["diff_snap_ready"], true);
     }
 }

@@ -59,6 +59,9 @@ pub struct ReportMeta {
     pub at: i64,
     pub layer_filter: String,
     pub all_layers: bool,
+    /// 本次导出绑定的版本快照锚点（第 11 批；可空）
+    #[serde(default)]
+    pub snapshot_anchor: Option<String>,
 }
 
 /// 报告条目（一条风险/发现）。
@@ -112,6 +115,8 @@ pub struct ExportFilter {
     pub with_tag: Vec<String>,
     /// 排除命中「含该标签条目」的风险（第 10 批；空 = 不排除）
     pub without_tag: Vec<String>,
+    /// 绑定版本快照锚点（第 11 批；可空）。仅记录到报告 meta，便于追溯「基于世界哪一版」。
+    pub snapshot_anchor: Option<String>,
 }
 
 impl ExportFilter {
@@ -123,6 +128,7 @@ impl ExportFilter {
             "job_id": self.job_id,
             "with_tag": self.with_tag,
             "without_tag": self.without_tag,
+            "snapshot_anchor": self.snapshot_anchor,
         })
     }
 }
@@ -391,6 +397,7 @@ pub fn build_report(
         at,
         layer_filter: layer_filter.to_string(),
         all_layers,
+        snapshot_anchor: filter.snapshot_anchor.clone(),
     };
     let counts = json!({
         "risks_semantic_total": semantic_n,
@@ -446,6 +453,9 @@ pub fn render_minimal_md(rep: &AuditReport) -> String {
         "- layer_filter: {}   all_layers: {}\n",
         rep.meta.layer_filter, rep.meta.all_layers
     ));
+    if let Some(a) = &rep.meta.snapshot_anchor {
+        s.push_str(&format!("- snapshot_anchor: {a}\n"));
+    }
     s.push_str(&format!("- filters: {}\n", rep.filters));
     s.push_str(&format!("- counts: {}\n\n", rep.counts));
     s.push_str(&format!("## items（{} 条）\n\n", rep.items.len()));

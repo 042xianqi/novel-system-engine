@@ -20,6 +20,8 @@
 //! 子模块：`self_check` —— 健康自检（--fix 仅建目录）。
 //! 子模块：`note_tag_store` —— 人工标记体系（item_tag/item_note；与主索引完全隔离）。
 pub mod note_tag_store;
+pub mod digest;
+pub mod diff_snapshot;
 pub mod pipeline;
 pub mod pipeline_store;
 pub mod progress;
@@ -100,6 +102,8 @@ pub fn open_gov(lib_root: &Path) -> Result<Connection> {
     ensure_risk_index_cols(&conn)?;
     // 人工标记体系（第 10 批）：幂等建表，与主索引完全隔离
     note_tag_store::ensure_tables(&conn)?;
+    // 差异快照（第 11 批）：幂等建表，与主索引完全隔离
+    diff_snapshot::ensure_table(&conn)?;
     Ok(conn)
 }
 

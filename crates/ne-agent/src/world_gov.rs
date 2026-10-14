@@ -516,6 +516,7 @@ pub fn read_baseline_fingerprint(lib_root: &Path) -> Option<String> {
 ///   真实模型推理等单独放行；骨架阶段 findings 恒空；
 /// - `--dry-run` 沙盘：只打印，不落盘清单文件。
 /// - `tag_filter`（可选）：人工标签筛选（第 10 批）；`None`/空 = 不过滤（默认行为不变）。
+/// - `key_filter`（可选）：key 白名单（第 11 批 `--since-snap`）；`None` = 不过滤。
 pub fn scan_library(
     conn: &Connection,
     lib_root: &Path,
@@ -525,8 +526,9 @@ pub fn scan_library(
     all_layers: bool,
     since_ts: Option<i64>,
     tag_filter: Option<&crate::governance::note_tag_store::TagFilter>,
+    key_filter: Option<&std::collections::HashSet<String>>,
 ) -> Result<Value> {
-    let report = scan_report(conn, slice, semantic, dry_run, all_layers, since_ts, tag_filter)?;
+    let report = scan_report(conn, slice, semantic, dry_run, all_layers, since_ts, tag_filter, key_filter)?;
     if !dry_run {
         let sn = report["slice"]["n"].as_i64().unwrap_or(1);
         let sm = report["slice"]["m"].as_i64().unwrap_or(1);
@@ -544,6 +546,7 @@ pub fn scan_library(
 /// scan-library **纯计算**（不落盘）：拆分出来便于 dry-run / prompt-preview 复用。
 /// `since_ts`：`Some(ts)` = 增量（仅 src_mtime ≥ ts）；`None` = 全量。
 /// `tag_filter`：人工标签筛选（空 = 不过滤）。
+/// `key_filter`：key 白名单（空 = 不过滤；第 11 批 `--since-snap`）。
 pub fn scan_report(
     conn: &Connection,
     slice: Option<&str>,
@@ -552,6 +555,7 @@ pub fn scan_report(
     all_layers: bool,
     since_ts: Option<i64>,
     tag_filter: Option<&crate::governance::note_tag_store::TagFilter>,
+    key_filter: Option<&std::collections::HashSet<String>>,
 ) -> Result<Value> {
     let (sn, sm) = match slice {
         Some(s) => parse_slice_strict(s).map_err(|e| anyhow::anyhow!("{e}"))?,
@@ -628,6 +632,16 @@ pub fn scan_report(
         _ => all,
     };
     let tag_filtered = pre_tag_len - all.len();
+    // key 白名单（第 11 批 --since-snap）：默认不过滤（None → 全放行）
+    let pre_key_len = all.len();
+    let all: Vec<Value> = match key_filter {
+        Some(set) => all
+            .into_iter()
+            .filter(|v| set.contains(v["key"].as_str().unwrap_or("")))
+            .collect(),
+        None => all,
+    };
+    let key_filtered = pre_key_len - all.len();
     let total = all.len();
     // 粒度防御：单分片 >250 条拒绝（防一次性爆算力），提示调大 M
     check_slice_granularity(sn, sm, total, 250).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -675,6 +689,8 @@ pub fn scan_report(
             "scan_fingerprint": scan_fp,
             "tag_filtered": tag_filtered,
             "tag_filter": tag_filter.map(|f| f.describe()).unwrap_or(json!(null)),
+            "key_filtered": key_filtered,
+            "key_filter_active": key_filter.is_some(),
         },
         "semantic": if semantic {
             "requested_but_locked（--semantic 仅占位；真实推理等单独放行）"
@@ -1088,7 +1104,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         seed_library_index(&conn);
         // since=2000，默认层过滤：L2/L3/L4 中 mtime>=2000 → A-2(2000), L3-1(3000)
-        let r = scan_report(&conn, None, false, true, false, Some(2000), None).unwrap();
+        let r = scan_report(&conn, None, false, true, false, Some(2000), None, None).unwrap();
         let c = &r["counts"];
         assert_eq!(c["is_incremental"], true);
         assert_eq!(c["since_ts"], 2000);
@@ -1106,7 +1122,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("CREATE TABLE library_index(layer TEXT,key TEXT,title TEXT,chars INTEGER,source TEXT,src_mtime INTEGER NOT NULL DEFAULT 0);").unwrap();
         conn.execute("INSERT INTO library_index(layer,key,title,chars,source,src_mtime) VALUES('L4','Z','',1,'s',0)", []).unwrap();
-        let r = scan_report(&conn, None, false, true, false, Some(9999), None).unwrap();
+        let r = scan_report(&conn, None, false, true, false, Some(9999), None, None).unwrap();
         assert_eq!(r["counts"]["mtime_degraded"], true, "全 0 mtime → 降级");
         assert_eq!(r["counts"]["used"], 1, "降级时仍返回扫描域全部");
     }
@@ -1115,7 +1131,7 @@ mod tests {
     fn scan_non_incremental_flagged_off() {
         let conn = Connection::open_in_memory().unwrap();
         seed_library_index(&conn);
-        let r = scan_report(&conn, None, false, true, false, None, None).unwrap();
+        let r = scan_report(&conn, None, false, true, false, None, None, None).unwrap();
         assert_eq!(r["counts"]["is_incremental"], false);
         assert_eq!(r["counts"]["since_ts"], serde_json::Value::Null);
     }
@@ -1124,7 +1140,7 @@ mod tests {
     fn scan_default_filters_aux_and_upper_layers() {
         let conn = Connection::open_in_memory().unwrap();
         seed_library_index(&conn);
-        let r = scan_report(&conn, None, false, true, false, None, None).unwrap();
+        let r = scan_report(&conn, None, false, true, false, None, None, None).unwrap();
         let c = &r["counts"];
         assert_eq!(c["total_before"], 7, "库里 7 条");
         assert_eq!(c["used"], 4, "默认只留 L2/L3/L4=4 条");
@@ -1142,7 +1158,7 @@ mod tests {
     fn scan_all_layers_escape_hatch_includes_everything() {
         let conn = Connection::open_in_memory().unwrap();
         seed_library_index(&conn);
-        let r = scan_report(&conn, None, false, true, true, None, None).unwrap();
+        let r = scan_report(&conn, None, false, true, true, None, None, None).unwrap();
         let c = &r["counts"];
         assert_eq!(c["used"], 7, "--all-layers 放行全部 7 条");
         assert_eq!(c["filtered_aux"], 0);
@@ -1171,7 +1187,7 @@ mod tests {
         nts::set_note(&conn, "A-1", Some("suspect"), Some("刻意反转")).unwrap();
         // with=待复核 → 仅 A-1, L3-1
         let f = nts::TagFilter::build(&["待复核".into()], &[]).unwrap();
-        let r = scan_report(&conn, None, false, true, false, None, Some(&f)).unwrap();
+        let r = scan_report(&conn, None, false, true, false, None, Some(&f), None).unwrap();
         assert_eq!(r["counts"]["used"], 2, "标签过滤后仅 2 条");
         assert_eq!(r["counts"]["tag_filtered"], 2, "过滤掉 A-2/L2-1");
         let keys: Vec<&str> = r["probe_items"].as_array().unwrap().iter()
@@ -1185,9 +1201,27 @@ mod tests {
         assert_eq!(a1["note_status"], "suspect");
         // 空筛选器 = 不过滤（向后兼容）
         let empty = nts::TagFilter::default();
-        let r2 = scan_report(&conn, None, false, true, false, None, Some(&empty)).unwrap();
+        let r2 = scan_report(&conn, None, false, true, false, None, Some(&empty), None).unwrap();
         assert_eq!(r2["counts"]["used"], 4, "空筛选器不过滤");
         assert_eq!(r2["counts"]["tag_filtered"], 0);
+    }
+
+    #[test]
+    fn scan_key_filter_whitelists_only() {
+        let conn = Connection::open_in_memory().unwrap();
+        seed_library_index(&conn);
+        // key 白名单仅含 A-1（--since-snap 场景）
+        let set: std::collections::HashSet<String> = ["A-1".to_string()].into_iter().collect();
+        let r = scan_report(&conn, None, false, true, false, None, None, Some(&set)).unwrap();
+        assert_eq!(r["counts"]["used"], 1, "白名单仅 1 条");
+        assert_eq!(r["counts"]["key_filter_active"], true);
+        let keys: Vec<&str> = r["probe_items"].as_array().unwrap().iter()
+            .map(|v| v["key"].as_str().unwrap()).collect();
+        assert_eq!(keys, vec!["A-1"]);
+        // None → 不过滤
+        let r2 = scan_report(&conn, None, false, true, false, None, None, None).unwrap();
+        assert_eq!(r2["counts"]["used"], 4, "None 不过滤");
+        assert_eq!(r2["counts"]["key_filter_active"], false);
     }
 
     #[test]

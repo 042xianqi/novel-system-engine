@@ -13,7 +13,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use crate::cli::{Cli, Cmd, LibraryCtlCmd, McpCmd, ModelsCmd, QueueCmd, VaultCmd, WorldGovCmd, AuditExportCmd, CacheCmd, ProbeExportCmd, SelfCheckCmd, TagCmd, NoteCmd};
+use crate::cli::{Cli, Cmd, LibraryCtlCmd, McpCmd, ModelsCmd, QueueCmd, VaultCmd, WorldGovCmd, AuditExportCmd, CacheCmd, ProbeExportCmd, SelfCheckCmd, TagCmd, NoteCmd, DiffCmd, DiffSnapCmd};
 use ne_agent::{RuntimeConfig, Vault};
 use std::path::{Path, PathBuf};
 mod cli;
@@ -944,8 +944,9 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool, 
             st["incremental_scan_ready"] = serde_json::json!(true);
             st["batch_inspect_ready"] = serde_json::json!(true);
             // 工具链版本标记（仅标识，无逻辑作用）
-            st["toolchain_epoch"] = serde_json::json!(10);
+            st["toolchain_epoch"] = serde_json::json!(11);
             st["tag_note_ready"] = serde_json::json!(true);
+            st["diff_snap_ready"] = serde_json::json!(true);
             // 第 9 批能力标记
             for (k, v) in ne_agent::governance::self_check::capabilities().as_object().cloned().unwrap_or_default() {
                 st[k] = v;
@@ -1081,10 +1082,10 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                 println!("（共 {} 层上层约束；详见 --json）", r["chain_len"]);
             }
         }
-        WorldGovCmd::ScanLibrary { semantic, slice, dry_run, enqueue, persist, all_layers, since, write_snapshot, no_cache, invalidate_cache, with_tag, without_tag, lib: _ } => {
+        WorldGovCmd::ScanLibrary { semantic, slice, dry_run, enqueue, persist, all_layers, since, since_snap, write_snapshot, no_cache, invalidate_cache, with_tag, without_tag, lib: _ } => {
             if *enqueue {
-                if !with_tag.is_empty() || !without_tag.is_empty() {
-                    anyhow::bail!("--with-tag/--without-tag 仅适用于 scan（不加 --enqueue）；入队为整片聚合任务，无法按标签细分");
+                if !with_tag.is_empty() || !without_tag.is_empty() || since_snap.is_some() {
+                    anyhow::bail!("--with-tag/--without-tag/--since-snap 仅适用于 scan（不加 --enqueue）；入队为整片聚合任务，无法按标签/快照细分");
                 }
                 let (sn, sm) = match slice.as_deref() {
                     Some(s) => world_gov::parse_slice_strict(s).map_err(|e| anyhow::anyhow!("{e}"))?,
@@ -1097,6 +1098,17 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
             }
             // 标签筛选（第 10 批；空 = 不过滤）
             let tag_filter = ne_agent::governance::note_tag_store::TagFilter::build(with_tag, without_tag)?;
+            // 版本快照增量（第 11 批）：--since-snap → 自该快照以来 增/改 的 key 白名单
+            let mut since_snap_note: Option<String> = None;
+            let key_filter: Option<std::collections::HashSet<String>> = match since_snap {
+                Some(sid) => {
+                    let cur = ne_agent::governance::diff_snapshot::collect_meta(&conn, lib_root)?;
+                    let changed = ne_agent::governance::diff_snapshot::changed_since(&conn, sid, &cur)?;
+                    since_snap_note = Some(format!("since-snap {sid} → {} 个改动条目", changed.len()));
+                    Some(changed.into_iter().collect())
+                }
+                None => None,
+            };
             // 解析 --since（支持 last；无快照时降级全扫）
             let (since_ts, since_note) = match since {
                 Some(v) => {
@@ -1107,7 +1119,7 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
             };
             // 进度：粗估（stderr；--quiet 静默）
             ne_agent::governance::progress::emit(quiet, "scan-library", 0, 1, None);
-            let r = world_gov::scan_library(&conn, lib_root, slice.as_deref(), *semantic, *dry_run, *all_layers, since_ts, Some(&tag_filter))?;
+            let r = world_gov::scan_library(&conn, lib_root, slice.as_deref(), *semantic, *dry_run, *all_layers, since_ts, Some(&tag_filter), key_filter.as_ref())?;
             ne_agent::governance::progress::emit(quiet, "scan-library", 1, 1, Some(0));
             // 探针缓存：把本片 probe_items 写入缓存（默认开启；--no-cache 关闭；--invalidate-cache 强制重写）
             // 缓存 key = hash(layer+key+src_mtime+baseline_fingerprint)；命中即复用，不重算。
@@ -1159,12 +1171,14 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                     out["cache"] = serde_json::json!({"hits": cache_hits, "miss": cache_miss});
                 }
                 if let Some(n) = &since_note { out["since_note"] = serde_json::json!(n); }
+                if let Some(n) = &since_snap_note { out["since_snap_note"] = serde_json::json!(n); }
                 if let Some(p) = &snapshot_written { out["snapshot_written"] = serde_json::json!(p); }
                 println!("{}", serde_json::to_string_pretty(&out)?);
             } else {
                 let s = &r["slice"];
                 println!("== 探针分片清单（零模型骨架）==");
                 if let Some(n) = &since_note { println!("增量: {n}"); }
+                if let Some(n) = &since_snap_note { println!("版本增量: {n}"); }
                 println!("分片 {}/{}：偏移 {}，本片 {} 条 / 扫描域 {} 条", s["n"], s["m"], s["offset"], s["items"], s["total"]);
                 if let Some(c) = r.get("counts") {
                     println!("层过滤: {}  （全库 {} → 扫描域 {}，过滤掉 {}）",
@@ -1371,7 +1385,7 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
             use ne_agent::governance::report_builder as rb;
             let lf = rb::scan_layer_filter_text(false);
             match cmd {
-                AuditExportCmd::New { format, dry_run, only_semantic, only_structural, law_hash, job_id, ignore_empty, with_tag, without_tag } => {
+                AuditExportCmd::New { format, dry_run, only_semantic, only_structural, law_hash, job_id, ignore_empty, with_tag, without_tag, snap } => {
                     let fmt = rb::ReportFormat::parse(format)?;
                     let filter = rb::ExportFilter {
                         only_semantic: *only_semantic,
@@ -1380,6 +1394,7 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                         job_id: job_id.clone(),
                         with_tag: with_tag.clone(),
                         without_tag: without_tag.clone(),
+                        snapshot_anchor: snap.clone(),
                     };
                     // 纯读组装（不落盘、不推理、不写库）
                     let rep = rb::build_report(&conn, lib_root, &lf, false, &filter)?;
@@ -1608,7 +1623,7 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                     let manifest = serde_json::json!({
                         "version": pe::WG_PROBE_VERSION,
                         "created_at": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
-                        "toolchain_epoch": 10,
+                        "toolchain_epoch": 11,
                         "layers": only_layers.clone().unwrap_or_else(|| "all".into()),
                         "since_anchor": since,
                         "baseline_fingerprint": world_gov::read_baseline_fingerprint(lib_root).unwrap_or_else(|| "(none)".into()),
@@ -1855,6 +1870,146 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                             r["rejected"].as_array().map(|a| a.len()).unwrap_or(0));
                         if let Some(rej) = r["rejected"].as_array() {
                             for x in rej.iter().take(10) { println!("  [拒] {}", x.as_str().unwrap_or("")); }
+                        }
+                    }
+                }
+            }
+        }
+        WorldGovCmd::Diff { cmd, lib: _ } => {
+            use ne_agent::governance::diff_snapshot as ds;
+            match cmd {
+                DiffCmd::Snap { cmd } => match cmd {
+                    DiffSnapCmd::Create { label } => {
+                        let lab = label.clone().unwrap_or_default();
+                        let (sid, n) = ds::create(&conn, lib_root, &lab)?;
+                        if json {
+                            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                                "command": "world-gov diff snap create",
+                                "snap_id": sid, "label": if lab.is_empty() { "(auto)" } else { &lab },
+                                "entry_count": n,
+                                "note": "逻辑快照：只存索引+元信息哈希，未复制任何正文。",
+                            }))?);
+                        } else {
+                            println!("== diff snap create ==\n快照 id: {sid}\n条目数: {n}（只存哈希，未复制正文）");
+                        }
+                    }
+                    DiffSnapCmd::List => {
+                        let rows = ds::list(&conn)?;
+                        if json {
+                            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                                "command": "world-gov diff snap list", "count": rows.len(), "snapshots": rows,
+                            }))?);
+                        } else {
+                            println!("== diff snap list（{} 个）==", rows.len());
+                            for r in &rows {
+                                println!("  {}  {}  ts={}  entries_bytes={}",
+                                    r["snap_id"].as_str().unwrap_or(""),
+                                    r["label"].as_str().unwrap_or(""),
+                                    r["created_ts"], r["meta_bytes"]);
+                            }
+                        }
+                    }
+                    DiffSnapCmd::Delete { snap_id } => {
+                        let ok = ds::delete(&conn, snap_id)?;
+                        if json {
+                            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                                "command": "world-gov diff snap delete", "snap_id": snap_id, "deleted": ok,
+                            }))?);
+                        } else if ok {
+                            println!("已删除快照 {snap_id}（只删 lib_snapshot 行，不动业务数据）");
+                        } else {
+                            println!("未找到快照 {snap_id}（无改动）");
+                        }
+                    }
+                    DiffSnapCmd::Export { snap_id, to } => {
+                        use ne_agent::governance::probe_export as pe;
+                        let meta = ds::read_meta(&conn, snap_id)?
+                            .ok_or_else(|| anyhow::anyhow!("快照不存在：{snap_id}"))?;
+                        let dir = safe_export_path(lib_root, to)?;
+                        std::fs::create_dir_all(&dir)?;
+                        // 快照对应探针集合：缓存内有则收，否则退化为元信息清单
+                        let cache_dir = ne_agent::governance::probe_cache::cache_dir(lib_root);
+                        let keys: std::collections::HashSet<String> = meta.iter().map(|m| m.key.clone()).collect();
+                        let mut items: Vec<(String, serde_json::Value)> = Vec::new();
+                        if cache_dir.is_dir() {
+                            for e in std::fs::read_dir(&cache_dir)? {
+                                let e = e?; let p = e.path();
+                                if !p.extension().map(|x| x == "json").unwrap_or(false) { continue; }
+                                if let Ok(txt) = std::fs::read_to_string(&p) {
+                                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+                                        let k = v["key"].as_str().unwrap_or("");
+                                        if keys.contains(k) {
+                                            let safe: String = k.chars().map(|c| if c.is_ascii_alphanumeric() || c=='-' || c=='_' { c } else { '_' }).collect();
+                                            items.push((format!("probe-{safe}.json"), v));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        let manifest = serde_json::json!({
+                            "version": pe::WG_PROBE_VERSION,
+                            "kind": "snapshot-probe-set",
+                            "snap_id": snap_id,
+                            "snapshot_entry_count": meta.len(),
+                            "probe_items_found": items.len(),
+                            "note": "该快照对应探针集合（命中缓存中的结构化探针）；不含资料库原始源文件。",
+                        });
+                        let out = dir.join(format!("snap_{}.wg-probe.tar.gz", &snap_id[..snap_id.len().min(12)]));
+                        let (_p, nbytes) = pe::create_archive(&out, &manifest, &items)?;
+                        if json {
+                            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                                "command": "world-gov diff snap export",
+                                "snap_id": snap_id, "path": out.display().to_string(),
+                                "bytes": nbytes, "item_count": items.len(),
+                            }))?);
+                        } else {
+                            println!("== diff snap export ==\n已写: {}（{} bytes，{} 探针）", out.display(), nbytes, items.len());
+                        }
+                    }
+                },
+                DiffCmd::Show { snap_a, snap_b } => {
+                    let r = ds::diff_snapshots(&conn, snap_a, snap_b)?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&r)?);
+                    } else {
+                        println!("== diff show: {} → {} ==", snap_a, snap_b);
+                        println!("added: {}  removed: {}  modified: {}",
+                            r["counts"]["added"], r["counts"]["removed"], r["counts"]["modified"]);
+                        for k in r["added"].as_array().map(|a| a.to_vec()).unwrap_or_default() {
+                            println!("  + {}", k.as_str().unwrap_or(""));
+                        }
+                        for k in r["removed"].as_array().map(|a| a.to_vec()).unwrap_or_default() {
+                            println!("  - {}", k.as_str().unwrap_or(""));
+                        }
+                        for m in r["modified"].as_array().map(|a| a.to_vec()).unwrap_or_default() {
+                            println!("  ~ {}  {} → {}", m["key"].as_str().unwrap_or(""),
+                                &m["hash_a"].as_str().unwrap_or("")[..8.min(m["hash_a"].as_str().unwrap_or("").len())],
+                                &m["hash_b"].as_str().unwrap_or("")[..8.min(m["hash_b"].as_str().unwrap_or("").len())]);
+                        }
+                    }
+                }
+                DiffCmd::FilterChanged { since_snap, auto_tag_changed, tag } => {
+                    let cur = ds::collect_meta(&conn, lib_root)?;
+                    let changed = ds::changed_since(&conn, since_snap, &cur)?;
+                    let mut tagged = 0usize;
+                    if *auto_tag_changed && !changed.is_empty() {
+                        use ne_agent::governance::note_tag_store as nts;
+                        for k in &changed {
+                            let (ins, _) = nts::add_tags(&conn, k, std::slice::from_ref(tag), "manual")?;
+                            if ins > 0 { tagged += 1; }
+                        }
+                    }
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                            "command": "world-gov diff filter-changed",
+                            "since_snap": since_snap, "count": changed.len(), "keys": changed,
+                            "auto_tag_changed": auto_tag_changed, "tag": tag, "tagged": tagged,
+                        }))?);
+                    } else {
+                        // 纯行输出：可管道进 scan/inspect-batch
+                        for k in &changed { println!("{k}"); }
+                        if *auto_tag_changed {
+                            eprintln!("已给 {} 个改动条目打标签「{}」（仅打标签，不做任何自动校验）", tagged, tag);
                         }
                     }
                 }

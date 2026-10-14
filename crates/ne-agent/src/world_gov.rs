@@ -447,6 +447,15 @@ pub fn slice_range(n: usize, m: usize, len: usize) -> (usize, usize) {
 ///
 /// 幂等键 = risk_type + source + message；message 由 **key + kind + verdict + law_hash** 复合构成，
 /// 同一条语义风险（同 key 同判定同依据）重复路由不会重复刷库。
+/// 把（未来的）语义项路由进 risk_index：风险级入语义桶（is_semantic=1 + law_basis）。
+///
+/// # verdict 值域（**双轨兼容**，第 17.4 批）
+/// - 模板路径（`check_world`/`scan`）沿用大写值域：`WARN`/`HIGH-RISK` 入库，`OK`/`UNCERTAIN` 不入库。
+/// - inspect 通路（第 17.4 批统一契约）用小写值域：`conflict`→HIGH-RISK、`suspect`→WARN（均入库）；
+///   `ok`/`unclear` 不入库。两套都归一到 risk_index 的 level，**不改既有调用方**。
+///
+/// 细节字段兼容：旧契约用顶层 `kind`/`law_ref`/`explain`；新契约收进 `evidence.findings[0]`
+/// 与 `evidence.summary`（顶层为主，缺则回落 evidence）。
 pub fn emit_semantic_findings(
     conn: &Connection,
     source_cmd: &str,
@@ -454,28 +463,38 @@ pub fn emit_semantic_findings(
 ) -> Result<usize> {
     let mut n = 0usize;
     for f in findings {
-        let v = f["verdict"].as_str().unwrap_or("UNCERTAIN");
-        if v != "WARN" && v != "HIGH-RISK" {
-            continue; // UNCERTAIN / OK 不入库
-        }
+        let raw_v = f["verdict"].as_str().unwrap_or("UNCERTAIN");
+        // 归一为 risk_index 的 level；None = 不入库
+        let level = match raw_v {
+            "WARN" | "HIGH-RISK" => raw_v,
+            "conflict" => "HIGH-RISK",
+            "suspect" => "WARN",
+            _ => continue, // OK / UNCERTAIN / ok / unclear
+        };
+        let evf = f.get("evidence").and_then(|e| e.get("findings")).and_then(|x| x.as_array());
+        let first = evf.and_then(|a| a.first());
         let key = f["key"].as_str().unwrap_or("");
-        let kind = f["kind"].as_str().unwrap_or("语义风险");
-        let law = f["law_ref"].as_str().unwrap_or("");
+        let kind = f["kind"].as_str()
+            .or_else(|| first.and_then(|x| x["kind"].as_str()))
+            .unwrap_or("语义风险");
+        let law = f["law_ref"].as_str()
+            .or_else(|| first.and_then(|x| x["law_ref"].as_str()))
+            .unwrap_or("");
+        let explain = f["explain"].as_str()
+            .or_else(|| first.and_then(|x| x["explain"].as_str()))
+            .or_else(|| f.get("evidence").and_then(|e| e.get("summary")).and_then(|x| x.as_str()))
+            .unwrap_or("");
         // law_hash：依据文本的轻量指纹（与 `law_hash8` 同口径），使幂等键对"依据被改写"敏感
         let law_hash = law_hash8(law);
-        let msg = format!(
-            "语义{kind}[{v}] {key} :: law#{law_hash} :: {}",
-            f["explain"].as_str().unwrap_or("")
-        );
+        let msg = format!("语义{kind}[{level}] {key} :: law#{law_hash} :: {explain}");
         if crate::governance::record_risk_semantic(
-            conn, "world_gov", None, None, source_cmd, v, &msg, law,
+            conn, "world_gov", None, None, source_cmd, level, &msg, law,
         )? {
             n += 1; // 只统计真实插入；幂等跳过不计
         }
     }
     Ok(n)
 }
-
 // ────────────────────────────────── 扫描层过滤（默认不扫工程辅助）
 
 /// scan-library 默认接纳的层级（只扫真正的内容层；AUX/工程辅助默认排除，避免脏输入）。
@@ -995,6 +1014,29 @@ mod tests {
         assert_eq!(n1, 1);
         assert_eq!(n2, 0, "同 finding 重复路由必须幂等");
     }
+
+    #[test]
+    fn emit_accepts_inspect_lowercase_verdict_and_evidence() {
+        // 第 17.4 批：inspect 新契约（conflict/suspect + evidence 对象）也能入库
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("governance_schema.sql")).unwrap();
+        crate::governance::ensure_risk_index_cols(&conn).unwrap();
+        let findings = vec![
+            serde_json::json!({"key":"A","verdict":"conflict","evidence":{"findings":[{"kind":"推翻上层","law_ref":"GUARD:禁止X","explain":"e1"}],"summary":"冲突"}}),
+            serde_json::json!({"key":"B","verdict":"suspect","evidence":{"summary":"可疑"}}),
+            serde_json::json!({"key":"C","verdict":"ok","evidence":{"summary":"无冲突"}}),
+            serde_json::json!({"key":"D","verdict":"unclear","evidence":{"summary":"无法判定"}}),
+        ];
+        let n = emit_semantic_findings(&conn, "world-gov inspect-batch", &findings).unwrap();
+        assert_eq!(n, 2, "conflict/suspect 入库；ok/unclear 不入库");
+        let r = crate::governance::risk_list(&conn, false).unwrap();
+        assert_eq!(r["semantic_count"], 2);
+        let levels: Vec<String> = r["items"].as_array().unwrap().iter()
+            .filter_map(|i| i["level"].as_str().map(String::from)).collect();
+        assert!(levels.contains(&"HIGH-RISK".to_string()), "conflict → HIGH-RISK");
+        assert!(levels.contains(&"WARN".to_string()), "suspect → WARN");
+    }
+
 
     // ─────── 第 2 批加固：门控 + 边界防御 ───────
 

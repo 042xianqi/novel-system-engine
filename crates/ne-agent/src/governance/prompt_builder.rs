@@ -191,7 +191,61 @@ impl Acc {
 
 // ────────────────────────────────── system prompt（统一角色 + 铁则）
 
-/// 统一的“世界观法务官”system prompt。
+/// inspect 通路（inspect-card / inspect-batch）的**统一判定契约**。
+///
+/// 与 `check_world` 对齐：**顶层必有 `verdict`**（值域 `ok|suspect|conflict|unclear`），
+/// 细节全部收进 `evidence` 对象。此 schema 由 `llm_adapter::sys_with_schema` 注入 system，
+/// 并供 `validate_schema` 校验——**不靠模型自觉**（本网关忽略 `response_format`）。
+pub fn inspect_schema() -> Value {
+    serde_json::json!({
+        "type": "object",
+        "required": ["verdict"],
+        "properties": {
+            "verdict": {"type": "string", "enum": ["ok", "suspect", "conflict", "unclear"]},
+            "evidence": {
+                "type": "object",
+                "properties": {
+                    "findings": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["kind"],
+                            "properties": {
+                                "kind": {"type": "string"},
+                                "law_ref": {"type": "string"},
+                                "card_snippet": {"type": "string"},
+                                "explain": {"type": "string"},
+                                "suggest": {"type": "string"}
+                            }
+                        }
+                    },
+                    "summary": {"type": "string"},
+                    "referenced_ids": {"type": "array", "items": {"type": "string"}}
+                }
+            },
+            "referenced_ids": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": true
+    })
+}
+
+/// inspect 通路的 system prompt（强制顶层 `verdict` + `evidence` 对象）。
+pub fn inspect_system_prompt() -> String {
+    format!(
+        "你是《残响之河》的世界观法务官（world-gov）。\n\
+法理优先级：{LAW_CHAIN_TEXT}；上层是法理来源，下层只能细化/实例化，不得反向否定。\n\
+你的任务：只出**证据与建议**，不改写、不删改任何内容。\n\
+铁律：\n\
+1) 判“冲突/违背”必须引用上层基线的**原话或原文片段**作为依据；找不到依据判 unclear，禁止幻觉式报警。\n\
+2) **只输出一个 JSON 对象**，顶层必须含 `verdict` 字段，可选值**仅限**：\"ok\" | \"suspect\" | \"conflict\" | \"unclear\"。\n\
+   - ok：有依据表明与上层法理一致；suspect：有可疑点但证据不足；conflict：有原文依据表明冲突；unclear：无法判定。\n\
+   详细分析**全部**放进 `evidence` 对象：`{{\"evidence\":{{\"findings\":[{{\"kind\":\"...\",\"law_ref\":\"依据的上层条目 key 与原话\",\"card_snippet\":\"卡片原文片段\",\"explain\":\"...\",\"suggest\":\"仅供人参考\"}}],\"summary\":\"一句话结论\",\"referenced_ids\":[\"引用到的实体ID\"]}}}}`。\n\
+3) 禁止 markdown、禁止代码块、禁止任何解释性前后缀；只输出 JSON 本身。\n\
+4) user 中每个片段都带 ［来源 layer=.. key=.. @..］ 标记，你引用时必须回指该来源标识。"
+    )
+}
+
+/// 统一的“世界观法务官”system prompt（check_world 等模板路径沿用；保持既有值域）。
 pub fn system_prompt() -> String {
     format!(
         "你是《残响之河》的世界观法务官（world-gov）。\n\
@@ -238,6 +292,11 @@ fn questions_block(v: &Value) -> String {
 }
 
 fn finalize(acc: Acc) -> BuiltPrompt {
+    finalize_with(acc, system_prompt())
+}
+
+/// 同 [`finalize`]，但可指定 system prompt（inspect 通路用 `inspect_system_prompt()`）。
+fn finalize_with(acc: Acc, system: String) -> BuiltPrompt {
     let (sections, user, truncated_total) = acc.render();
     let truncated_sections = sections.iter().filter(|s| s.truncated).count();
     let stats = BuildStats {
@@ -249,7 +308,7 @@ fn finalize(acc: Acc) -> BuiltPrompt {
         max_total_chars: MAX_TOTAL_CHARS,
     };
     BuiltPrompt {
-        system: system_prompt(),
+        system,
         user,
         sections,
         stats,
@@ -317,7 +376,8 @@ pub fn build_inspect_prompt(probe: &Value) -> BuiltPrompt {
     // 问题 + 裁决规则
     acc.add("待裁决问题与规则", layer, key, found_in, questions_block(probe));
 
-    finalize(acc)
+    // inspect 通路统一 system（强制顶层 verdict + evidence）——见 `inspect_system_prompt`
+    finalize_with(acc, inspect_system_prompt())
 }
 
 // ────────────────────────────────── ② scan-library 探针 → prompt
@@ -597,5 +657,37 @@ mod tests {
         assert!(s.contains("L0 ≫ L0.5 ≫ L1"));
         assert!(s.contains("UNCERTAIN"));
         assert!(s.contains("［来源"));
+    }
+
+    #[test]
+    fn inspect_system_prompt_requires_top_level_verdict() {
+        let s = inspect_system_prompt();
+        assert!(s.contains("verdict"), "必须声明顶层 verdict");
+        assert!(s.contains("\"ok\"") && s.contains("\"suspect\"")
+             && s.contains("\"conflict\"") && s.contains("\"unclear\""), "四值域齐全");
+        assert!(s.contains("evidence"), "细节须进 evidence 对象");
+        // 值域**不**含旧的大写（避免与统一契约混淆）
+        assert!(!s.contains("HIGH-RISK"));
+    }
+
+    #[test]
+    fn inspect_schema_enum_and_required() {
+        let sc = inspect_schema();
+        assert_eq!(sc["required"][0], "verdict");
+        let en = sc["properties"]["verdict"]["enum"].as_array().unwrap();
+        let vals: Vec<&str> = en.iter().filter_map(|x| x.as_str()).collect();
+        assert_eq!(vals, vec!["ok", "suspect", "conflict", "unclear"]);
+        // 合规/不合规样例
+        assert!(crate::governance::prompt_lib::validate_schema(&json!({"verdict":"conflict"}), &sc).is_empty());
+        assert!(!crate::governance::prompt_lib::validate_schema(&json!({"verdict":"HIGH-RISK"}), &sc).is_empty());
+        assert!(!crate::governance::prompt_lib::validate_schema(&json!({}), &sc).is_empty(), "缺 verdict 应报错");
+    }
+
+    #[test]
+    fn build_inspect_prompt_uses_inspect_system() {
+        let probe = json!({"key":"K","layer":"L4","found_in":"lib","card_text":"t",
+            "candidate_laws":[],"questions":[],"verdict_rule":""});
+        let b = build_inspect_prompt(&probe);
+        assert!(b.system.contains("\"suspect\""), "inspect 通路须用新 system（强制小写 verdict）");
     }
 }

@@ -1143,12 +1143,13 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
             let probe_hash = wg_probe_hash(&r["probe_pack"]);
             let snap_id = wg_latest_snapshot(&conn);
             let cfg = lc::load(lib_root)?;
+            // 第 17.4 批：强制顶层 verdict（统一契约，schema 注入 system；网关忽略 response_format）。
             let raw = sp::RawPrompt {
                 system: built.system.clone(),
                 user: built.user.clone(),
                 probe_hash: probe_hash.clone(),
-                // inspect 判定用宽容（无强 schema）：只做 JSON 解析 + 记账；判定结果仍写冲突库。
-                schema: serde_json::Value::Null,
+                schema: pb::inspect_schema(),
+                entity_fields: vec!["referenced_ids".to_string()],
                 ..Default::default()
             };
             let outcome = sp::call_raw(&conn, lib_root, &cfg, *real_semantic, &raw)?;
@@ -1167,21 +1168,30 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                 sp::Outcome::BackendError { kind, message } =>
                     (serde_json::json!({"status":"BACKEND_ERROR","kind":kind,"message":message}), 0, 0, "BACKEND_ERROR"),
             };
-            // 仅成功/缓存命中且含 verdict 字段 → 落冲突库 + emit findings（保持既有语义）
+            // 仅成功/缓存命中 → 提取顶层 verdict（宽容解析）并落冲突库 + emit findings（第 17.4 批）
             let mut conflict_id = None;
-            if (status == "OK" || status == "CACHE_HIT") && verdict.get("verdict").is_some() {
-                conflict_id = Some(cs::insert(&conn, &cs::NewConflict {
-                    probe_key: key.clone(),
-                    snap_id: snap_id.clone(),
-                    baseline_fp: baseline_fp.clone(),
-                    verdict: verdict.clone(),
-                    raw_prompt: built.user.clone(),
-                    raw_response: verdict.to_string(),
-                    token_in: tok_in,
-                    token_out: tok_out,
-                })?);
-                let findings = vec![verdict.clone()];
-                let _ = world_gov_emit(&conn, "inspect-card", &findings);
+            if status == "OK" || status == "CACHE_HIT" {
+                // 宽容解析：即便模型外面套了 markdown，也抠出含 verdict 的 JSON 对象
+                let parsed = world_gov::parse_semantic_verdict(key, &verdict.to_string());
+                let has_verdict = parsed.get("verdict").is_some();
+                if has_verdict {
+                    conflict_id = Some(cs::insert(&conn, &cs::NewConflict {
+                        probe_key: key.clone(),
+                        snap_id: snap_id.clone(),
+                        baseline_fp: baseline_fp.clone(),
+                        verdict: parsed.clone(),
+                        raw_prompt: built.user.clone(),
+                        raw_response: verdict.to_string(),
+                        token_in: tok_in,
+                        token_out: tok_out,
+                    })?);
+                    let findings = vec![{
+                        let mut f = parsed.clone();
+                        if f.get("key").is_none() { f["key"] = serde_json::json!(key); }
+                        f
+                    }];
+                    let _ = world_gov_emit(&conn, "inspect-card", &findings);
+                }
             }
             if json {
                 println!("{}", serde_json::to_string_pretty(&serde_json::json!({
@@ -2241,12 +2251,15 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                     let ph = wg_probe_hash(&rec["probe_pack"]);
                     let raw = sp::RawPrompt {
                         system: built.system.clone(), user: built.user.clone(), probe_hash: ph,
-                        schema: serde_json::Value::Null, ..Default::default()
+                        schema: pb::inspect_schema(),
+                        entity_fields: vec!["referenced_ids".to_string()],
+                        ..Default::default()
                     };
                     let outcome = sp::call_raw(&conn, lib_root, &cfg, true, &raw)?;
                     let oj = outcome.to_json();
                     let status = oj["status"].as_str().unwrap_or("?").to_string();
                     let mut conflict_id = None;
+                    let mut parsed_verdict = serde_json::Value::Null;
                     let (content_opt, tok_in, tok_out) = match &outcome {
                         sp::Outcome::Success { content, token_in, token_out, .. } =>
                             (Some(content.clone()), *token_in, *token_out),
@@ -2254,19 +2267,24 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                         _ => (None, 0i64, 0i64),
                     };
                     if let Some(content) = content_opt {
-                        if content.get("verdict").is_some() {
+                        // 宽容解析顶层 verdict（第 17.4 批统一契约）
+                        let parsed = world_gov::parse_semantic_verdict(k, &content.to_string());
+                        if parsed.get("verdict").is_some() {
                             conflict_id = Some(cs::insert(&conn, &cs::NewConflict {
                                 probe_key: k.clone(), snap_id: snap_id.clone(), baseline_fp: baseline_fp.clone(),
-                                verdict: content.clone(), raw_prompt: built.user.clone(),
+                                verdict: parsed.clone(), raw_prompt: built.user.clone(),
                                 raw_response: content.to_string(),
                                 token_in: tok_in, token_out: tok_out,
                             })?);
-                            world_gov_emit(&conn, "inspect-batch", &[content])?;
+                            let mut f = parsed.clone();
+                            if f.get("key").is_none() { f["key"] = serde_json::json!(k); }
+                            world_gov_emit(&conn, "inspect-batch", &[f])?;
+                            parsed_verdict = parsed["verdict"].clone();
                         }
                     }
                     infer.push(serde_json::json!({
                         "key": k, "status": status, "conflict_id": conflict_id,
-                        "verdict": oj["content"]["verdict"].clone(),
+                        "verdict": parsed_verdict,
                     }));
                 }
             }

@@ -17,3 +17,4 @@ agent_override/
 # 工作流运行产物（日志/状态）
 .wf/
 workflows/_backup/
+__pycache__/

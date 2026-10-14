@@ -22,6 +22,7 @@
 pub mod note_tag_store;
 pub mod digest;
 pub mod diff_snapshot;
+pub mod web_gateway;
 pub mod pipeline;
 pub mod pipeline_store;
 pub mod progress;

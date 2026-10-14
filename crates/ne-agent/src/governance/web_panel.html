@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>world-gov 面板</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --line:#2a2f3a; --fg:#d7dce5; --dim:#8b94a7; --acc:#5aa9e6; --warn:#e6b45a; --bad:#e66a6a; --ok:#5ad18a; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.5 -apple-system,"PingFang SC","Microsoft YaHei",monospace; background:var(--bg); color:var(--fg); }
+  #wrap { display:flex; min-height:100vh; }
+  nav { width:200px; background:var(--panel); border-right:1px solid var(--line); padding:12px; flex:none; }
+  nav h1 { font-size:15px; margin:4px 0 12px; color:var(--acc); }
+  nav a { display:block; padding:8px 10px; margin:2px 0; border-radius:6px; color:var(--fg); text-decoration:none; cursor:pointer; }
+  nav a:hover { background:#20242e; }
+  nav a.active { background:#22303f; color:var(--acc); }
+  nav .slot { color:#5b6273; cursor:not-allowed; }
+  main { flex:1; padding:18px 22px; overflow:auto; }
+  h2 { font-size:17px; margin:0 0 14px; }
+  .cards { display:flex; flex-wrap:wrap; gap:12px; margin-bottom:18px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px 16px; min-width:130px; }
+  .card .n { font-size:22px; color:var(--acc); }
+  .card .l { color:var(--dim); font-size:12px; }
+  table { width:100%; border-collapse:collapse; background:var(--panel); border-radius:8px; overflow:hidden; }
+  th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-size:13px; }
+  th { color:var(--dim); font-weight:normal; background:#1b1f28; }
+  tr:hover td { background:#1b1f28; }
+  .tag { display:inline-block; background:#22303f; color:var(--acc); border-radius:4px; padding:0 6px; margin:0 3px 0 0; font-size:12px; }
+  .st-suspect { color:var(--warn); } .st-critical { color:var(--bad); } .st-ok { color:var(--ok); }
+  input,select { background:#1b1f28; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:6px 8px; }
+  button { background:#22303f; color:var(--acc); border:1px solid var(--line); border-radius:6px; padding:6px 12px; cursor:pointer; }
+  button:hover { background:#2a3b4f; }
+  .muted { color:var(--dim); font-size:12px; }
+  .err { color:var(--bad); }
+  pre { background:#12151b; border:1px solid var(--line); border-radius:8px; padding:10px; overflow:auto; max-height:340px; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <nav>
+    <h1>world-gov</h1>
+    <a data-v="overview" class="active">工作台概览</a>
+    <a data-v="items">条目浏览</a>
+    <a data-v="queue">任务队列</a>
+    <a data-v="archive">报告 &amp; 归档</a>
+    <a data-v="tags">标签管理</a>
+    <a data-v="snapshots">快照管理</a>
+    <a class="slot" title="待第 16 批启用">沙箱入口（待启用）</a>
+  </nav>
+  <main id="main"><p class="muted">加载中…</p></main>
+</div>
+<script>
+"use strict";
+// 极简前端：原生 JS，零外部资源。所有数据来自 /api/*（等价命令行）。
+const main = document.getElementById('main');
+function h(html){ main.innerHTML = html; }
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'"'}[c])); }
+async function api(path){
+  const r = await fetch(path, {headers:{'Accept':'application/json'}});
+  if(!r.ok) throw new Error('HTTP '+r.status);
+  return await r.json();
+}
+function fail(e){ h('<h2>加载失败</h2><p class="err">'+esc(e.message||e)+'</p>'); }
+
+async function viewOverview(){
+  try{
+    const d = await api('/api/overview');
+    const g = d.gate||{};
+    h(`<h2>工作台概览</h2>
+      <div class="cards">
+        <div class="card"><div class="n">${esc(d.library_index)}</div><div class="l">库条目</div></div>
+        <div class="card"><div class="n">${esc(d.open_risks)}</div><div class="l">未决风险</div></div>
+        <div class="card"><div class="n">${esc((d.cache||{}).entries)}</div><div class="l">缓存项</div></div>
+        <div class="card"><div class="n">${esc((d.queue||{}).pending)}</div><div class="l">队列 Pending</div></div>
+        <div class="card"><div class="n">${esc((d.snapshots||{}).count)}</div><div class="l">快照</div></div>
+        <div class="card"><div class="n">${esc(g.toolchain_epoch)}</div><div class="l">toolchain epoch</div></div>
+      </div>
+      <p class="muted">门控状态：${esc(g.status)}（compile=${esc(g.compile_gate)}，cli=${esc(g.cli_semantic)}，env=${esc(g.env_unlock)}）</p>
+      <p class="muted">缓存占用 ${esc((d.cache||{}).total_bytes)} bytes；只读视图。</p>`);
+  }catch(e){ fail(e); }
+}
+
+async function viewItems(){
+  try{
+    const layer = window.__layer||'', tag = window.__tag||'';
+    const d = await api('/api/items?limit=100'+(layer?('&layer='+encodeURIComponent(layer)):'')+(tag?('&tag='+encodeURIComponent(tag)):''));
+    let rows = (d.items||[]).map(it => `<tr>
+        <td>${esc(it.layer)}</td><td>${esc(it.key)}</td><td>${esc(it.title)}</td><td>${esc(it.chars)}</td>
+        <td>${(it.tags||[]).map(t=>'<span class="tag">'+esc(t)+'</span>').join('')}</td>
+        <td class="${it.note_status?('st-'+esc(it.note_status)):''}">${esc(it.note_status||'-')}</td></tr>`).join('');
+    h(`<h2>条目浏览</h2>
+      <p>
+        <select id="fl"><option value="">全部层</option>${['L0','L0.5','L1','L1x','GUARD','ANCHOR','L2','L3','L4'].map(l=>`<option ${l===layer?'selected':''}>${l}</option>`).join('')}</select>
+        <input id="ft" placeholder="按标签过滤（如 待复核）" value="${esc(tag)}">
+        <button onclick="applyItemFilter()">过滤</button>
+        <span class="muted">共 ${esc(d.count)} 条（上限 100）</span>
+      </p>
+      <table><thead><tr><th>层</th><th>key</th><th>标题</th><th>字数</th><th>标签</th><th>复核</th></tr></thead>
+      <tbody>${rows||'<tr><td colspan="6" class="muted">无数据</td></tr>'}</tbody></table>`);
+  }catch(e){ fail(e); }
+}
+function applyItemFilter(){ window.__layer=document.getElementById('fl').value; window.__tag=document.getElementById('ft').value.trim(); viewItems(); }
+
+async function viewQueue(){
+  try{
+    const d = await api('/api/queue');
+    if(!d.table){ h('<h2>任务队列</h2><p class="muted">task_jobs 表未创建（尚未用过 --persist 入队）。</p>'); return; }
+    let rows = (d.jobs||[]).map(j=>`<tr><td>${esc(j.id)}</td><td>${esc(j.kind)}</td><td>${esc(j.state)}</td><td>${esc(new Date(j.created_at*1000).toLocaleString())}</td></tr>`).join('');
+    h(`<h2>任务队列 <span class="muted">（${esc(d.count)}）</span></h2>
+      <p class="muted">推进需命令行 <code>world-gov queue step</code>（面板只读，不自动推进）。</p>
+      <table><thead><tr><th>id</th><th>kind</th><th>state</th><th>created</th></tr></thead><tbody>${rows||'<tr><td colspan="4" class="muted">空</td></tr>'}</tbody></table>`);
+  }catch(e){ fail(e); }
+}
+
+async function viewArchive(){
+  try{
+    const d = await api('/api/archive');
+    const rep = ((d.reports||{}).items||[]).map(r=>`<tr><td>${esc(r.name)}</td><td>${esc(r.size)}</td><td>${esc(new Date(r.mtime*1000).toLocaleString())}</td></tr>`).join('');
+    const pr = ((d.probe_archives||{}).items||[]).map(p=>`<tr><td>${esc(p.name)}</td><td>${esc(p.size)}</td></tr>`).join('');
+    h(`<h2>报告 &amp; 归档</h2>
+      <p class="muted">审计报告 ${esc((d.reports||{}).count)} 份；探针包 ${esc((d.probe_archives||{}).count)} 个（只列名，不读内容）。</p>
+      <table><thead><tr><th>报告</th><th>bytes</th><th>时间</th></tr></thead><tbody>${rep||'<tr><td colspan="3" class="muted">无</td></tr>'}</tbody></table>
+      <h2 style="margin-top:18px">探针包</h2>
+      <table><thead><tr><th>包</th><th>bytes</th></tr></thead><tbody>${pr||'<tr><td colspan="2" class="muted">无</td></tr>'}</tbody></table>`);
+  }catch(e){ fail(e); }
+}
+
+async function viewTags(){
+  try{
+    const d = await api('/api/tags');
+    const rows = (d.tags||[]).map(t=>`<tr><td>${esc(t.key)}</td><td><span class="tag">${esc(t.tag)}</span></td><td>${esc(t.source)}</td></tr>`).join('');
+    h(`<h2>标签管理 <span class="muted">（${esc(d.count)}）</span></h2>
+      <p class="muted">写操作请用命令行：<code>world-gov tag add/rm</code>、<code>world-gov note set</code>（面板只读，避免绕过校验）。</p>
+      <table><thead><tr><th>key</th><th>标签</th><th>来源</th></tr></thead><tbody>${rows||'<tr><td colspan="3" class="muted">无</td></tr>'}</tbody></table>`);
+  }catch(e){ fail(e); }
+}
+
+async function viewSnapshots(){
+  try{
+    const d = await api('/api/snapshots');
+    const rows = (d.snapshots||[]).map(s=>`<tr><td>${esc(String(s.snap_id).slice(0,16))}</td><td>${esc(s.label)}</td><td>${esc(new Date(s.created_ts*1000).toLocaleString())}</td><td>${esc(s.meta_bytes)}</td></tr>`).join('');
+    h(`<h2>快照管理 <span class="muted">（${esc(d.count)}）</span></h2>
+      <p class="muted">逻辑快照（只存索引+哈希，不复制正文）。创建/对比请用命令行 <code>world-gov diff snap create</code> / <code>diff show</code>。</p>
+      <table><thead><tr><th>snap_id</th><th>label</th><th>时间</th><th>bytes</th></tr></thead><tbody>${rows||'<tr><td colspan="4" class="muted">无</td></tr>'}</tbody></table>`);
+  }catch(e){ fail(e); }
+}
+
+const views = {overview:viewOverview, items:viewItems, queue:viewQueue, archive:viewArchive, tags:viewTags, snapshots:viewSnapshots};
+document.querySelectorAll('nav a[data-v]').forEach(a=>{
+  a.onclick = ()=>{
+    document.querySelectorAll('nav a').forEach(x=>x.classList.remove('active'));
+    a.classList.add('active');
+    views[a.dataset.v]();
+  };
+});
+viewOverview();
+</script>
+</body>
+</html>

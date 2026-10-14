@@ -696,6 +696,28 @@ pub enum WorldGovCmd {
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,
     },
+    /// 【调试】Web 面板（serve；仅 127.0.0.1，零依赖，无后台常驻）
+    #[command(hide = true)]
+    Web {
+        #[command(subcommand)]
+        cmd: WebCmd,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum WebCmd {
+    /// 启动面板（前台阻塞；Ctrl-C 退出）
+    Serve {
+        /// 端口（默认 8270；仅绑定 127.0.0.1）
+        #[arg(long, default_value_t = 8270)]
+        port: u16,
+        /// 不自动打开浏览器（本环境默认即不打开）
+        #[arg(long)]
+        no_open: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

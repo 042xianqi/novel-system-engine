@@ -199,6 +199,19 @@ pub fn run(conn: &Connection, lib_root: &Path, fix: bool, older_than_days: u64) 
         "detail": ds,
     }));
 
+    // ⑩ Web 面板依赖可用性（第 12 批；**仅警告，不强制**——纯 std 实现，无常驻依赖）
+    items.push(json!({
+        "name": "web_panel",
+        "ok": true,
+        "warn": false,
+        "detail": {
+            "deps": "std only（零 axum/tokio）",
+            "bind": "127.0.0.1",
+            "default_port": super::web_gateway::DEFAULT_PORT,
+            "note": "面板为按需前台命令；无常驻服务、无开机自启。",
+        }
+    }));
+
     let failed = items.iter().filter(|x| x["ok"] == false).count();
     Ok(json!({
         "command": "world-gov self-check",
@@ -208,7 +221,7 @@ pub fn run(conn: &Connection, lib_root: &Path, fix: bool, older_than_days: u64) 
         "failed": failed,
         "all_ok": failed == 0,
         "items": items,
-        "toolchain_epoch": 11,
+        "toolchain_epoch": 12,
         "note": "自检只读为主；--fix 仅创建缺失目录，绝不 ALTER 表/删任务/改资料库。",
     }))
 }
@@ -244,7 +257,8 @@ pub fn capabilities() -> Value {
         "selfcheck_ready": true,
         "tag_note_ready": true,
         "diff_snap_ready": true,
-        "toolchain_epoch": 11,
+        "webpanel_ready": true,
+        "toolchain_epoch": 12,
     })
 }
 
@@ -314,9 +328,10 @@ mod tests {
     #[test]
     fn capabilities_marker() {
         let c = capabilities();
-        assert_eq!(c["toolchain_epoch"], 11);
+        assert_eq!(c["toolchain_epoch"], 12);
         assert_eq!(c["selfcheck_ready"], true);
         assert_eq!(c["tag_note_ready"], true);
         assert_eq!(c["diff_snap_ready"], true);
+        assert_eq!(c["webpanel_ready"], true);
     }
 }

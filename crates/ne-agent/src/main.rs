@@ -13,7 +13,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use crate::cli::{Cli, Cmd, LibraryCtlCmd, McpCmd, ModelsCmd, QueueCmd, VaultCmd, WorldGovCmd, AuditExportCmd, CacheCmd, ProbeExportCmd, SelfCheckCmd, TagCmd, NoteCmd, DiffCmd, DiffSnapCmd};
+use crate::cli::{Cli, Cmd, LibraryCtlCmd, McpCmd, ModelsCmd, QueueCmd, VaultCmd, WorldGovCmd, AuditExportCmd, CacheCmd, ProbeExportCmd, SelfCheckCmd, TagCmd, NoteCmd, DiffCmd, DiffSnapCmd, WebCmd};
 use ne_agent::{RuntimeConfig, Vault};
 use std::path::{Path, PathBuf};
 mod cli;
@@ -944,9 +944,10 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool, 
             st["incremental_scan_ready"] = serde_json::json!(true);
             st["batch_inspect_ready"] = serde_json::json!(true);
             // 工具链版本标记（仅标识，无逻辑作用）
-            st["toolchain_epoch"] = serde_json::json!(11);
+            st["toolchain_epoch"] = serde_json::json!(12);
             st["tag_note_ready"] = serde_json::json!(true);
             st["diff_snap_ready"] = serde_json::json!(true);
+            st["webpanel_ready"] = serde_json::json!(true);
             // 第 9 批能力标记
             for (k, v) in ne_agent::governance::self_check::capabilities().as_object().cloned().unwrap_or_default() {
                 st[k] = v;
@@ -1623,7 +1624,7 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                     let manifest = serde_json::json!({
                         "version": pe::WG_PROBE_VERSION,
                         "created_at": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
-                        "toolchain_epoch": 11,
+                        "toolchain_epoch": 12,
                         "layers": only_layers.clone().unwrap_or_else(|| "all".into()),
                         "since_anchor": since,
                         "baseline_fingerprint": world_gov::read_baseline_fingerprint(lib_root).unwrap_or_else(|| "(none)".into()),
@@ -2012,6 +2013,32 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                             eprintln!("已给 {} 个改动条目打标签「{}」（仅打标签，不做任何自动校验）", tagged, tag);
                         }
                     }
+                }
+            }
+        }
+        WorldGovCmd::Web { cmd, lib: _ } => {
+            match cmd {
+                WebCmd::Serve { port, no_open } => {
+                    let url = format!("http://127.0.0.1:{port}");
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                            "command": "world-gov web serve",
+                            "url": url,
+                            "bind": "127.0.0.1",
+                            "no_open": no_open,
+                            "note": "仅本机可访问；前台阻塞；Ctrl-C 退出，不留后台进程。",
+                        }))?);
+                    } else {
+                        println!("world-gov web 面板：{url}（仅 127.0.0.1；Ctrl-C 退出）");
+                        println!("（--no-open 生效：本环境不自动打开浏览器）");
+                    }
+                    // 阻塞前提示（emit 到 stderr，保持 stdout 纯净）
+                    ne_agent::governance::structured_log::info(
+                        "world-gov web",
+                        "serve.start",
+                        serde_json::json!({"bind": "127.0.0.1", "port": port}),
+                    );
+                    ne_agent::governance::web_gateway::serve(lib_root, *port, quiet)?;
                 }
             }
         }

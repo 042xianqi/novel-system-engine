@@ -40,7 +40,8 @@ impl Default for PipelineRequest {
             vars: Map::new(),
             probe_hash: String::new(),
             temperature: 0.0,
-            max_tokens: 2048,
+            // 0 = 用 config.max_resp_tokens（避免硬编码覆盖配置；reasoning 模型需更大配额）
+            max_tokens: 0,
             bypass_cache: false,
             use_mock: false,
         }

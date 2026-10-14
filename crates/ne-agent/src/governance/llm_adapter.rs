@@ -209,6 +209,14 @@ fn ollama_chat(ep: &Endpoint, sys: &str, messages: &[Msg], c: &Constraint) -> st
     let v = ne_engine::http::post_json_value(&url, &[], &body, std::time::Duration::from_secs(60))
         .map_err(|e| BackendError::Transport(e.to_string()))?;
     let content_str = v["message"]["content"].as_str().unwrap_or("");
+    // reasoning 模型可能把 token 全花在思考上：正文为空（ollama 无 finish_reason，用 eval_count 判断）。
+    if content_str.trim().is_empty() {
+        let used = v["eval_count"].as_i64().unwrap_or(0);
+        return Err(BackendError::Transport(format!(
+            "响应正文为空（eval_count={used}）。\
+若为 reasoning 模型，请调大 `max_resp_tokens`（思考 token 亦计入）后重试。"
+        )));
+    }
     // 解析失败 → content=Null（原始文本保留在 raw），由管线决定是否走修复回合。
     let content = prompt_lib::extract_json(content_str).unwrap_or(Value::Null);
     let token_in = v["prompt_eval_count"].as_i64().unwrap_or(0);
@@ -247,6 +255,15 @@ fn openai_chat(ep: &Endpoint, sys_prompt: &str, messages: &[Msg], c: &Constraint
     let v = ne_engine::http::post_json_value(&url, &headers, &body, std::time::Duration::from_secs(60))
         .map_err(|e| BackendError::Transport(e.to_string()))?;
     let content_str = v["choices"][0]["message"]["content"].as_str().unwrap_or("");
+    // reasoning 模型可能把 token 全花在思考上：finish_reason=length 且正文为空。
+    if content_str.trim().is_empty() {
+        let fr = v["choices"][0]["finish_reason"].as_str().unwrap_or("");
+        let used = v["usage"]["completion_tokens"].as_i64().unwrap_or(0);
+        return Err(BackendError::Transport(format!(
+            "响应正文为空（finish_reason={fr}，completion_tokens={used}）。\
+若为 reasoning 模型，请调大 `max_resp_tokens`（思考 token 亦计入）后重试。"
+        )));
+    }
     // 解析失败 → content=Null（原始文本保留在 raw），由管线决定是否走修复回合。
     let content = prompt_lib::extract_json(content_str).unwrap_or(Value::Null);
     let token_in = v["usage"]["prompt_tokens"].as_i64().unwrap_or(0);

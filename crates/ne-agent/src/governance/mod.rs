@@ -5,6 +5,10 @@
 //! - 新增表（risk_index / library_index）只通过 `governance_schema.sql` 幂等创建。
 //! - 所有 `--semantic` 默认关闭；开启才调模型，且只产报告不落正文改动。
 //! - 新增开关（如 `--check-compliance`）默认关闭。
+//!
+//! 子模块：`pipeline` —— 语义管线（探针→入队→(将来喂LLM)→结果→入库）内存占位。
+pub mod pipeline;
+
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
@@ -67,7 +71,7 @@ pub struct LayerEntry {
 /// 治理库打开：只读既有库 + 幂等附加治理表。
 pub fn open_gov(lib_root: &Path) -> Result<Connection> {
     let conn = Connection::open(lib_root.join("novel.db"))?;
-    conn.execute_batch(include_str!("governance_schema.sql"))?;
+    conn.execute_batch(include_str!("../governance_schema.sql"))?;
     ensure_library_index_cols(&conn)?;
     ensure_risk_index_cols(&conn)?;
     Ok(conn)

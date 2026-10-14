@@ -462,6 +462,9 @@ pub enum WorldGovCmd {
         /// 沙盘：--semantic 时只打印将发送的 prompt，不调模型
         #[arg(long)]
         dry_run: bool,
+        /// 提交任务进内存管线队列（沙盘：同调用内走通 enqueue→simulate→入库）
+        #[arg(long)]
+        enqueue: bool,
         /// 资料库根
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,
@@ -494,6 +497,9 @@ pub enum WorldGovCmd {
         slice: Option<String>,
         #[arg(long)]
         dry_run: bool,
+        /// 提交任务进内存管线队列（沙盘走通 enqueue→simulate→入库）
+        #[arg(long)]
+        enqueue: bool,
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,
     },
@@ -505,8 +511,29 @@ pub enum WorldGovCmd {
         semantic: bool,
         #[arg(long)]
         dry_run: bool,
+        /// 提交任务进内存管线队列
+        #[arg(long)]
+        enqueue: bool,
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,
+    },
+    /// 语义管线队列（**进程内存**，进程退出即清空；不碰磁盘库）
+    Queue {
+        #[command(subcommand)]
+        cmd: QueueCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum QueueCmd {
+    /// 列出当前内存任务 ID/状态/类型
+    List,
+    /// 清空内存队列（仅内存，不碰磁盘库）
+    Clear,
+    /// 查看单个任务详情（含探针路径）
+    Peek {
+        /// 任务 id
+        id: String,
     },
 }
 

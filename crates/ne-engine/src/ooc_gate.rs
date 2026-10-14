@@ -187,6 +187,66 @@ pub fn suppress_out_of_range(char_state: &Value, action_desc: &str) -> Vec<Findi
 ///   { "drift_blacklist":[{term,kbid,tag,verdict}], "canon_invariants":[...], "whitelist":[{term}] }
 /// 语义照抄 Python：
 ///   * term ∈ whitelist 或该 term 的所有出现都被白名单词覆盖 → 豁免
+/// term 有效性守卫（2026-10-14 修缺陷 `term='in'` 误判 P0）。
+///
+/// 背景：`kb_world_consistency.json` 的 `drift_blacklist` 里混入了 LLM 精读角色卡时
+/// 误抽出的英文单词（`in`/`the`/`but`/`her`/`all` 等 52 条含拉丁字母）。原实现
+/// `text.contains(term)` 为纯子串匹配 → `term="in"` 命中任何含 `in` 的草稿
+/// （实测：正文加一个 `innocent` 即被 P0 打回）。
+///
+/// 规则（不改判定口径，只排除明显不是词条的数据）：
+///   * 含 CJK 的 term → 照常参与（既有行为不变）；
+///   * 纯非 CJK（拉丁/数字/符号）→ 要求长度 ≥ 4，排除 `in`/`the`/`but` 类噪声。
+fn is_valid_term(term: &str) -> bool {
+    if term
+        .chars()
+        .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c))
+    {
+        return true;
+    }
+    term.chars().count() >= 4
+}
+
+/// 含 CJK 的 term，其出现是否是「独立词」而非更长词的一部分。
+///
+/// 纯拉丁 term 用词边界（`\b`）匹配，避免 `City` 命中 `Cityscape` 之类；
+/// 含 CJK 的 term 保持原 `contains` 语义（中文无词边界，且既有测试依赖该行为）。
+fn term_hit(term: &str, text: &str) -> bool {
+    let has_cjk = term
+        .chars()
+        .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c));
+    if has_cjk {
+        return text.contains(term);
+    }
+    // 纯拉丁：要求两侧为非词字符（或串首/尾）
+    let re = match regex::Regex::new(&format!(r"(?i)(?:^|[^A-Za-z0-9_]){}(?:$|[^A-Za-z0-9_])", regex::escape(term))) {
+        Ok(r) => r,
+        Err(_) => return text.contains(term),
+    };
+    re.is_match(text)
+}
+
+/// 极高频通用中文词表（2026-10-14 修同类缺陷 `term='组织'` 等）。
+///
+/// 背景：`drift_blacklist` 的 38 个 2 字中文 term 里混入了**日常常用词**
+/// （`组织`/`标题`/`科技`/`文明`/`场景`/`描写`/`结构`/`战斗`/`生活`/`对话`/
+/// `特殊`/`重复`/`换算`/`自报`/`同名`/`神话`/`禁词`）。这些词一旦出现在正文，
+/// 原 `contains` 逻辑会把整章判 `P0 drift` 打回——与 `term='in'` 是同一类问题。
+///
+/// **处理口径（不改判定语义）**：这类词命中时**仍报，但降级为 P1 告警**，
+/// 保留人工复核入口，不直接 P0 阻断生成。真正的专有名词（`萧炎`/`慧能`/`鸿钧`）
+/// 不在表内，P0 强度不变。
+const HIGH_FREQ_COMMON_TERMS: &[&str] = &[
+    "组织", "标题", "科技", "文明", "场景", "描写", "结构", "战斗", "生活",
+    "对话", "特殊", "重复", "换算", "自报", "同名", "神话", "禁词", "标题",
+    "形式", "内容", "设定", "规则", "资料", "信息", "状态", "数据", "字段",
+];
+
+/// 该 term 是否属于「高频通用词」（命中降级为 P1 而非 P0）。
+fn is_high_freq_common(term: &str) -> bool {
+    HIGH_FREQ_COMMON_TERMS.contains(&term)
+}
+
 ///   * drift 命中 → P0（code=WORLD_CONSISTENCY_DRIFT）
 ///   * canon 命中 → P1（code=WORLD_CONSISTENCY_CANON）
 pub fn world_consistency(draft_text: Option<&str>, kb: Option<&Value>, role: &str) -> Vec<Finding> {
@@ -246,10 +306,13 @@ pub fn world_consistency(draft_text: Option<&str>, kb: Option<&Value>, role: &st
                 if term.is_empty() || wl.iter().any(|w| w == term) {
                     continue;
                 }
+                if !is_valid_term(term) {
+                    continue;
+                }
                 if whitelisted(term) {
                     continue;
                 }
-                if text.contains(term) {
+                if term_hit(term, text) {
                     let kbid = e.get("kbid").map(|v| v.to_string()).unwrap_or_default();
                     let tag = e.get("tag").and_then(|t| t.as_str()).unwrap_or("");
                     // 对齐 Python：drift 条目带 verdict + "命中草稿=P0打回"；
@@ -260,11 +323,19 @@ pub fn world_consistency(draft_text: Option<&str>, kb: Option<&Value>, role: &st
                     } else {
                         "; 违反canon基准=P1告警".to_string()
                     };
+                    // 高频通用词命中：仍报，但降级 P1（避免 `组织`/`文明` 这类
+                    // 日常词把整章 P0 打回，同 `term='in'` 一类问题）。
+                    let (sev_eff, tag_note) =
+                        if code == "WORLD_CONSISTENCY_DRIFT" && is_high_freq_common(term) {
+                            ("P1", "；高频通用词→降级P1（待人工复核）")
+                        } else {
+                            (sev, "")
+                        };
                     out.push(Finding::with_sev(
                         code,
                         role,
-                        format!("kbid={kbid}; term='{term}'; tag={tag}{tail}"),
-                        sev,
+                        format!("kbid={kbid}; term='{term}'; tag={tag}{tail}{tag_note}"),
+                        sev_eff,
                     ));
                 }
             }
@@ -422,7 +493,74 @@ mod tests {
     }
 
     #[test]
-    fn replay_deterministic() {
+    fn short_latin_term_not_matched() {
+        // 缺陷复现：term="in" 曾让任何含 in 的草稿 P0 打回
+        let kb = json!({
+            "drift_blacklist": [{"term":"in","kbid":92,"tag":"形式"}],
+            "canon_invariants": [],
+            "whitelist": [],
+        });
+        let w = world_consistency(Some("他走进一间innocent的房子"), Some(&kb), "C");
+        assert!(w.is_empty(), "单字母拉丁词不应命中: {w:?}");
+    }
+    #[test]
+    fn latin_term_uses_word_boundary() {
+        let kb = json!({
+            "drift_blacklist": [{"term":"City","kbid":87,"tag":"现实混入"}],
+            "canon_invariants": [],
+            "whitelist": [],
+        });
+        // 独立词命中
+        let w = hits("他和 City 签了约", &kb);
+        assert!(w, "独立词应命中");
+        // 词内子串不命中
+        let w2 = hits("Cityscape 一片", &kb);
+        assert!(!w2, "更长词的一部分不应命中");
+        fn hits(t: &str, kb: &serde_json::Value) -> bool {
+            world_consistency(Some(t), Some(kb), "C")
+                .iter()
+                .any(|f| f.code == "WORLD_CONSISTENCY_DRIFT")
+        }
+    }
+    #[test]
+    fn cjk_term_still_substring() {
+        // 中文 term 行为不变（无词边界，既有测试依赖）
+        let kb = json!({
+            "drift_blacklist": [{"term":"太玄教","kbid":48,"tag":"自造文明"}],
+            "canon_invariants": [],
+            "whitelist": [],
+        });
+        let w = world_consistency(Some("他加入了太玄教的旧部"), Some(&kb), "C");
+        assert!(w.iter().any(|f| f.code == "WORLD_CONSISTENCY_DRIFT"));
+    }
+    #[test]
+fn high_freq_common_term_downgraded_to_p1() {
+    // `组织` 是日常常用词，命中不应把整章 P0 打回（同 term='in' 一类问题）
+    let kb = json!({
+        "drift_blacklist": [{"term":"组织","kbid":38,"tag":"死引用"}],
+        "canon_invariants": [],
+        "whitelist": [],
+    });
+    let w = world_consistency(Some("他组织了一次行动"), Some(&kb), "C");
+    assert!(!w.is_empty(), "仍应报（保留复核入口）");
+    assert!(
+        w.iter().all(|f| f.severity.as_deref() == Some("P1")),
+        "高频通用词应降级 P1: {w:?}"
+    );
+}
+#[test]
+fn proper_noun_still_p0() {
+    // 专有名词（现实混入）P0 强度不变
+    let kb = json!({
+        "drift_blacklist": [{"term":"萧炎","kbid":12,"tag":"现实混入"}],
+        "canon_invariants": [],
+        "whitelist": [],
+    });
+    let w = world_consistency(Some("萧炎出现了"), Some(&kb), "C");
+    assert!(w.iter().any(|f| f.severity.as_deref() == Some("P0")), "{w:?}");
+}
+#[test]
+fn replay_deterministic() {
         let mut s = base_state();
         s["suppress"] = json!(1.5);
         let a = serde_json::to_string(&ooc_gate_json("重放", &s, None, CONFLICT_THR, None, None).unwrap()).unwrap();

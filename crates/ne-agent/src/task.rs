@@ -363,6 +363,8 @@ pub struct NovelOutcome {
     pub p1: usize,
     /// 门禁明细（P1 前若干条）
     pub notes: Vec<String>,
+    /// P1-PARAGRAPH 实际修改的段落数（0=未改排版）
+    pub para_fixed: usize,
 }
 
 impl NovelOutcome {
@@ -380,6 +382,9 @@ impl NovelOutcome {
             s.push_str("  （dry-run，未落盘）\n");
         }
         s.push_str(&format!("  P0 {} · P1 {}\n", self.p0, self.p1));
+        if self.para_fixed > 0 {
+            s.push_str(&format!("  P1-PARAGRAPH_FIX 修改段落数：{}\n", self.para_fixed));
+        }
         for n in &self.notes {
             s.push_str(&format!("  · {n}\n"));
         }
@@ -398,6 +403,69 @@ impl NovelOutcome {
 ///
 /// 与既有口径一致：`RepoCtx` 负责 GateCtx（与 `ne-engine check-file` 同源），
 /// `NovelCtx` 负责 BudgetCtx/ChapterCtx（生成侧）。
+///
+/// `use_memory=true` 时启用记忆子系统（preprocess/三层提示词/post_update）；
+/// `false` 时逐字节等于历史行为（见 [`novel_chapter`]）。
+/// 记忆子系统 pre 阶段的结果（供 system prompt 组装与 token 校验）。
+pub(crate) struct MemPre {
+    pub cfg: crate::memory_system::MemConfig,
+    pub memory_inject: String,
+    pub compressed_outline: String,
+    pub conn: rusqlite::Connection,
+}
+
+/// 记忆子系统预处理（§一）：状态冲突 → Err（不调模型）；否则返回注入片段 + 压缩细纲。
+fn memory_pipeline_pre(
+    lib_root: &std::path::Path,
+    volume: &str,
+    chapter: u32,
+) -> Result<MemPre> {
+    let conn = crate::memory_system::open(&lib_root.join("novel.db"))?;
+    let cfg = crate::memory_system::MemConfig::load(&conn);
+    // 读原始细纲（本轮：直接从 03_叙事规划/细纲/<卷>.md 取该章）
+    let outline_path = lib_root.join("03_叙事规划/细纲").join(format!("{volume}.md"));
+    let raw = std::fs::read_to_string(&outline_path).unwrap_or_default();
+    let out = crate::memory_system::preprocess(&conn, volume, chapter, &raw)?;
+    // 状态冲突校验：冲突直接 Err，不进入模型调用
+    crate::api::check_state_conflict(&conn, volume, chapter, &out.compressed_outline)?;
+    Ok(MemPre {
+        cfg,
+        memory_inject: out.memory_inject,
+        compressed_outline: out.compressed_outline,
+        conn,
+    })
+}
+
+/// 组装 system prompt：有记忆 → 三层分层；无记忆 → 旧单行（逐字节不变）。
+fn build_system_prompt(
+    lib_root: &std::path::Path,
+    volume: &str,
+    chapter: u32,
+    mem: &Option<MemPre>,
+) -> Result<String> {
+    match mem {
+        Some(m) => {
+            let sp = crate::api::build_layered_system(
+                &m.conn,
+                volume,
+                chapter,
+                &m.memory_inject,
+                &m.compressed_outline,
+            );
+            Ok(sp.assemble())
+        }
+        None => {
+            let book_title = ne_engine::config::load(lib_root)
+                .map(|c| c.book_profile.title().to_string())
+                .unwrap_or_else(|_| ne_engine::gates::BOOK_TITLE_DEFAULT.to_string());
+            Ok(format!(
+                "你是《{book_title}》的小说撰稿者。严格按用户给出的写作指令输出正文，不要复述指令。"
+            ))
+        }
+    }
+}
+
+/// 旧签名兼容入口（`use_memory = false`，行为与历史逐字节一致）。
 #[allow(clippy::too_many_arguments)]
 pub fn novel_chapter(
     lib_root: &std::path::Path,
@@ -408,28 +476,62 @@ pub fn novel_chapter(
     prompt_dir: &std::path::Path,
     dry_run: bool,
 ) -> Result<NovelOutcome> {
+    novel_chapter_with_memory(
+        lib_root, volume, chapter, llm, work_root, prompt_dir, dry_run, false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn novel_chapter_with_memory(
+    lib_root: &std::path::Path,
+    volume: &str,
+    chapter: u32,
+    llm: &ne_engine::llm::LlmParams,
+    work_root: &std::path::Path,
+    prompt_dir: &std::path::Path,
+    dry_run: bool,
+    use_memory: bool,
+) -> Result<NovelOutcome> {
     if !lib_root.join("novel.db").exists() && !lib_root.join("03_叙事规划").exists() {
         anyhow::bail!(
             "库根不像小说资料库（既无 novel.db 也无 03_叙事规划）：{}",
             lib_root.display()
         );
     }
-
     let ctx = crate::novel_ctx::NovelCtx::open(lib_root)?;
     // prompt 模板可被 vault 的 prompts/ 覆盖（双层资源）
     let ctx = ctx.with_prompt_fallback(prompt_dir);
 
-    // 1) 组装 prompt
+    // 1) 组装 prompt（原有逻辑零改动）
     let prompt = ne_engine::chapter::build_prompt(&ctx, chapter, volume)
         .map_err(|e| anyhow::anyhow!("组装正文 prompt 失败：{e}"))?;
 
-    // 2) 调模型
-    let msgs = vec![
-        ne_engine::llm::Message::system(
-            "你是《残响之河》的小说撰稿者。严格按用户给出的写作指令输出正文，不要复述指令。",
-        ),
-        ne_engine::llm::Message::user(prompt),
-    ];
+    // 1.5) 记忆子系统（仅 use_memory=true 时启用；默认关 = 旧行为逐字节不变）
+    //      严格按照文档 §一：preprocess 在调模型前，post_update 在门禁后。
+    let mem = if use_memory {
+        Some(memory_pipeline_pre(lib_root, volume, chapter)?)
+    } else {
+        None
+    };
+    let msgs = {
+        let sys = build_system_prompt(lib_root, volume, chapter, &mem)?;
+        vec![
+            ne_engine::llm::Message::system(sys),
+            ne_engine::llm::Message::user(prompt),
+        ]
+    };
+    // 总输入 token 校验（§一：超限直接报错终止，禁止调用模型）
+    if let Some(m) = &mem {
+        let cfg = m.cfg.clone();
+        let total = crate::memory_system::est_tokens(&msgs[0].content)
+            + crate::memory_system::est_tokens(&msgs[1].content);
+        if total > cfg.total_input_max_token {
+            anyhow::bail!(
+                "总输入 token={total} 超上限 {}（记忆子系统拒绝调用模型）",
+                cfg.total_input_max_token
+            );
+        }
+    }
     let out = ne_engine::llm::call(llm, &msgs)
         .map_err(|e| anyhow::anyhow!("模型调用失败：{e}"))?;
     let text = out.content.trim().to_string();
@@ -453,25 +555,132 @@ pub fn novel_chapter(
     let repo_ctx = ne_engine::ctx::RepoCtx::open(lib_root)
         .map_err(|e| anyhow::anyhow!("打开门禁上下文失败：{e}"))?;
     let report = ne_engine::gates::run_all(&text, chapter, volume, &cfg, &repo_ctx);
-
-    let mut notes = Vec::new();
+let mut notes = Vec::new();
     for f in report.p0.iter().take(5) {
         notes.push(format!("P0 {}: {}", f.gate, first_line(&f.issue)));
     }
     for f in report.p1.iter().take(5) {
         notes.push(format!("P1 {}: {}", f.gate, first_line(&f.issue)));
     }
+// 4.5) P1-PARAGRAPH 排版修复回写：仅调分段，一字不改（不落盘时只报数）
+    let para_fixed = report
+        .gates
+        .get("P1_PARAGRAPH")
+        .map(|g| {
+            g.detail
+                .split("段落修复=")
+                .nth(1)
+                .and_then(|s| s.split('处').next())
+                .and_then(|s| s.trim().parse::<usize>().ok())
+                .unwrap_or(0)
+        })
+        .unwrap_or(0);
+    if let Some(fixed) = &report.fixed_text {
+        if !dry_run {
+            if let Some(p) = &written_to {
+                std::fs::write(p, format!("{}\n", fixed.trim()))
+                    .map_err(|e| anyhow::anyhow!("P1-PARAGRAPH 回写失败：{e}"))?;
+            }
+        }
+        notes.push(format!("P1-PARAGRAPH_FIX 修改段落数：{para_fixed}（仅排版，文字未改）"));
+    }
 
+
+    // 5) 接线回写：情绪引擎递推 -> char_emotion / char_memory / dynamics_events
+    if !dry_run {
+        let vol_codes: Vec<String> = {
+            let inj = ne_engine::chapter::ChapterCtx::injection(&ctx, volume, chapter).unwrap_or(serde_json::json!({}));
+            inj.get("chars")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|c| c.get("code").and_then(|x| x.as_str()).map(|s| s.to_string())).collect())
+                .unwrap_or_default()
+        };
+        let vol_events: Vec<String> = {
+            let inj = ne_engine::chapter::ChapterCtx::injection(&ctx, volume, chapter).unwrap_or(serde_json::json!({}));
+            inj.get("events")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|e| e.get("id").and_then(|x| x.as_str()).map(|s| s.to_string())).collect())
+                .unwrap_or_default()
+        };
+        match ne_engine::wire::commit_chapter(
+            &lib_root.join("novel.db"),
+            lib_root,
+            volume,
+            chapter,
+            &vol_codes,
+            &vol_events,
+        ) {
+            Ok(done) => {
+                for (code, msg) in done.iter().take(3) {
+                    notes.push(format!("情绪回写 {code}: {msg}"));
+                }
+            }
+            Err(e) => notes.push(format!("情绪回写失败（不阻断正文）：{e}")),
+        }
+    }
+    // 5.5) 记忆子系统 post 阶段（§一）：保守实体解析 + 短期记忆 + 30 章快照。
+    //      放在门禁与回写之后、返回之前；失败只记 note，不阻断正文。
+    if let Some(m) = &mem {
+        if !dry_run {
+            match crate::memory_system::post_update(&m.conn, volume, chapter, &text) {
+                Ok(rep) => {
+                    notes.push(format!(
+                        "记忆回写：提取 {} 项，警告 {}，裁旧 {} 章{}",
+                        rep.extracted.len(),
+                        rep.warnings.len(),
+                        rep.short_term_pruned,
+                        rep.snapshot_created
+                            .as_ref()
+                            .map(|s| format!("，快照 {s}"))
+                            .unwrap_or_default()
+                    ));
+                    for w in rep.warnings.iter().take(3) {
+                        notes.push(format!("记忆警告：{w}"));
+                    }
+                    // 章节元数据存档（原始细纲 + 压缩细纲 + 正文 + token 统计）
+                    let outline_path = lib_root
+                        .join("03_叙事规划/细纲")
+                        .join(format!("{volume}.md"));
+                    let raw = std::fs::read_to_string(&outline_path).unwrap_or_default();
+                    let in_tok = crate::memory_system::est_tokens(&m.memory_inject)
+                        + crate::memory_system::est_tokens(&m.compressed_outline);
+                    let out_tok = crate::memory_system::est_tokens(&text);
+                    if let Err(e) = crate::memory_system::save_chapter_meta(
+                        &m.conn,
+                        volume,
+                        chapter,
+                        &raw,
+                        &m.compressed_outline,
+                        &text,
+                        rep.snapshot_created.as_deref(),
+                        in_tok,
+                        out_tok,
+                        &rep.warnings,
+                    ) {
+                        notes.push(format!("chapter_meta 存档失败（不阻断）：{e}"));
+                    } else {
+                        notes.push(format!(
+                            "chapter_meta 已存档（in≈{in_tok} / out≈{out_tok} token）"
+                        ));
+                    }
+                }
+                Err(e) => notes.push(format!("记忆回写失败（不阻断正文）：{e}")),
+            }
+        }
+    }
     let _ = work_root;
+    // 返回最终文本：若发生排版修复，text 也同步为修复后（与落盘一致）
+    let final_text = report.fixed_text.clone().unwrap_or_else(|| text.clone());
     Ok(NovelOutcome {
         chapter,
         volume: volume.to_string(),
-        text,
+        text: final_text,
         written_to,
         verdict: report.verdict,
         p0: report.p0.len(),
         p1: report.p1.len(),
         notes,
+        para_fixed,
     })
 }
 

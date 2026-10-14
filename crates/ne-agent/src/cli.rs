@@ -16,6 +16,9 @@ pub(crate) struct Cli {
     /// vault 目录（默认：当前目录下的 .neagent，或 $NE_AGENT_VAULT）
     #[arg(long, global = true, env = "NE_AGENT_VAULT", value_name = "DIR")]
     pub(crate) vault: Option<PathBuf>,
+    /// 工作区沙箱根（chat 默认 vault/workspace；指向资料库根可直读真实库）
+    #[arg(long, global = true, value_name = "DIR")]
+    pub(crate) work_root: Option<PathBuf>,
 
     /// 输出 JSON（便于脚本消费）
     #[arg(long, global = true)]
@@ -128,6 +131,37 @@ pub enum Cmd {
         #[command(subcommand)]
         cmd: MemoryCmd,
     },
+    /// 按 l5_质检.md 对已生成正文做 LLM 深读质检（按需跑，不进门禁）
+    /// 按 l5_质检.md 对已生成正文做 LLM 深读质检（按需跑，不进门禁，不烧常规额度）
+    Score {
+        /// 章号
+        #[arg(long, default_value_t = 1)]
+        chap_id: u32,
+        /// 卷号
+        #[arg(long, default_value = "卷01")]
+        volume: String,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+        /// 指定正文文件（默认 04_正文/{volume}/第N章.md）
+        #[arg(long)]
+        file: Option<PathBuf>,
+    },
+    /// 按 l5_修复.md 定向修复（读质检 findings + 原文）
+    Fix {
+        #[arg(long, default_value_t = 1)]
+        chap_id: u32,
+        #[arg(long, default_value = "卷01")]
+        volume: String,
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+        /// findings JSON 文件路径
+        #[arg(long)]
+        findings: Option<PathBuf>,
+        /// 只打印修复后正文不落盘
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// 生成一章正文（细纲 → 注入包 → 模型 → 门禁）
     Novel {
         /// 章号（第几章）
@@ -145,6 +179,11 @@ pub enum Cmd {
         /// 只组装 prompt，不调模型（调试用；打印 prompt 长度与前 500 字）
         #[arg(long)]
         prompt_only: bool,
+        /// 启用记忆子系统（preprocess → 三层系统提示词 → post_update）。
+        ///
+        /// 默认 **false = 旧行为逐字节不变**（system prompt 仍是单行 `你是《X》…`）。
+        #[arg(long)]
+        use_memory: bool,
     },
     /// 管理外部 MCP 服务
     Mcp {

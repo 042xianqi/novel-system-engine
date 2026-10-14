@@ -151,10 +151,20 @@ fn f(dim: &str, issue: String, action: &str) -> Finding {
 }
 
 /// 确定性质检（照抄 `deterministic_check`，逐条对齐阈值与输出）。
+///
+/// 使用默认正典禁词（《残响之河》`BANNED_WORDS`）。新书请用
+/// [`deterministic_check_with`] 传入 `book_profile.banned_words()`。
 pub fn deterministic_check(text: &str, _chapter_no: u32) -> Findings {
+    deterministic_check_with(text, _chapter_no, &BANNED_WORDS)
+}
+
+/// 确定性质检（禁词表可注入版）。
+///
+/// `banned_words` 由调用方给出（通常 = `cfg.book_profile.banned_words()`）；
+/// 缺省传入 [`BANNED_WORDS`] 时与旧行为逐字一致。
+pub fn deterministic_check_with(text: &str, _chapter_no: u32, banned_words: &[&str]) -> Findings {
     let mut p0 = Vec::new();
     let mut p1 = Vec::new();
-
     let no_ws: String = text.chars().filter(|c| !c.is_whitespace()).collect();
     let words = no_ws.chars().count();
     let excl = text.matches('!').count() + text.matches('！').count();
@@ -163,12 +173,11 @@ pub fn deterministic_check(text: &str, _chapter_no: u32) -> Findings {
         .filter(|w| text.contains(**w))
         .map(|w| (*w, text.matches(*w).count()))
         .collect();
-    let banned_hits: Vec<(&str, usize)> = BANNED_WORDS
+    let banned_hits: Vec<(&str, usize)> = banned_words
         .iter()
         .filter(|w| text.contains(**w))
         .map(|w| (*w, text.matches(*w).count()))
         .collect();
-
     // 排比：连续同结构（紧邻 ≥3）
     let repet = Regex::new(r"(不是[^。，\n]{1,8}[，,]){2,}不是").unwrap().is_match(text)
         || Regex::new(r"(在[^。]{1,6}。){3,}").unwrap().is_match(text);
@@ -309,6 +318,11 @@ pub trait ChapterCtx {
     fn kb_rules(&self, scene: &str, limit: usize) -> Vec<Value>;
     /// 查卡文本（用于注入，含 myth 中性化）
     fn material_content(&self, code: &str) -> Option<String>;
+    /// 库根（用于接线层 wire 读取 data/*.json 与 novel.db）。
+    /// 默认 None：不接线的实现（测试 mock）不受影响。
+    fn lib_root(&self) -> Option<std::path::PathBuf> {
+        None
+    }
 }
 
 /// 构建知识注入块（照抄 build_knowledge_injection 的骨架上，返回 (block, counts)）。
@@ -343,16 +357,43 @@ pub fn build_knowledge_injection<C: ChapterCtx>(
     // 角色性格卡
     if let Some(chars) = inj.get("chars").and_then(|v| v.as_array()) {
         let mut lines = Vec::new();
+        let mut canon_lines: Vec<String> = Vec::new();
         for c in chars {
             let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let code = c.get("code").and_then(|v| v.as_str()).unwrap_or("");
             let style = c.get("speech_style").and_then(|v| v.as_str()).unwrap_or("");
             let catch = c.get("catchphrase").and_then(|v| v.as_str()).unwrap_or("");
-            lines.push(format!("  【{code} {name}】语言风格：{style}；口头禅：{catch}"));
+            // 空值兜底：绝不把空字符串直接送进 prompt（会放任 LLM 自由发挥）
+            let style_disp = if style.trim().is_empty() { "未标定（以角色卡整体为准）" } else { style };
+            let catch_disp = if catch.trim().is_empty() { "无" } else { catch };
+            lines.push(format!("  【{code} {name}】语言风格：{style_disp}；口头禅：{catch_disp}"));
+            if let Some(cl) = c.get("canon_lines").and_then(|v| v.as_array()) {
+                for s in cl.iter().filter_map(|x| x.as_str()) {
+                    if !s.trim().is_empty() && !canon_lines.iter().any(|x| x == s) {
+                        canon_lines.push(s.to_string());
+                    }
+                }
+            }
         }
         counts.insert("角色卡n".into(), json!(lines.len()));
+        counts.insert("定版台词n".into(), json!(canon_lines.len()));
         if !lines.is_empty() {
             parts.push(format!("【角色性格卡】\n{}", lines.join("\n")));
+        }
+        // 定版原文保护块：强制 LLM 原样输出，禁止拆词 / 扩写 / 加解说
+        if !canon_lines.is_empty() {
+            let body: Vec<String> = canon_lines
+                .iter()
+                .map(|s| format!("{s}"))
+                .collect();
+            parts.push(format!(
+                "【定版原文（不可修改）】\n{}\n{}\n{}\n\
+                 > 上述被 [[CANON_TEXT_START]]/[[CANON_TEXT_END]] 包裹的文本为**不可修改定版原文**：\n\
+                 > 只能原封不动输出，禁止拆分、扩写、追加解释、新增字段（如「两个字」「推演次数」等）。",
+                "[[CANON_TEXT_START]]",
+                body.join("\n"),
+                "[[CANON_TEXT_END]]",
+            ));
         }
     }
 
@@ -401,28 +442,72 @@ pub fn build_knowledge_injection<C: ChapterCtx>(
     Ok((parts.join("\n\n"), Value::Object(counts)))
 }
 
+/// 叙事与人物风格约束（追加在模板末尾；贴合原作者手写文风）。
+/// 纯 prompt 层，不含任何代码门禁逻辑。
+pub const STYLE_CONSTRAINTS: &str = "\
+# 叙事与人物风格约束（贴合原著文风）
+1. 主角内心活动不要全部写成事后完整复盘总结。模拟人脑真实思考：允许碎片化、跳跃式念头、一闪而过的自嘲脑洞，部分想法不必得出结论，想法可以中途搁置。避免通篇规整、逻辑顺滑的大段心理独白。
+2. 配角不能只有功能性喜怒哀乐。给配角增加微小具体小怪癖、无意识小动作；允许配角说出不直接推动主线的细碎言行。
+3. 不必追求本章所有线索全部闭环。可以抛出疑问、异象碎片谜团，不在本章解答，留给后续章节。
+4. 叙事视角：绝大多数跟随主角，允许极短镜头短暂偏移到环境、配角细微动作，不要死死锁死主角第一感官。
+5. 文笔不要过度打磨华丽顺滑；适度保留思考的“毛刺感”；少用成套网文比喻；心理优先靠动作细节表现，但保留少量直白脑内碎念。
+6. 硬性：主角仅内心允许自嘲玩笑；客观叙事、受伤死亡悲剧场景禁止戏谑；念头吐槽完毕必须回归残酷现实，不消解苦难。
+
+硬性保留旧规则：段落40-80汉字；[[CANON_TEXT_START]]定版文本原样输出；禁止系统面板游戏UI；允许碎片化念头、配角微小习惯、可留存未解谜团。
+
+# 输出强制要求
+1. 严格遵守全局铁则 + 本章细纲，禁止自行新增剧情、新增人物、修改既定伏笔时序。
+2. 文风：整体黑暗压抑；陈寂只允许内心进行自嘲脑洞，客观叙事不能搞笑；可碎片化念头，不要通篇规整复盘心理。
+3. **只输出纯粹小说正文**：禁止前置分析、禁止结尾总结、禁止输出溯源 ID、**禁止输出数据库 SQL 脚本 / 代码围栏 / 任何非正文的技术内容**。
+4. 生成完成自行自查一遍：是否触犯本章专属禁令。";
+
 /// 构建完整正文 prompt（照抄 build_prompt 的骨架；模板来自 prompts/l5_正文.md）。
 pub fn build_prompt<C: ChapterCtx>(ctx: &C, chapter: u32, volume: &str) -> Result<String> {
     let inj = ctx.injection(volume, chapter)?;
     let ch = inj.get("chapter").cloned().unwrap_or_else(|| json!({}));
     let scene = ch.get("scene_type").and_then(|v| v.as_str()).unwrap_or("日常");
     let dim = scene_dims(scene);
-
     let (kb_block, _counts) = build_knowledge_injection(ctx, chapter, volume, scene)?;
     let base = ctx.prompt_file("l5_正文.md").unwrap_or_default();
+    // 在模板末尾追加「叙事与人物风格约束」（原有模板内容一字不动，仅追加）。
+    let base = format!("{base}\n\n{}", STYLE_CONSTRAINTS);
 
     let outline = ch.get("outline").and_then(|v| v.as_str()).unwrap_or("");
     let title = ch.get("title").and_then(|v| v.as_str()).unwrap_or("");
     let anchors = ch.get("anchors").cloned().unwrap_or_else(|| json!({}));
+    let wire_block = build_wire_injection(ctx, &inj, volume, chapter, scene);
 
     Ok(format!(
-        "{base}\n\n── 第{chapter}章 {title} ──\n\
+        "── 第{chapter}章 {title} ──\n\
          【场景】{scene}  手法路由：{dim}\n\
          【字数】{MIN_WORDS}-{MAX_WORDS} 字；单段≤200；全章18-25段\n\
          【锚点】{}\n\
-         【细纲】\n{outline}\n\n{kb_block}\n",
+         【细纲】\n{outline}\n\n\
+         {base}\n\n{kb_block}\n\n{wire_block}\n",
         anchors
     ))
+}
+
+/// 组装接线注入块（库根缺失时返回空串，不阻断）。
+fn build_wire_injection<C: ChapterCtx>(
+    ctx: &C,
+    inj: &Value,
+    volume: &str,
+    chapter: u32,
+    scene: &str,
+) -> String {
+    let Some(root) = ctx.lib_root() else { return String::new() };
+    let codes: Vec<String> = inj
+        .get("chars")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|c| c.get("code").and_then(|x| x.as_str()).map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let data = crate::wire::gather(&root, volume, chapter, scene, &codes);
+    crate::wire::render_blocks(&data)
 }
 
 #[cfg(test)]

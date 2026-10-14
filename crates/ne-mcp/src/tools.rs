@@ -126,21 +126,94 @@ pub fn cardgen(cfg: &Cfg, volume: &str) -> Result<serde_json::Value> {
         .map_err(|e| anyhow::anyhow!("读细纲失败（{}）：{e}", outline.display()))?;
 
     let jobs = extract_card_jobs(&text);
-    let mut by_cat: std::collections::BTreeMap<String, Vec<serde_json::Value>> =
-        std::collections::BTreeMap::new();
+    // 查重（2026-10-13 修）：细纲头部的「无XX卡」注记会过期（卡建了注记没删），
+    // 光信注记会误报待建。对 novel.db materials.name + 磁盘卡文件做双向核对，
+    // 每张工单标 exists_db / exists_disk，存在即为「注记过期」，无需再建。
+    let mut names_db: Vec<(String, String)> = Vec::new();
+    if cfg.db_path().exists() {
+        if let Ok(con) = rusqlite::Connection::open_with_flags(
+            cfg.db_path(),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ) {
+            if let Ok(mut st) = con.prepare("SELECT code, name FROM materials") {
+                if let Ok(rows) = st.query_map([], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                }) {
+                    for r in rows.flatten() {
+                        names_db.push(r);
+                    }
+                }
+            }
+        }
+    }
+    let lib = cfg.lib_root();
+    let mut jobs_json: Vec<serde_json::Value> = Vec::with_capacity(jobs.len());
     for j in &jobs {
-        let cat = if j.category.is_empty() { "未分类".to_string() } else { j.category.clone() };
-        by_cat.entry(cat).or_default().push(serde_json::json!({
+        let db_hit: Vec<String> = names_db
+            .iter()
+            .filter(|(_, n)| n.contains(&j.name) || j.name.contains(n.as_str()))
+            .map(|(c, _)| c.clone())
+            .collect();
+        let disk_hit = {
+            let re = regex::Regex::new(r"^([A-Z]+-\d+-\d+)\b").unwrap_or_else(|_| regex::Regex::new(r"$^").unwrap());
+            let mut hit = String::new();
+            if let Ok(rd) = fs::read_dir(&lib) {
+                'outer: for cat in rd.flatten() {
+                    let cp = cat.path();
+                    if !cp.is_dir() { continue; }
+                    if let Ok(files) = fs::read_dir(&cp) {
+                        for f in files.flatten() {
+                            let fp = f.path();
+                            if fp.extension().map(|e| e == "md").unwrap_or(false) {
+                                if let Ok(t) = fs::read_to_string(&fp) {
+                                    let first = t.lines().next().unwrap_or("");
+                                    if first.contains(&j.name) {
+                                        let code = re
+                                            .captures(&f.file_name().to_string_lossy())
+                                            .and_then(|c| c.get(1))
+                                            .map(|c| c.as_str().to_string())
+                                            .unwrap_or_default();
+                                        hit = if code.is_empty() { fp.display().to_string() } else { code };
+                                        break 'outer;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            hit
+        };
+        jobs_json.push(serde_json::json!({
             "name": j.name, "source_ref": j.source_ref, "material": j.material,
+            "exists_db": !db_hit.is_empty(), "db_codes": db_hit,
+            "exists_disk": !disk_hit.is_empty(), "disk_code": disk_hit,
+            "need_create": db_hit.is_empty() && disk_hit.is_empty(),
         }));
     }
-
+    let real_jobs: Vec<&serde_json::Value> =
+        jobs_json.iter().filter(|j| j["need_create"] == true).collect();
+    let mut by_cat: std::collections::BTreeMap<String, Vec<serde_json::Value>> =
+        std::collections::BTreeMap::new();
+    for j in &real_jobs {
+        let cat = j["material"]
+            .as_str()
+            .map(|m| if m.contains("角色") { "角色".to_string() }
+                else if m.contains("地点") { "地点".to_string() }
+                else { "未分类".to_string() })
+            .unwrap_or_else(|| "未分类".to_string());
+        by_cat.entry(cat).or_default().push((*j).clone());
+    }
     Ok(serde_json::json!({
         "outline": outline.display().to_string(),
         "volume": volume,
         "job_count": jobs.len(),
+        "need_create_count": real_jobs.len(),
+        "stale_note_count": jobs.len() - real_jobs.len(),
+        "note": "need_create=DB与磁盘均无卡才为true；exists_db/exists_disk=true 表示细纲注记过期（卡已建），无需再建",
         "categories": by_cat.keys().cloned().collect::<Vec<_>>(),
         "by_category": by_cat,
+        "all_jobs": jobs_json,
     }))
 }
 
@@ -526,6 +599,186 @@ fn outline_file(cfg: &Cfg, volume: &str) -> Result<PathBuf> {
 #[allow(dead_code)]
 pub fn pstr(p: &Path) -> String {
     p.to_string_lossy().to_string()
+}
+
+// ─────────────────────────────────────────── 工具 7：ne_materials（L2→L4 资料对账）
+/// L1→L4 资料整理：逐卷读 L2 分卷大纲，抽卡引用（[A-Z]+-\d+-\d+ 编号 + 中文卡名），
+/// 对 novel.db materials 表对账，按卷报「已建实卡 / 缺失卡」，并汇总全库缺口。
+///
+/// 与 calc_materials.py 的区别：不依赖作废的「汐潮」旧口径硬编码，直接以
+/// 现行 L2 分卷大纲（故事流口径，卷01=太玄帝国）为事实源。
+pub fn materials_audit(cfg: &Cfg, volume: &str) -> Result<serde_json::Value> {
+    use std::collections::BTreeMap;
+    let db = cfg.db_path();
+    if !db.exists() {
+        anyhow::bail!("novel.db 不存在（{}）", db.display());
+    }
+    let con = rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+
+    // 编号 → (name, category, file_path, stale)，一次全量载入内存（635 行，可忽略）
+    let mut codes: std::collections::HashMap<String, (String, String, String, bool)> =
+        std::collections::HashMap::new();
+    {
+        let mut st = con.prepare("SELECT code, name, category, file_path, stale FROM materials")?;
+        let rows = st.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, i64>(4).unwrap_or(0) != 0,
+            ))
+        })?;
+        for r in rows {
+            let (code, name, cat, fp, stale) = r?;
+            codes.insert(code, (name, cat, fp, stale));
+        }
+    }
+
+    // 磁盘 02_资料库 实卡清单（编号 → 路径），供「DB 有但磁盘无」双向对账
+    let lib = cfg.lib_root();
+    let mut disk: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let code_re = regex::Regex::new(r"^([A-Z]+-\d+-\d+)\b")?;
+    if let Ok(rd) = fs::read_dir(&lib) {
+        for e in rd.flatten() {
+            let cat_dir = e.path();
+            if !cat_dir.is_dir() {
+                continue;
+            }
+            if let Ok(sub) = fs::read_dir(&cat_dir) {
+                for f in sub.flatten() {
+                    let p = f.path();
+                    if p.extension().and_then(|x| x.to_str()) != Some("md") {
+                        continue;
+                    }
+                    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                    if let Some(c) = code_re.captures(stem).and_then(|c| c.get(1)) {
+                        disk.entry(c.as_str().to_string())
+                            .or_insert_with(|| p.display().to_string());
+                    }
+                    // 子目录再下一层（如 角色/终极篇/CHAR-99-001.md）
+                    if p.is_dir() {
+                        if let Ok(sub2) = fs::read_dir(&p) {
+                            for f2 in sub2.flatten() {
+                                let p2 = f2.path();
+                                if p2.extension().and_then(|x| x.to_str()) != Some("md") {
+                                    continue;
+                                }
+                                let stem2 = p2.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                                if let Some(c) = code_re.captures(stem2).and_then(|c| c.get(1)) {
+                                    disk.entry(c.as_str().to_string())
+                                        .or_insert_with(|| p2.display().to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 决定扫哪些卷：传了 volume 就只对那一卷，否则 01..=10 全扫
+    let vols: Vec<String> = if volume.trim().is_empty() {
+        (1..=10).map(|i| format!("{i:02}")).collect()
+    } else {
+        vec![volume.to_string()]
+    };
+
+    // 引用抽取：编号（A-\d+-\d+）+ 兜底【待建卡】工单（复用 cardgen 口径）
+    let ref_re = regex::Regex::new(r"([A-Z]{3,}[A-Z]*-\d+-\d+)")?;
+    let code_class: BTreeMap<&str, &str> = BTreeMap::from([
+        ("CHAR", "角色"), ("CIVI", "文明"), ("CIV", "文明"),
+        ("LOCA", "地点"), ("LOC", "地点"),
+        ("ORG", "势力"), ("EVNT", "事件"), ("FORE", "伏笔"),
+        ("PILL", "丹药"), ("ITEM", "物品"), ("ART", "科技"),
+        ("TECH", "科技"), ("TIME", "时间线"), ("REALM", "境界"),
+        ("BEAS", "妖兽"), ("PLANT", "植物"), ("CULT", "风俗文化"),
+    ]);
+    let cat_of = |code: &str| -> String {
+        let cls = code.split('-').next().unwrap_or("");
+        code_class.get(cls).map(|s| s.to_string()).unwrap_or_else(|| "其他".to_string())
+    };
+
+    let mut per_volume: Vec<serde_json::Value> = Vec::new();
+    let mut total_missing = 0usize;
+
+    for v in &vols {
+        // 分卷大纲文件：03_叙事规划/分卷大纲/卷NN·卷主体故事.md（兜底模糊匹配）
+        let voldir = cfg.root.join("03_叙事规划").join("分卷大纲");
+        let canonical = voldir.join(format!("卷{v}·卷主体故事.md"));
+        let outline_path = if canonical.exists() {
+            canonical
+        } else if let Ok(rd) = fs::read_dir(&voldir) {
+            let mut found = None;
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.ends_with(".md") && name.contains(v.trim_start_matches('0')) {
+                    found = Some(e.path());
+                    break;
+                }
+            }
+            match found {
+                Some(p) => p,
+                None => anyhow::bail!("找不到卷{v}的分卷大纲（目录：{}）", voldir.display()),
+            }
+        } else {
+            anyhow::bail!("读分卷大纲目录失败：{}", voldir.display());
+        };
+        let text = fs::read_to_string(&outline_path)
+            .map_err(|e| anyhow::anyhow!("读分卷大纲失败（{}）：{e}", outline_path.display()))?;
+
+        // 抽引用：编号去重保序
+        let mut seen: Vec<String> = Vec::new();
+        for c in ref_re.captures_iter(&text) {
+            let code = c.get(1).map(|x| x.as_str().to_string()).unwrap_or_default();
+            if !seen.contains(&code) {
+                seen.push(code);
+            }
+        }
+
+        let mut ok: Vec<serde_json::Value> = Vec::new();
+        let mut missing: Vec<serde_json::Value> = Vec::new();
+        for code in &seen {
+            match codes.get(code) {
+                Some((name, cat, fp, stale)) => ok.push(serde_json::json!({
+                    "code": code, "name": name, "category": cat,
+                    "db": true, "disk": disk.contains_key(code),
+                    "stale": stale,
+                })),
+                None => missing.push(serde_json::json!({
+                    "code": code, "category": cat_of(code), "db": false,
+                    "disk": disk.contains_key(code),
+                })),
+            }
+        }
+        total_missing += missing.len();
+        per_volume.push(serde_json::json!({
+            "volume": format!("卷{v}"),
+            "outline": outline_path.display().to_string(),
+            "ref_count": seen.len(),
+            "existing_count": ok.len(),
+            "missing_count": missing.len(),
+            "existing": ok,
+            "missing": missing,
+        }));
+    }
+
+    // DB/磁盘 双向漂移：DB 有但磁盘无文件（除 stale 外均视为漂移）
+    let mut drift: Vec<serde_json::Value> = Vec::new();
+    for (code, (name, cat, fp, stale)) in codes.iter() {
+        if !disk.contains_key(code) && !stale {
+            drift.push(serde_json::json!({"code": code, "name": name, "category": cat, "file_path": fp}));
+    }
+    }
+
+    Ok(serde_json::json!({
+        "volumes_scanned": vols.len(),
+        "volumes": per_volume,
+        "total_missing": total_missing,
+        "db_disk_drift_count": drift.len(),
+        "db_disk_drift_sample": drift.into_iter().take(20).collect::<Vec<_>>(),
+        "note": "口径：L2 分卷大纲为引用事实源；missing=大纲引用但 DB 无卡；drift=DB 有卡但磁盘无文件",
+    }))
 }
 
 #[cfg(test)]

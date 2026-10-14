@@ -1,0 +1,1841 @@
+{
+ "meta": {
+  "lib": "/sdcard/Download/小说相关备份/projects/projects/系统/资料库",
+  "crate_count": 10,
+  "src_files": 86,
+  "data_unused": [
+   "causal_steps.json",
+   "char_default_fill.json",
+   "civ_name_code_map.json",
+   "event_name_code_dict.json",
+   "world_state_init.json"
+  ],
+  "tables_unused_nonempty": [
+   "chapter_log",
+   "civ_sub_state",
+   "culture_state",
+   "elixir_state",
+   "item_entry",
+   "item_state",
+   "map_state",
+   "materials_fts",
+   "materials_fts_config",
+   "materials_fts_data",
+   "materials_fts_docsize",
+   "materials_fts_idx",
+   "power_state",
+   "tech_state",
+   "timeline_state",
+   "treasure_state"
+  ],
+  "tables_empty": [
+   "author_log",
+   "chapter_beat",
+   "char_baseline_snap",
+   "char_relation",
+   "character_core",
+   "choice_case",
+   "comm_link",
+   "conflict_plan",
+   "entity_mark",
+   "foreshadow_hint",
+   "free_var",
+   "ideology",
+   "info_flow",
+   "items",
+   "lie_chain",
+   "mental_domain",
+   "narrative_l0",
+   "narrative_line",
+   "narrative_volume",
+   "pending_setting",
+   "plot_block",
+   "plot_theme",
+   "realm_state",
+   "rule_state",
+   "structure_beats",
+   "world_snapshot"
+  ],
+  "prompts_unused": [
+   "l5_修复.md",
+   "l5_质检.md"
+  ]
+ },
+ "crates": [
+  {
+   "crate": "ne-agent",
+   "files": [
+    {
+     "file": "approval.rs",
+     "lines": 530,
+     "pub_fn": [
+      "from_id",
+      "id",
+      "decide",
+      "plan_block",
+      "is_routine_command",
+      "is_destructive_command",
+      "has_unsafe_redirection"
+     ]
+    },
+    {
+     "file": "ask_user.rs",
+     "lines": 194,
+     "pub_fn": [
+      "parse",
+      "render_questions"
+     ]
+    },
+    {
+     "file": "checkpoint.rs",
+     "lines": 692,
+     "pub_fn": [
+      "open",
+      "open_with_budget",
+      "path",
+      "begin_turn",
+      "capture",
+      "capture_after_image",
+      "latest_after_image",
+      "end_turn",
+      "drop_session",
+      "checkpoints",
+      "checkpoint_metas",
+      "anchor_message_id_of",
+      "plan_code_rewind",
+      "snap_before"
+     ]
+    },
+    {
+     "file": "cli.rs",
+     "lines": 328,
+     "pub_fn": []
+    },
+    {
+     "file": "cmds.rs",
+     "lines": 405,
+     "pub_fn": []
+    },
+    {
+     "file": "compaction.rs",
+     "lines": 406,
+     "pub_fn": [
+      "parse",
+      "as_str",
+      "resolve_compress_anchor",
+      "to_messages",
+      "render",
+      "project",
+      "compact",
+      "render"
+     ]
+    },
+    {
+     "file": "compaction_tests.rs",
+     "lines": 178,
+     "pub_fn": []
+    },
+    {
+     "file": "config.rs",
+     "lines": 358,
+     "pub_fn": [
+      "load",
+      "parse",
+      "llm_params",
+      "describe_models",
+      "render"
+     ]
+    },
+    {
+     "file": "context.rs",
+     "lines": 373,
+     "pub_fn": [
+      "estimate_tokens",
+      "estimate_messages",
+      "folding_limit",
+      "truncate_stale_tool_results",
+      "compact_output",
+      "keep_from_index"
+     ]
+    },
+    {
+     "file": "context_tools.rs",
+     "lines": 381,
+     "pub_fn": [
+      "as_str",
+      "parse",
+      "open",
+      "save_plan",
+      "get_plan",
+      "advance_plan",
+      "clear_plan",
+      "save_scratch",
+      "get_scratch",
+      "list_scratch",
+      "delete_scratch",
+      "clear_scratch"
+     ]
+    },
+    {
+     "file": "ctx_window.rs",
+     "lines": 109,
+     "pub_fn": []
+    },
+    {
+     "file": "dual_agent.rs",
+     "lines": 539,
+     "pub_fn": [
+      "as_str",
+      "is_ready",
+      "from_ctx",
+      "run",
+      "planner_system_prompt"
+     ]
+    },
+    {
+     "file": "dual_agent_parse.rs",
+     "lines": 197,
+     "pub_fn": [
+      "parse_planner_decision"
+     ]
+    },
+    {
+     "file": "dual_agent_tests.rs",
+     "lines": 130,
+     "pub_fn": []
+    },
+    {
+     "file": "harness.rs",
+     "lines": 577,
+     "pub_fn": [
+      "max_rounds",
+      "max_tool_calls",
+      "max_consecutive_failures",
+      "system_prompt_text",
+      "build_messages",
+      "run_session",
+      "persist_user",
+      "persist_final"
+     ]
+    },
+    {
+     "file": "lib.rs",
+     "lines": 141,
+     "pub_fn": [
+      "resolve_enabled_tools"
+     ]
+    },
+    {
+     "file": "main.rs",
+     "lines": 601,
+     "pub_fn": []
+    },
+    {
+     "file": "mcp.rs",
+     "lines": 366,
+     "pub_fn": [
+      "connect",
+      "name",
+      "call_tool",
+      "qualified_tool_names",
+      "split_qualified",
+      "new",
+      "is_empty",
+      "server_names",
+      "call",
+      "discover",
+      "tools_of",
+      "discover_all"
+     ]
+    },
+    {
+     "file": "memory.rs",
+     "lines": 700,
+     "pub_fn": [
+      "now_ms",
+      "open",
+      "path",
+      "save",
+      "pinned",
+      "candidates",
+      "all",
+      "touch",
+      "delete",
+      "count",
+      "tokenize",
+      "bm25",
+      "select_recall",
+      "render_recall_block",
+      "render_pinned_section"
+     ]
+    },
+    {
+     "file": "novel_ctx.rs",
+     "lines": 438,
+     "pub_fn": [
+      "open",
+      "with_prompt_fallback",
+      "root",
+      "prompt_template",
+      "prev_tail_text"
+     ]
+    },
+    {
+     "file": "output_retention.rs",
+     "lines": 160,
+     "pub_fn": [
+      "for_tool",
+      "keep_head_whole_lines",
+      "keep_tail_whole_lines",
+      "fold_overlong_lines"
+     ]
+    },
+    {
+     "file": "prompt.rs",
+     "lines": 266,
+     "pub_fn": [
+      "is_empty",
+      "render",
+      "apply_to",
+      "load_segment",
+      "build_system_prompt",
+      "required_vars",
+      "validate_vars",
+      "render"
+     ]
+    },
+    {
+     "file": "protocol.rs",
+     "lines": 426,
+     "pub_fn": [
+      "resolve",
+      "parse_reply",
+      "sanitize_for_provider",
+      "aborted_placeholders",
+      "builtin_tool_definitions"
+     ]
+    },
+    {
+     "file": "resources.rs",
+     "lines": 371,
+     "pub_fn": [
+      "builtin_rule_names",
+      "load_rule",
+      "available_rule_names",
+      "skill_catalog",
+      "strip_frontmatter",
+      "render",
+      "load_skill"
+     ]
+    },
+    {
+     "file": "rewind.rs",
+     "lines": 250,
+     "pub_fn": [
+      "new",
+      "prepare",
+      "commit",
+      "seek_conversation",
+      "undo_last_rewind"
+     ]
+    },
+    {
+     "file": "session.rs",
+     "lines": 648,
+     "pub_fn": [
+      "to_llm",
+      "tool_calls",
+      "tool_call_id",
+      "now_ms",
+      "open",
+      "path",
+      "create_session",
+      "derive_session",
+      "create_child_session",
+      "get_session",
+      "latest_session",
+      "list_sessions",
+      "append",
+      "append_meta",
+      "rewind_to",
+      "rewind_back",
+      "rewind_last_turn",
+      "head",
+      "history",
+      "children",
+      "message_count",
+      "insert_compaction",
+      "latest_compaction",
+      "list_compactions",
+      "clear_compactions",
+      "message_by_id",
+      "search_messages"
+     ]
+    },
+    {
+     "file": "session_tests.rs",
+     "lines": 178,
+     "pub_fn": []
+    },
+    {
+     "file": "subagent.rs",
+     "lines": 311,
+     "pub_fn": [
+      "parse_subagents",
+      "check_write_leases",
+      "lane_session_id",
+      "render_outcomes"
+     ]
+    },
+    {
+     "file": "subagent_runner.rs",
+     "lines": 70,
+     "pub_fn": [
+      "run_subagents_in_ctx"
+     ]
+    },
+    {
+     "file": "task.rs",
+     "lines": 646,
+     "pub_fn": [
+      "with_approver",
+      "install_stream_sink",
+      "uninstall_stream_sink",
+      "chat_interactive",
+      "chat_once",
+      "render",
+      "novel_chapter",
+      "make_ctx_for_test",
+      "run_one_for_test",
+      "parent_ctx",
+      "run_subagents"
+     ]
+    },
+    {
+     "file": "task_state.rs",
+     "lines": 655,
+     "pub_fn": [
+      "is_terminal",
+      "is_active",
+      "is_allowed",
+      "is_allowed_from_any",
+      "open",
+      "create_queued",
+      "get",
+      "transition",
+      "checkpoint",
+      "active_for_session",
+      "recoverable",
+      "list_all"
+     ]
+    },
+    {
+     "file": "tool_schema.rs",
+     "lines": 684,
+     "pub_fn": [
+      "normalize_args",
+      "validate",
+      "problems_for"
+     ]
+    },
+    {
+     "file": "vault.rs",
+     "lines": 289,
+     "pub_fn": [
+      "open",
+      "ensure",
+      "root",
+      "path",
+      "agent_db",
+      "workspace",
+      "init",
+      "llm_dir",
+      "is_initialized",
+      "is_placeholder_file"
+     ]
+    },
+    {
+     "file": "web.rs",
+     "lines": 421,
+     "pub_fn": [
+      "text",
+      "get",
+      "get_with_ua",
+      "search_user_agent",
+      "fetch_text"
+     ]
+    },
+    {
+     "file": "web_html.rs",
+     "lines": 276,
+     "pub_fn": [
+      "html_to_text"
+     ]
+    },
+    {
+     "file": "web_search.rs",
+     "lines": 382,
+     "pub_fn": [
+      "search"
+     ]
+    }
+   ]
+  },
+  {
+   "crate": "ne-cardgen",
+   "files": [
+    {
+     "file": "lib.rs",
+     "lines": 230,
+     "pub_fn": [
+      "lib_root",
+      "card_target",
+      "extract_card_jobs",
+      "group_by_category",
+      "llm_fill_card_stub",
+      "pick_key_for_job"
+     ]
+    }
+   ]
+  },
+  {
+   "crate": "ne-core",
+   "files": [
+    {
+     "file": "lib.rs",
+     "lines": 477,
+     "pub_fn": [
+      "parse",
+      "pending",
+      "stage_of",
+      "estimate_tokens",
+      "truncate_tokens",
+      "rank_cards",
+      "data_lib_root",
+      "outline_dir",
+      "extract_chapter",
+      "find_card_refs",
+      "find_in_chapter"
+     ]
+    },
+    {
+     "file": "templates.rs",
+     "lines": 492,
+     "pub_fn": [
+      "as_str",
+      "matches",
+      "required_fields",
+      "all_templates",
+      "template_of",
+      "normalize_category",
+      "all_categories",
+      "category_of_code"
+     ]
+    }
+   ]
+  },
+  {
+   "crate": "ne-db",
+   "files": [
+    {
+     "file": "lib.rs",
+     "lines": 572,
+     "pub_fn": [
+      "connect",
+      "columns_of",
+      "detect",
+      "tick_chapter",
+      "usage_stats",
+      "load_materials",
+      "table_counts",
+      "backfill_card_usage_from_legacy"
+     ]
+    }
+   ]
+  },
+  {
+   "crate": "ne-engine",
+   "files": [
+    {
+     "file": "audit.rs",
+     "lines": 366,
+     "pub_fn": [
+      "ok",
+      "audit_card",
+      "audit_library"
+     ]
+    },
+    {
+     "file": "budget.rs",
+     "lines": 398,
+     "pub_fn": [
+      "est_tokens",
+      "infer_scene",
+      "extract_person",
+      "extract_chapter",
+      "match_chars",
+      "char_index",
+      "select_materials",
+      "get_char_cards",
+      "build_injection"
+     ]
+    },
+    {
+     "file": "calib.rs",
+     "lines": 393,
+     "pub_fn": [
+      "from_json_text",
+      "extract_sections",
+      "match_rules",
+      "calibrate",
+      "etl_card"
+     ]
+    },
+    {
+     "file": "chapter.rs",
+     "lines": 513,
+     "pub_fn": [
+      "scene_dims",
+      "neutralize_myth",
+      "strip_narrative",
+      "deterministic_check",
+      "write_chapter",
+      "build_knowledge_injection",
+      "build_prompt"
+     ]
+    },
+    {
+     "file": "config.rs",
+     "lines": 178,
+     "pub_fn": [
+      "word_max",
+      "word_min",
+      "word_min_for_volume",
+      "hook_min",
+      "info_density_max",
+      "banned_words",
+      "load",
+      "config_path",
+      "parse_volume_no"
+     ]
+    },
+    {
+     "file": "ctx.rs",
+     "lines": 274,
+     "pub_fn": [
+      "open"
+     ]
+    },
+    {
+     "file": "db.rs",
+     "lines": 386,
+     "pub_fn": [
+      "open_readonly",
+      "open_rw",
+      "schema_sql",
+      "preprocess_schema",
+      "add_columns_idempotent",
+      "ensure_schema",
+      "table_counts",
+      "load_kb_knowledge",
+      "load_kquotes",
+      "load_kanecdotes",
+      "load_kimagery",
+      "load_all_knowledge"
+     ]
+    },
+    {
+     "file": "dynamics.rs",
+     "lines": 461,
+     "pub_fn": [
+      "lst_square",
+      "bayes_mood",
+      "mkc_transition",
+      "tlm_tension",
+      "sna_influence",
+      "dmg_10dim",
+      "sna_causal_density",
+      "bayes_sna_bridge",
+      "run_model",
+      "run_all"
+     ]
+    },
+    {
+     "file": "emotion.rs",
+     "lines": 618,
+     "pub_fn": [
+      "round4",
+      "initial_state",
+      "new_memory",
+      "decay_memory",
+      "memory_influence",
+      "apply_coupling",
+      "sigmoid",
+      "sigmoid_gain",
+      "branch_probs",
+      "step",
+      "emotion_step",
+      "ooc_check",
+      "to_char_emotion_rows",
+      "to_char_memory_rows"
+     ]
+    },
+    {
+     "file": "gate14.rs",
+     "lines": 880,
+     "pub_fn": [
+      "from_json",
+      "g01_opening4",
+      "g02_hook_density",
+      "g03_shuang_interval",
+      "g04_ability_cost",
+      "g05_pov_consistent",
+      "g06_character_consistency",
+      "g07_ooc",
+      "g08_foreshadow_recover",
+      "g09_info_density",
+      "g10_horror_chapter",
+      "g11_vol9_reversal",
+      "g12_naming_tier",
+      "g13_scoring_67dim",
+      "g14_world_consistency",
+      "g15_family_consistency",
+      "g16_leak_words",
+      "run_all",
+      "from_config_text"
+     ]
+    },
+    {
+     "file": "gates.rs",
+     "lines": 770,
+     "pub_fn": [
+      "words",
+      "g01_opening4",
+      "g02_hook_density",
+      "g03_shuang_interval",
+      "g04_ability_cost",
+      "g05_pov_consistent",
+      "g06_character_consistency",
+      "g09_info_density",
+      "g10_horror_chapter",
+      "g11_vol9_reversal",
+      "g12_naming_tier",
+      "g13_scoring_67dim",
+      "g14_world_consistency",
+      "g15_family_consistency",
+      "g16_leak_words",
+      "g07_ooc",
+      "g08_foreshadow_recover",
+      "run_all"
+     ]
+    },
+    {
+     "file": "http.rs",
+     "lines": 371,
+     "pub_fn": [
+      "header",
+      "post_json",
+      "post_json_stream",
+      "post_json_value"
+     ]
+    },
+    {
+     "file": "keypool.rs",
+     "lines": 268,
+     "pub_fn": [
+      "new",
+      "with",
+      "default_rpm",
+      "acquire",
+      "release",
+      "in_flight",
+      "remaining",
+      "probe_key",
+      "probe_all_keys",
+      "assign_keys_by_weight",
+      "bind_fastest_key_as_brain",
+      "lane_key",
+      "build_ranked_pool"
+     ]
+    },
+    {
+     "file": "lib.rs",
+     "lines": 42,
+     "pub_fn": []
+    },
+    {
+     "file": "llm.rs",
+     "lines": 683,
+     "pub_fn": [
+      "pure_chat",
+      "function",
+      "system",
+      "user",
+      "assistant",
+      "assistant_tool_calls",
+      "tool_result",
+      "has_tools",
+      "set_delta_sink",
+      "call",
+      "strip_meta"
+     ]
+    },
+    {
+     "file": "loaders.rs",
+     "lines": 466,
+     "pub_fn": [
+      "sha12_bytes",
+      "check_ascii_keys",
+      "validate_config",
+      "seg_no_with",
+      "seg_no",
+      "beats",
+      "verify_volume"
+     ]
+    },
+    {
+     "file": "main.rs",
+     "lines": 337,
+     "pub_fn": []
+    },
+    {
+     "file": "ooc_gate.rs",
+     "lines": 432,
+     "pub_fn": [
+      "to_json",
+      "dead_role_appears",
+      "realm_regression",
+      "emotion_event_conflict",
+      "suppress_out_of_range",
+      "world_consistency",
+      "ooc_gate",
+      "ooc_gate_json"
+     ]
+    },
+    {
+     "file": "ops.rs",
+     "lines": 722,
+     "pub_fn": [
+      "sha256_file",
+      "short_sha12",
+      "iter_cards",
+      "build_manifest",
+      "manifest_to_jsonl",
+      "plan_snapshot",
+      "tar_argv",
+      "build_dynamics_log",
+      "build_foreshadow_resolve",
+      "build_funnel_push",
+      "verify_index",
+      "new",
+      "update",
+      "finish_hex",
+      "digest_hex",
+      "sha256_hex_str",
+      "sha256_json",
+      "obj_re",
+      "outline_chapters",
+      "extract_foreshadows",
+      "protagonist_seed",
+      "world_time_of",
+      "events_from_graph"
+     ]
+    },
+    {
+     "file": "providers.rs",
+     "lines": 401,
+     "pub_fn": [
+      "base_url",
+      "resolve_llm_dir",
+      "agent_dir",
+      "parse_models_yml",
+      "parse_roles",
+      "load_from_dir",
+      "build_params"
+     ]
+    },
+    {
+     "file": "pyrandom.rs",
+     "lines": 154,
+     "pub_fn": [
+      "from_int",
+      "genrand_uint32",
+      "random"
+     ]
+    },
+    {
+     "file": "role_samples.rs",
+     "lines": 439,
+     "pub_fn": [
+      "clean",
+      "extract_realm",
+      "extract_location",
+      "name_of",
+      "parse_role_card",
+      "infer_scene_samples",
+      "split_chapters",
+      "star_count",
+      "basis_for",
+      "sub_kind_from_path",
+      "sample_to_json"
+     ]
+    },
+    {
+     "file": "state_load.rs",
+     "lines": 516,
+     "pub_fn": [
+      "is_other",
+      "clean",
+      "card_code",
+      "h1_name",
+      "section",
+      "bold_any",
+      "table_cell",
+      "field",
+      "resolve_lambda",
+      "validate_char_calib",
+      "validate_calib_top",
+      "event_transition",
+      "dyn_state_col",
+      "build_tick_payload",
+      "next_seq"
+     ]
+    },
+    {
+     "file": "wire.rs",
+     "lines": 641,
+     "pub_fn": [
+      "gather",
+      "render_blocks",
+      "commit_chapter"
+     ]
+    },
+    {
+     "file": "world_physics.rs",
+     "lines": 244,
+     "pub_fn": [
+      "stance_rate",
+      "civ_tide",
+      "ent_entropy",
+      "res_decay",
+      "run_model",
+      "run_all"
+     ]
+    }
+   ]
+  },
+  {
+   "crate": "ne-funnel",
+   "files": [
+    {
+     "file": "engine.rs",
+     "lines": 208,
+     "pub_fn": [
+      "plan",
+      "advance_l5",
+      "verdict_of",
+      "summarize",
+      "ordered_layers"
+     ]
+    },
+    {
+     "file": "funnel.rs",
+     "lines": 75,
+     "pub_fn": [
+      "artifact_exists",
+      "find_root",
+      "load",
+      "push_l5_chapter"
+     ]
+    },
+    {
+     "file": "gates.rs",
+     "lines": 86,
+     "pub_fn": [
+      "gate",
+      "from_counts"
+     ]
+    },
+    {
+     "file": "lib.rs",
+     "lines": 21,
+     "pub_fn": []
+    },
+    {
+     "file": "main.rs",
+     "lines": 287,
+     "pub_fn": []
+    },
+    {
+     "file": "model.rs",
+     "lines": 167,
+     "pub_fn": [
+      "as_str",
+      "unknown",
+      "parse",
+      "is_done",
+      "raw",
+      "state",
+      "artifact",
+      "layer",
+      "exec_order"
+     ]
+    }
+   ]
+  },
+  {
+   "crate": "ne-import",
+   "files": [
+    {
+     "file": "lib.rs",
+     "lines": 600,
+     "pub_fn": [
+      "scan_library",
+      "import_cards",
+      "record_ledger",
+      "verify_import",
+      "category_prefix",
+      "kind_of",
+      "scan_docs",
+      "import_docs",
+      "verify_docs"
+     ]
+    },
+    {
+     "file": "renumber.rs",
+     "lines": 931,
+     "pub_fn": [
+      "map_prefix",
+      "build_map",
+      "save_map",
+      "map_rebuild",
+      "rewrite_refs",
+      "load_map",
+      "apply_to_materials",
+      "count_refs_in_docs",
+      "rewrite_files",
+      "find_dangling",
+      "rename_files",
+      "fix_h1_codes",
+      "ensure_h1_code"
+     ]
+    }
+   ]
+  },
+  {
+   "crate": "ne-injection",
+   "files": [
+    {
+     "file": "lib.rs",
+     "lines": 512,
+     "pub_fn": [
+      "build_injection",
+      "build_injection_ranked",
+      "build_injection_db"
+     ]
+    }
+   ]
+  },
+  {
+   "crate": "ne-mcp",
+   "files": [
+    {
+     "file": "jsonrpc.rs",
+     "lines": 58,
+     "pub_fn": [
+      "write_msg",
+      "result",
+      "error",
+      "serve"
+     ]
+    },
+    {
+     "file": "main.rs",
+     "lines": 336,
+     "pub_fn": []
+    },
+    {
+     "file": "tools.rs",
+     "lines": 816,
+     "pub_fn": [
+      "lib_root",
+      "content_dir",
+      "db_path",
+      "funnel_path",
+      "funnel",
+      "generated_chapters",
+      "chapter_plan",
+      "cardgen",
+      "extract_card_jobs",
+      "inject",
+      "check",
+      "db_status",
+      "db_query",
+      "pstr",
+      "materials_audit"
+     ]
+    }
+   ]
+  },
+  {
+   "crate": "ne-qc",
+   "files": [
+    {
+     "file": "lib.rs",
+     "lines": 308,
+     "pub_fn": [
+      "validate_six",
+      "deterministic_check",
+      "gate14",
+      "gate14_with_cfg",
+      "gate14_stub",
+      "route_on_verdict"
+     ]
+    }
+   ]
+  }
+ ],
+ "data_files": [
+  {
+   "file": "causal_steps.json",
+   "bytes": 21499,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "file": "char_calib_20_70.json",
+   "bytes": 43677,
+   "ref_by": [
+    "ne-engine/src/wire.rs"
+   ],
+   "used": true
+  },
+  {
+   "file": "char_calib_99.json",
+   "bytes": 26686,
+   "ref_by": [
+    "ne-engine/src/wire.rs"
+   ],
+   "used": true
+  },
+  {
+   "file": "char_calib_longtail.json",
+   "bytes": 434557,
+   "ref_by": [
+    "ne-engine/src/wire.rs"
+   ],
+   "used": true
+  },
+  {
+   "file": "char_default_fill.json",
+   "bytes": 208411,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "file": "civ_name_code_map.json",
+   "bytes": 1234,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "file": "dynamics_config.json",
+   "bytes": 18125,
+   "ref_by": [
+    "ne-engine/src/config.rs",
+    "ne-engine/src/gate14.rs",
+    "ne-engine/src/gates.rs",
+    "ne-engine/src/lib.rs",
+    "ne-engine/src/loaders.rs",
+    "ne-qc/src/lib.rs"
+   ],
+   "used": true
+  },
+  {
+   "file": "emotion_calib_map.json",
+   "bytes": 3625,
+   "ref_by": [
+    "ne-engine/src/calib.rs"
+   ],
+   "used": true
+  },
+  {
+   "file": "event_name_code_dict.json",
+   "bytes": 11364,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "file": "event_templates.json",
+   "bytes": 96162,
+   "ref_by": [
+    "ne-engine/src/ctx.rs",
+    "ne-engine/src/emotion.rs",
+    "ne-engine/src/gates.rs",
+    "ne-engine/src/ooc_gate.rs"
+   ],
+   "used": true
+  },
+  {
+   "file": "kb_anecdotes.json",
+   "bytes": 18156,
+   "ref_by": [
+    "ne-engine/src/db.rs",
+    "ne-engine/src/wire.rs"
+   ],
+   "used": true
+  },
+  {
+   "file": "kb_imagery.json",
+   "bytes": 57745,
+   "ref_by": [
+    "ne-engine/src/db.rs",
+    "ne-engine/src/wire.rs"
+   ],
+   "used": true
+  },
+  {
+   "file": "kb_knowledge.json",
+   "bytes": 57823,
+   "ref_by": [
+    "ne-engine/src/ctx.rs",
+    "ne-engine/src/db.rs",
+    "ne-engine/src/gate14.rs",
+    "ne-engine/src/gates.rs"
+   ],
+   "used": true
+  },
+  {
+   "file": "kb_quotes.json",
+   "bytes": 35321,
+   "ref_by": [
+    "ne-engine/src/db.rs",
+    "ne-engine/src/wire.rs"
+   ],
+   "used": true
+  },
+  {
+   "file": "kb_world_consistency.json",
+   "bytes": 91619,
+   "ref_by": [
+    "ne-engine/src/ctx.rs",
+    "ne-engine/src/gate14.rs",
+    "ne-engine/src/gates.rs",
+    "ne-engine/src/ooc_gate.rs"
+   ],
+   "used": true
+  },
+  {
+   "file": "scoring.json",
+   "bytes": 19488,
+   "ref_by": [
+    "ne-engine/src/budget.rs",
+    "ne-engine/src/config.rs",
+    "ne-engine/src/ctx.rs",
+    "ne-engine/src/gate14.rs",
+    "ne-engine/src/gates.rs",
+    "ne-engine/src/loaders.rs",
+    "ne-funnel/src/gates.rs",
+    "ne-qc/src/lib.rs"
+   ],
+   "used": true
+  },
+  {
+   "file": "technique_items.json",
+   "bytes": 21166,
+   "ref_by": [
+    "ne-engine/src/wire.rs"
+   ],
+   "used": true
+  },
+  {
+   "file": "world_state_init.json",
+   "bytes": 4643,
+   "ref_by": [],
+   "used": false
+  }
+ ],
+ "db_tables": [
+  {
+   "table": "anomaly_state",
+   "rows": 14,
+   "ref_by": [
+    "ne-engine/src/state_load.rs"
+   ],
+   "used": true
+  },
+  {
+   "table": "author_log",
+   "rows": 0,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "card_usage",
+   "rows": 513,
+   "ref_by": [
+    "ne-core/src/lib.rs",
+    "ne-db/src/lib.rs",
+    "ne-engine/src/wire.rs",
+    "ne-mcp/src/tools.rs"
+   ],
+   "used": true
+  },
+  {
+   "table": "catalog_index",
+   "rows": 1292,
+   "ref_by": [
+    "ne-import/src/bin/neim.rs",
+    "ne-import/src/lib.rs",
+    "ne-import/src/renumber.rs"
+   ],
+   "used": true
+  },
+  {
+   "table": "chapter_beat",
+   "rows": 0,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "chapter_log",
+   "rows": 2,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "chapters",
+   "rows": 1,
+   "ref_by": [
+    "ne-agent/src/novel_ctx.rs",
+    "ne-core/src/lib.rs",
+    "ne-db/src/lib.rs",
+    "ne-engine/src/ctx.rs",
+    "ne-engine/src/gate14.rs",
+    "ne-engine/src/gates.rs",
+    "ne-engine/src/loaders.rs",
+    "ne-engine/src/main.rs",
+    "ne-engine/src/ops.rs",
+    "ne-engine/src/role_samples.rs",
+    "ne-engine/src/wire.rs",
+    "ne-funnel/src/engine.rs",
+    "ne-funnel/src/funnel.rs",
+    "ne-funnel/src/main.rs",
+    "ne-funnel/src/model.rs",
+    "ne-mcp/src/tools.rs"
+   ],
+   "used": true
+  },
+  {
+   "table": "char_baseline_snap",
+   "rows": 0,
+   "ref_by": [
+    "ne-engine/src/ctx.rs"
+   ],
+   "used": true
+  },
+  {
+   "table": "char_emotion",
+   "rows": 97,
+   "ref_by": [
+    "ne-agent/src/task.rs",
+    "ne-engine/src/ctx.rs",
+    "ne-engine/src/emotion.rs",
+    "ne-engine/src/wire.rs"
+   ],
+   "used": true
+  },
+  {
+   "table": "char_memory",
+   "rows": 7,
+   "ref_by": [
+    "ne-agent/src/task.rs",
+    "ne-engine/src/emotion.rs",
+    "ne-engine/src/wire.rs"
+   ],
+   "used": true
+  },
+  {
+   "table": "char_relation",
+   "rows": 0,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "char_state",
+   "rows": 239,
+   "ref_by": [
+    "ne-db/src/lib.rs",
+    "ne-engine/src/ctx.rs",
+    "ne-engine/src/emotion.rs",
+    "ne-engine/src/gate14.rs",
+    "ne-engine/src/gates.rs",
+    "ne-engine/src/main.rs",
+    "ne-engine/src/ooc_gate.rs",
+    "ne-engine/src/ops.rs"
+   ],
+   "used": true
+  },
+  {
+   "table": "character_core",
+   "rows": 0,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "choice_case",
+   "rows": 0,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "civ_relation_state",
+   "rows": 6,
+   "ref_by": [
+    "ne-engine/src/state_load.rs"
+   ],
+   "used": true
+  },
+  {
+   "table": "civ_state",
+   "rows": 2,
+   "ref_by": [
+    "ne-db/src/lib.rs"
+   ],
+   "used": true
+  },
+  {
+   "table": "civ_sub_state",
+   "rows": 36,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "comm_link",
+   "rows": 0,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "conflict_plan",
+   "rows": 0,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "culture_state",
+   "rows": 1,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "dynamics_events",
+   "rows": 1,
+   "ref_by": [
+    "ne-agent/src/task.rs",
+    "ne-engine/src/wire.rs"
+   ],
+   "used": true
+  },
+  {
+   "table": "elixir_state",
+   "rows": 60,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "entity_mark",
+   "rows": 0,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "event_template",
+   "rows": 99,
+   "ref_by": [
+    "ne-engine/src/ctx.rs",
+    "ne-engine/src/emotion.rs",
+    "ne-engine/src/gates.rs",
+    "ne-engine/src/ooc_gate.rs",
+    "ne-engine/src/wire.rs"
+   ],
+   "used": true
+  },
+  {
+   "table": "events",
+   "rows": 47,
+   "ref_by": [
+    "ne-agent/src/novel_ctx.rs",
+    "ne-agent/src/task.rs",
+    "ne-core/src/lib.rs",
+    "ne-db/src/lib.rs",
+    "ne-engine/src/budget.rs",
+    "ne-engine/src/emotion.rs",
+    "ne-engine/src/main.rs",
+    "ne-engine/src/ops.rs",
+    "ne-engine/src/wire.rs",
+    "ne-injection/src/lib.rs"
+   ],
+   "used": true
+  },
+  {
+   "table": "foreshadow",
+   "rows": 2,
+   "ref_by": [
+    "ne-agent/src/novel_ctx.rs",
+    "ne-core/src/lib.rs",
+    "ne-db/src/lib.rs",
+    "ne-engine/src/budget.rs",
+    "ne-engine/src/chapter.rs",
+    "ne-engine/src/ctx.rs",
+    "ne-engine/src/dynamics.rs",
+    "ne-engine/src/gate14.rs",
+    "ne-engine/src/gates.rs",
+    "ne-engine/src/loaders.rs",
+    "ne-engine/src/ops.rs",
+    "ne-funnel/src/gates.rs",
+    "ne-injection/src/lib.rs",
+    "ne-mcp/src/tools.rs",
+    "ne-qc/src/lib.rs"
+   ],
+   "used": true
+  },
+  {
+   "table": "foreshadow_hint",
+   "rows": 0,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "free_var",
+   "rows": 0,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "ideology",
+   "rows": 0,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "import_ledger",
+   "rows": 1660,
+   "ref_by": [
+    "ne-import/src/lib.rs"
+   ],
+   "used": true
+  },
+  {
+   "table": "info_flow",
+   "rows": 0,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "item_entry",
+   "rows": 5,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "item_state",
+   "rows": 4,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "items",
+   "rows": 0,
+   "ref_by": [
+    "ne-agent/src/ask_user.rs",
+    "ne-agent/src/protocol.rs",
+    "ne-agent/src/tool_schema.rs",
+    "ne-db/src/lib.rs",
+    "ne-engine/src/wire.rs",
+    "ne-import/src/renumber.rs"
+   ],
+   "used": true
+  },
+  {
+   "table": "kb_knowledge",
+   "rows": 115,
+   "ref_by": [
+    "ne-engine/src/ctx.rs",
+    "ne-engine/src/db.rs",
+    "ne-engine/src/gate14.rs",
+    "ne-engine/src/gates.rs"
+   ],
+   "used": true
+  },
+  {
+   "table": "lie_chain",
+   "rows": 0,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "lore_state",
+   "rows": 6,
+   "ref_by": [
+    "ne-engine/src/state_load.rs"
+   ],
+   "used": true
+  },
+  {
+   "table": "map_state",
+   "rows": 35,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "materials",
+   "rows": 636,
+   "ref_by": [
+    "ne-agent/src/novel_ctx.rs",
+    "ne-core/src/lib.rs",
+    "ne-core/src/templates.rs",
+    "ne-db/src/lib.rs",
+    "ne-engine/src/budget.rs",
+    "ne-engine/src/chapter.rs",
+    "ne-engine/src/ctx.rs",
+    "ne-engine/src/db.rs",
+    "ne-engine/src/wire.rs",
+    "ne-funnel/src/model.rs",
+    "ne-import/src/bin/neim.rs",
+    "ne-import/src/lib.rs",
+    "ne-import/src/renumber.rs",
+    "ne-injection/src/lib.rs",
+    "ne-mcp/src/main.rs",
+    "ne-mcp/src/tools.rs",
+    "ne-qc/src/lib.rs"
+   ],
+   "used": true
+  },
+  {
+   "table": "materials_fts",
+   "rows": 636,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "materials_fts_config",
+   "rows": 1,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "materials_fts_data",
+   "rows": 70,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "materials_fts_docsize",
+   "rows": 636,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "materials_fts_idx",
+   "rows": 68,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "mental_domain",
+   "rows": 0,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "narrative_l0",
+   "rows": 0,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "narrative_line",
+   "rows": 0,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "narrative_volume",
+   "rows": 0,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "pending_setting",
+   "rows": 0,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "plot_block",
+   "rows": 0,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "plot_theme",
+   "rows": 0,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "power_state",
+   "rows": 19,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "realm_state",
+   "rows": 0,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "renumber_map",
+   "rows": 978,
+   "ref_by": [
+    "ne-import/src/bin/neim.rs",
+    "ne-import/src/renumber.rs",
+    "ne-injection/src/lib.rs"
+   ],
+   "used": true
+  },
+  {
+   "table": "rule_state",
+   "rows": 0,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "scoring_dimensions",
+   "rows": 67,
+   "ref_by": [
+    "ne-engine/src/ctx.rs",
+    "ne-engine/src/gate14.rs"
+   ],
+   "used": true
+  },
+  {
+   "table": "structure_beats",
+   "rows": 0,
+   "ref_by": [
+    "ne-engine/src/loaders.rs"
+   ],
+   "used": true
+  },
+  {
+   "table": "tech_state",
+   "rows": 12,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "technique_items",
+   "rows": 97,
+   "ref_by": [
+    "ne-engine/src/wire.rs"
+   ],
+   "used": true
+  },
+  {
+   "table": "timeline",
+   "rows": 53,
+   "ref_by": [
+    "ne-db/src/lib.rs",
+    "ne-engine/src/ops.rs",
+    "ne-qc/src/lib.rs"
+   ],
+   "used": true
+  },
+  {
+   "table": "timeline_state",
+   "rows": 8,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "treasure_state",
+   "rows": 11,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "world_snapshot",
+   "rows": 0,
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "table": "world_state",
+   "rows": 11,
+   "ref_by": [
+    "ne-engine/src/wire.rs"
+   ],
+   "used": true
+  }
+ ],
+ "prompts": [
+  {
+   "file": "l5_修复.md",
+   "ref_by": [],
+   "used": false
+  },
+  {
+   "file": "l5_正文.md",
+   "ref_by": [
+    "ne-agent/src/novel_ctx.rs",
+    "ne-engine/src/chapter.rs"
+   ],
+   "used": true
+  },
+  {
+   "file": "l5_质检.md",
+   "ref_by": [],
+   "used": false
+  }
+ ],
+ "py_engines": [
+  {
+   "file": "chapter_engine.py",
+   "bytes": 47256
+  },
+  {
+   "file": "char_calib_etl.py",
+   "bytes": 7484
+  },
+  {
+   "file": "context_budget.py",
+   "bytes": 11248
+  },
+  {
+   "file": "dynamics.py",
+   "bytes": 11970
+  },
+  {
+   "file": "emotion_engine.py",
+   "bytes": 31265
+  },
+  {
+   "file": "gate14.py",
+   "bytes": 36727
+  },
+  {
+   "file": "ooc_gate.py",
+   "bytes": 18248
+  },
+  {
+   "file": "pipeline_backend.py",
+   "bytes": 7405
+  },
+  {
+   "file": "world_physics.py",
+   "bytes": 12063
+  }
+ ]
+}

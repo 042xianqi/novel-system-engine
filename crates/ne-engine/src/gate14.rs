@@ -75,6 +75,9 @@ pub struct GateCfg {
     pub banned_u01: Vec<String>,
     pub scoring_excellent: f64,
     pub scoring_superior: f64,
+    /// 书专属档案（书名/主角/禁词/家庭 canon…）。
+    /// 默认 = 《残响之河》历史常量，行为不变；新书由调用方注入。
+    pub book_profile: crate::config::BookProfile,
 }
 
 impl GateCfg {
@@ -107,6 +110,10 @@ impl GateCfg {
             scoring_superior: g(&["gates", "scoring_lines", "superior"])
                 .and_then(|x| x.as_f64())
                 .unwrap_or(98.0),
+            book_profile: v
+                .get("book_profile")
+                .and_then(|bp| serde_json::from_value::<crate::config::BookProfile>(bp.clone()).ok())
+                .unwrap_or_default(),
         }
     }
 }
@@ -197,7 +204,7 @@ fn mk(gate: &str, issue: String, action: &str) -> GateFinding {
 
 // ───────────────────────── G01 开篇四断言
 
-pub fn g01_opening4(text: &str, chapter_no: u32) -> GateOut {
+pub fn g01_opening4(text: &str, chapter_no: u32, cfg: &GateCfg) -> GateOut {
     let mut out = GateOut {
         pass: true,
         p0: vec![],
@@ -207,16 +214,14 @@ pub fn g01_opening4(text: &str, chapter_no: u32) -> GateOut {
     if chapter_no > 3 {
         return GateOut::pass("非开篇章（ch>3），G01 不适用，pass");
     }
-    let a = text.contains("陈寂");
-    let b = ["推演", "锚点", "刻痕", "面板"].iter().any(|k| text.contains(k));
-    let c = ["残响", "熵", "代价", "遗忘", "债", "欠", "还不上"]
-        .iter()
-        .any(|k| text.contains(k));
-    let d = [
-        "穿越", "上辈子", "前世", "两具身体", "另一个地方", "这具身体", "身体不是他的", "不是他的",
-    ]
-    .iter()
-    .any(|k| text.contains(k));
+    let bp = &cfg.book_profile;
+    let g01_b = bp.g01_b();
+    let g01_c = bp.g01_c();
+    let g01_d = bp.g01_d();
+    let a = text.contains(bp.protagonist());
+    let b = g01_b.iter().any(|k| text.contains(k.as_str()));
+    let c = g01_c.iter().any(|k| text.contains(k.as_str()));
+    let d = g01_d.iter().any(|k| text.contains(k.as_str()));
 
     let hard_missing: Vec<&str> = [("A主角出场", a), ("B金手指亮相", b), ("D身份交代", d)]
         .iter()
@@ -306,10 +311,12 @@ pub fn g03_shuang_interval<C: GateCtx>(ctx: &C, text: &str, chapter_no: u32, vol
 
 // ───────────────────────── G04 能力代价
 
-pub fn g04_ability_cost(text: &str) -> GateOut {
+pub fn g04_ability_cost(text: &str, cfg: &GateCfg) -> GateOut {
     let mut out = GateOut { pass: true, p0: vec![], p1: vec![], detail: String::new() };
-    let ability_hit = ABILITY_KEYWORDS.iter().filter(|k| text.contains(**k)).count();
-    let cost_hit = COST_KEYWORDS.iter().filter(|k| text.contains(**k)).count();
+    let ability = cfg.book_profile.ability_keywords();
+    let cost = cfg.book_profile.cost_keywords();
+    let ability_hit = ability.iter().filter(|k| text.contains(k.as_str())).count();
+    let cost_hit = cost.iter().filter(|k| text.contains(k.as_str())).count();
     out.detail = format!("能力动用词={ability_hit} 代价词={cost_hit}");
     if ability_hit > 0 && cost_hit == 0 {
         out.fail_p0();
@@ -324,18 +331,19 @@ pub fn g04_ability_cost(text: &str) -> GateOut {
 
 // ───────────────────────── G05 视角一致
 
-pub fn g05_pov_consistent(text: &str) -> GateOut {
+pub fn g05_pov_consistent(text: &str, cfg: &GateCfg) -> GateOut {
+    let prot = cfg.book_profile.protagonist();
     let mut out = GateOut { pass: true, p0: vec![], p1: vec![], detail: String::new() };
-    if text.contains("陈寂") {
-        return GateOut::pass("主角陈寂视角在场");
+    if text.contains(prot) {
+        return GateOut::pass(format!("主角{prot}视角在场"));
     }
     out.fail_p0();
     out.p0.push(mk(
         "G05_pov_consistent",
-        "正文无主角陈寂（技06 视角锁定：非陈寂视角章打回）".into(),
-        "视角回陈寂，或删除本章/改非正文场景",
+        format!("正文无主角{prot}（技06 视角锁定：非{prot}视角章打回）"),
+        &format!("视角回{prot}，或删除本章/改非正文场景"),
     ));
-    out.detail = "陈寂0命中，视角锁定失守".into();
+    out.detail = format!("{prot}0命中，视角锁定失守");
     out
 }
 
@@ -488,7 +496,8 @@ pub fn g09_info_density(text: &str, cfg: &GateCfg) -> GateOut {
 pub fn g10_horror_chapter<C: GateCtx>(ctx: &C, text: &str, chapter_no: u32, volume: &str) -> GateOut {
     let mut out = GateOut { pass: true, p0: vec![], p1: vec![], detail: String::new() };
     let scene = ctx.scene_of(volume, chapter_no);
-    let is_horror = scene == "心理" || HORROR_KEYWORDS.iter().any(|k| text.contains(*k));
+    let hk = ctx.cfg().book_profile.horror_keywords();
+    let is_horror = scene == "心理" || hk.iter().any(|k| text.contains(k.as_str()));
     if !is_horror {
         return GateOut::pass("非恐怖章（场景≠心理 且 0 诡异要素词），G10 不适用");
     }
@@ -586,7 +595,7 @@ pub fn g13_scoring_67dim<C: GateCtx>(ctx: &C, text: &str, _cfg: &GateCfg) -> Gat
     let w = words(text);
     let det: [(&str, bool); 4] = [
         ("字数", (2500..=4000).contains(&w)),
-        ("禁词", !["归墟", "熵兽", "热寂前夜"].iter().any(|k| text.contains(*k))),
+        ("禁词", !_cfg.book_profile.banned_words().iter().any(|k| text.contains(k.as_str()))),
         (
             "AI词",
             !["不禁", "竟然", "不可思议", "值得一提", "事实上", "众所周知", "缓缓", "微微"]
@@ -621,10 +630,10 @@ pub fn g14_world_consistency<C: GateCtx>(ctx: &C, text: &str) -> GateOut {
 
     // 来源神话 6 词硬闸 → P1
     let mut myth_hits: BTreeMap<String, usize> = BTreeMap::new();
-    for w in MYTH_BANNED {
-        let n = text.matches(w).count();
+    for w in ctx.cfg().book_profile.myth_banned() {
+        let n = text.matches(w.as_str()).count();
         if n > 0 {
-            myth_hits.insert(w.to_string(), n);
+            myth_hits.insert(w, n);
         }
     }
     if !myth_hits.is_empty() {
@@ -694,10 +703,12 @@ pub fn g14_world_consistency<C: GateCtx>(ctx: &C, text: &str) -> GateOut {
 
 // ───────────────────────── G15 家庭 canon 一致性
 
-pub fn g15_family_consistency(text: &str) -> GateOut {
+pub fn g15_family_consistency(text: &str, cfg: &GateCfg) -> GateOut {
     let mut out = GateOut { pass: true, p0: vec![], p1: vec![], detail: String::new() };
     let mut hit = 0usize;
-    for (title, canon_name) in FAMILY_CANON {
+    let family_canon = cfg.book_profile.canon_family();
+    let canon_names = cfg.book_profile.canon_names();
+    for (title, canon_name) in &family_canon {
         let pat = format!(r"{}[的|叫]?([\u{{4e00}}-\u{{9fa5}}]{{2,4}})", regex::escape(title));
         let Ok(re) = regex::Regex::new(&pat.replace("[的|叫]?", "(?:的|叫)?")) else {
             continue;
@@ -705,7 +716,7 @@ pub fn g15_family_consistency(text: &str) -> GateOut {
         for cap in re.captures_iter(text) {
             let Some(m) = cap.get(1) else { continue };
             let mentioned = m.as_str();
-            let ok = CANON_NAMES.iter().any(|c| {
+            let ok = canon_names.iter().any(|c| {
                 let cl = c.chars().count();
                 mentioned.chars().count() >= cl && mentioned.chars().take(cl).collect::<String>() == *c
             });
@@ -763,11 +774,11 @@ pub fn run_all<C: GateCtx>(ctx: &C, text: &str, chapter_no: u32, volume: &str) -
     let mut gates: BTreeMap<String, GateBrief> = BTreeMap::new();
 
     let results: Vec<(&str, Result<GateOut>)> = vec![
-        ("G01_opening4", Ok(g01_opening4(text, chapter_no))),
+        ("G01_opening4", Ok(g01_opening4(text, chapter_no, cfg))),
         ("G02_hook_density", Ok(g02_hook_density(text, cfg))),
         ("G03_shuang_interval", Ok(g03_shuang_interval(ctx, text, chapter_no, volume))),
-        ("G04_ability_cost", Ok(g04_ability_cost(text))),
-        ("G05_pov_consistent", Ok(g05_pov_consistent(text))),
+        ("G04_ability_cost", Ok(g04_ability_cost(text, cfg))),
+        ("G05_pov_consistent", Ok(g05_pov_consistent(text, cfg))),
         ("G06_character_consistency", Ok(g06_character_consistency(ctx, text))),
         ("G07_OOC", Ok(g07_ooc(ctx, text, chapter_no))),
         ("G08_foreshadow_recover", Ok(g08_foreshadow_recover(ctx, text, chapter_no, volume))),
@@ -777,7 +788,7 @@ pub fn run_all<C: GateCtx>(ctx: &C, text: &str, chapter_no: u32, volume: &str) -
         ("G12_naming_tier", Ok(g12_naming_tier(text, volume, cfg))),
         ("G13_scoring_67dim", Ok(g13_scoring_67dim(ctx, text, cfg))),
         ("G14_world_consistency", Ok(g14_world_consistency(ctx, text))),
-        ("G15_family_consistency", Ok(g15_family_consistency(text))),
+        ("G15_family_consistency", Ok(g15_family_consistency(text, cfg))),
         ("G16_leak_words", Ok(g16_leak_words(text))),
     ];
 
@@ -844,6 +855,7 @@ impl BareGateCtx {
                 ],
                 scoring_excellent: 95.0,
                 scoring_superior: 98.0,
+                book_profile: cfg.book_profile.clone(),
             }
         } else {
             cfg

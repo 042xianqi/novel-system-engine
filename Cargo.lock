@@ -432,6 +432,7 @@ version = "0.0.15"
 dependencies = [
  "anyhow",
  "ne-core",
+ "ne-db",
  "regex",
  "rusqlite",
  "rustls",

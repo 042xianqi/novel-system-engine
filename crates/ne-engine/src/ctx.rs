@@ -6,6 +6,7 @@
 use crate::gates::GateCtx;
 use anyhow::Result;
 use rusqlite::OpenFlags;
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 // ── 场景关键词表（逐字照抄 context_budget.SCENE_KEYWORDS，顺序即优先级）──
@@ -186,4 +187,106 @@ impl GateCtx for RepoCtx {
         con.query_row("SELECT COUNT(*) FROM scoring_dimensions", [], |r| r.get(0))
             .unwrap_or(0)
     }
+    /// G07 OOC：本章登场角色状态（从 char_state + char_emotion 拼）
+    fn char_states_for_ooc(&self, volume: &str, chapter: u32) -> Vec<Value> {
+        let Some(con) = &self.con else { return vec![] };
+        let mut out = Vec::new();
+        // 先取本章细纲引用的 CHAR-* 卡（只查登场角色，不全卷扫）
+        let mut codes: Vec<String> = Vec::new();
+        if let Some(txt) = self.read_outline(volume) {
+            if let Some(seg) = Self::extract_chapter(&txt, chapter) {
+                let re = regex::Regex::new(r"CHAR-\d+-\d+").unwrap();
+                for m in re.find_iter(seg) {
+                    let c = m.as_str().to_string();
+                    if !codes.contains(&c) { codes.push(c); }
+                }
+            }
+        }
+        if codes.is_empty() {
+            return vec![];  // 本章无角色引用 → skip
+        }
+        let in_list = codes.iter().map(|c| format!("'{c}'")).collect::<Vec<_>>().join(",");
+        let sql = format!("SELECT cs.char_code, cs.char_name, cs.realm, cs.status,
+                          ce.anger,ce.fear,ce.grief,ce.joy,ce.anxiety,ce.calm,ce.shame,ce.awe,ce.compassion,ce.hope,ce.suppress
+                   FROM char_state cs
+                   LEFT JOIN char_emotion ce ON ce.char_code=cs.char_code AND ce.chapter=(
+                     SELECT MAX(chapter) FROM char_emotion WHERE char_code=cs.char_code AND chapter<{chapter})
+                   WHERE cs.char_code IN ({in_list})");
+        let Ok(mut st) = con.prepare(&sql) else { return vec![] };
+        let dims = ["anger","fear","grief","joy","anxiety","calm","shame","awe","compassion","hope"];
+        if let Ok(iter) = st.query_map([], |r| {
+            let code: String = r.get(0).unwrap_or_default();
+            let name: String = r.get(1).unwrap_or_default();
+            let realm: Option<String> = r.get(2).unwrap_or(None);
+            let status: String = r.get(3).unwrap_or_default();
+            let mut em = serde_json::Map::new();
+            let mut any=false;
+            for (i,d) in dims.iter().enumerate() {
+                let v: Option<f64> = r.get(4+i).unwrap_or(None);
+                if let Some(x)=v { any=true; }
+                em.insert(d.to_string(), serde_json::json!(v.unwrap_or(50.0)));
+            }
+            let sup: Option<f64> = r.get(14).unwrap_or(None);
+            Ok((code,name,realm,status,serde_json::Value::Object(em),any,sup))
+        }) {
+            for (code,name,realm,status,em,any,sup) in iter.flatten() {
+                let alive = status != "死亡" && status != "已死";
+                // _realm_max：简用当前境界（无历史）；后续可接 char_baseline_snap
+                let realm_s = realm.clone().unwrap_or_default();
+                out.push(serde_json::json!({
+                    "char_code": code,
+                    "char_name": name,
+                    "alive": alive,
+                    "realm": realm_s,
+                    "_realm_max": realm_s,
+                    "suppress": sup.unwrap_or(1.0),
+                    "emotions": em,
+                    "_has_emotion": any,
+                }));
+            }
+        }
+        let _ = volume;
+        out
+    }
+    /// event_template 全表（判据3）
+    fn event_templates_map(&self) -> Option<Value> {
+        let con = self.con.as_ref()?;
+        let mut st = con.prepare("SELECT id, emotion_delta FROM event_template").ok()?;
+        let mut m = serde_json::Map::new();
+        let iter = st.query_map([], |r| {
+            let id: String = r.get(0).unwrap_or_default();
+            let d: Option<String> = r.get(1).unwrap_or(None);
+            Ok((id,d))
+        }).ok()?;
+        for (id,d) in iter.flatten() {
+            let dv: Value = d.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_else(|| serde_json::json!({}));
+            m.insert(id, serde_json::json!({"emotion_delta": dv}));
+        }
+        Some(Value::Object(m))
+    }
+    /// kb_world_consistency（判据5）
+    fn kb_consistency(&self) -> Option<Value> {
+        let p = self.root.join("05_管线框架/data/kb_world_consistency.json");
+        let t = std::fs::read_to_string(p).ok()?;
+        serde_json::from_str(&t).ok()
+    }
+    /// G13 离线维度：库规模统计
+    fn library_counts(&self) -> std::collections::BTreeMap<String, i64> {
+        let mut m = std::collections::BTreeMap::new();
+        let Some(con) = &self.con else { return m };
+        let cats = ["文明", "角色", "地点", "事件", "功法", "科技", "物品"];
+        for c in cats {
+            let n: i64 = con
+                .query_row("SELECT COUNT(*) FROM materials WHERE category=?1", rusqlite::params![c], |r| r.get(0))
+                .unwrap_or(0);
+            m.insert(c.to_string(), n);
+        }
+        let total: i64 = con.query_row("SELECT COUNT(*) FROM materials", [], |r| r.get(0)).unwrap_or(0);
+        let used: i64 = con.query_row("SELECT COUNT(*) FROM card_usage", [], |r| r.get(0)).unwrap_or(0);
+        m.insert("_总卡".into(), total);
+        m.insert("_已引用".into(), used);
+        m
+    }
+
+
 }

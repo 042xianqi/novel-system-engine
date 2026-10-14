@@ -1,0 +1,22 @@
+=== stage: stage2_memory ===
+2026-10-14 03:47:17
+--- build ---
+build_errors=0
+--- test ---
+test memory_system::tests::truncate_never_splits_sentence ... FAILED
+test mcp::tests::connect_and_call_fake_server ... ok
+test memory::tests::expires_at_filters_out ... ok
+test novel_ctx::tests::builds_injection_without_panic ... ok
+test novel_ctx::tests::builds_full_prompt ... ok
+--
+thread 'memory_system::tests::truncate_never_splits_sentence' (8029) panicked at crates/ne-agent/src/memory_system.rs:702:9:
+截断应落在句末: "第一句"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+--
+test result: FAILED. 267 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.85s
+
+error: test failed, to rerun pass `-p ne-agent --lib`
+passed=267 failed=1
+RESULT=TEST_FAIL passed=267 failed=1

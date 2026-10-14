@@ -11,6 +11,7 @@
 
 use crate::config::Config;
 use serde::Serialize;
+use serde_json::Value;
 
 // ───────────────────────────── 关键词表（照抄 gate14.py，勿改）
 /// 恐怖章诡异要素词（gate14.py HORROR_KEYWORDS）
@@ -66,6 +67,11 @@ pub const G01_D: &[&str] = &[
 pub const CANON_FAMILY: &[(&str, &str)] =
     &[("父亲", "陈大山"), ("母亲", "林氏"), ("弟弟", "陈默")];
 pub const CANON_NAMES: &[&str] = &["陈大山", "林氏", "陈默", "陈老头"];
+// ───────────────────────────── 书档案默认值（通用化回退）
+/// 默认书名（《残响之河》；新书在 `book_profile.title` 覆盖）。
+pub const BOOK_TITLE_DEFAULT: &str = "残响之河";
+/// 默认主角名（陈寂；新书在 `book_profile.protagonist` 覆盖）。
+pub const PROTAGONIST_DEFAULT: &str = "陈寂";
 
 // ───────────────────────────── 结果类型
 
@@ -115,6 +121,23 @@ pub trait GateCtx {
     fn drift_terms(&self) -> Vec<String>;
     /// 67 维总数（供 g13；无 DB 返回 0）
     fn scoring_dims_total(&self) -> i64;
+    /// 本章登场角色状态（供 G07 OOC 真跑）：[{char_code,char_name,alive,realm,_realm_max,suppress,emotions{}}]
+    /// 默认空：未接线的实现按 skip_no_input 降级。
+    fn char_states_for_ooc(&self, _volume: &str, _chapter: u32) -> Vec<Value> {
+        Vec::new()
+    }
+    /// event_template 全表（供 G07 判据3）：{EVT-ID: {emotion_delta:{}, ...}}
+    fn event_templates_map(&self) -> Option<Value> {
+        None
+    }
+    /// kb_world_consistency（供 G07 判据5）：{drift_blacklist:[], canon_invariants:[]}
+    fn kb_consistency(&self) -> Option<Value> {
+        None
+    }
+    /// 库规模统计（供 G13 离线维度 D19~D36）：{类别: 数量}
+    fn library_counts(&self) -> std::collections::BTreeMap<String, i64> {
+        Default::default()
+    }
 }
 
 // ───────────────────────────── 工具
@@ -138,16 +161,20 @@ fn hits(text: &str, kws: &[&str]) -> Vec<(String, usize)> {
 }
 
 // ───────────────────────────── G01
-pub fn g01_opening4(text: &str, chapter: u32, _cfg: &Config) -> GateResult {
+pub fn g01_opening4(text: &str, chapter: u32, cfg: &Config) -> GateResult {
     let mut out = GateResult::ok("");
     if chapter > 3 {
         out.detail("非开篇章（ch>3），G01 不适用，pass");
         return out;
     }
-    let a = text.contains("陈寂");
-    let b = G01_B.iter().any(|k| text.contains(*k));
-    let c = G01_C.iter().any(|k| text.contains(*k));
-    let d = G01_D.iter().any(|k| text.contains(*k));
+    let bp = &cfg.book_profile;
+    let a = text.contains(bp.protagonist());
+    let g01_b = bp.g01_b();
+    let g01_c = bp.g01_c();
+    let g01_d = bp.g01_d();
+    let b = g01_b.iter().any(|k| text.contains(k.as_str()));
+    let c = g01_c.iter().any(|k| text.contains(k.as_str()));
+    let d = g01_d.iter().any(|k| text.contains(k.as_str()));
     let hard_missing: Vec<&str> = [("A主角出场", a), ("B金手指亮相", b), ("D身份交代", d)]
         .iter()
         .filter(|(_, ok)| !ok)
@@ -180,7 +207,7 @@ pub fn g01_opening4(text: &str, chapter: u32, _cfg: &Config) -> GateResult {
         out.p1(
             "G01_opening4",
             "C核心矛盾（黄金五章观察项，逐章不强制）",
-            "4~5 章内补 C 命中（残响/代价/遗忘 任一）",
+            format!("4~5 章内补 C 命中（{} 任一）", g01_c.join("/")),
         );
     }
     out
@@ -231,9 +258,12 @@ pub fn g03_shuang_interval(text: &str, chapter: u32, volume: &str, ctx: &dyn Gat
 }
 
 // ───────────────────────────── G04
-pub fn g04_ability_cost(text: &str, _chapter: u32, _cfg: &Config) -> GateResult {
-    let ability = count_hits(text, ABILITY_KEYWORDS);
-    let cost = count_hits(text, COST_KEYWORDS);
+pub fn g04_ability_cost(text: &str, _chapter: u32, cfg: &Config) -> GateResult {
+    let bp = &cfg.book_profile;
+    let ability_kw = bp.ability_keywords();
+    let cost_kw = bp.cost_keywords();
+    let ability = count_hits(text, &ability_kw.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+    let cost = count_hits(text, &cost_kw.iter().map(|s| s.as_str()).collect::<Vec<_>>());
     let mut out = GateResult::ok(format!("能力动用词={ability} 代价词={cost}"));
     if ability > 0 && cost == 0 {
         out.p1(
@@ -246,15 +276,16 @@ pub fn g04_ability_cost(text: &str, _chapter: u32, _cfg: &Config) -> GateResult 
 }
 
 // ───────────────────────────── G05
-pub fn g05_pov_consistent(text: &str, _chapter: u32) -> GateResult {
-    if text.contains("陈寂") {
-        return GateResult::ok("主角陈寂视角在场");
+pub fn g05_pov_consistent(text: &str, _chapter: u32, cfg: &Config) -> GateResult {
+    let prot = cfg.book_profile.protagonist();
+    if text.contains(prot) {
+        return GateResult::ok(format!("主角{prot}视角在场"));
     }
-    let mut out = GateResult::ok("陈寂0命中，视角锁定失守");
+    let mut out = GateResult::ok(format!("{prot}0命中，视角锁定失守"));
     out.p0(
         "G05_pov_consistent",
-        "正文无主角陈寂（技06 视角锁定：非陈寂视角章打回）",
-        "视角回陈寂，或删除本章/改非正文场景",
+        format!("正文无主角{prot}（技06 视角锁定：非{prot}视角章打回）"),
+        format!("视角回{prot}，或删除本章/改非正文场景"),
     );
     out
 }
@@ -312,10 +343,12 @@ pub fn g10_horror_chapter(
     text: &str,
     chapter: u32,
     volume: &str,
+    cfg: &Config,
     ctx: &dyn GateCtx,
 ) -> GateResult {
     let scene = ctx.scene_of(volume, chapter);
-    let is_horror = scene == "心理" || HORROR_KEYWORDS.iter().any(|k| text.contains(*k));
+    let hk = cfg.book_profile.horror_keywords();
+    let is_horror = scene == "心理" || hk.iter().any(|k| text.contains(k.as_str()));
     if !is_horror {
         return GateResult::ok("非恐怖章（场景≠心理 且 0 诡异要素词），G10 不适用");
     }
@@ -396,7 +429,7 @@ pub fn g13_scoring_67dim(text: &str, volume: &str, cfg: &Config, ctx: &dyn GateC
             "字数",
             cfg.word_min_for_volume(volume) as usize <= w && w <= cfg.word_max() as usize,
         ),
-        ("禁词", !G13_STOP_WORDS.iter().any(|k| text.contains(*k))),
+        ("禁词", !cfg.book_profile.banned_words().iter().any(|k| text.contains(k.as_str()))),
         ("AI词", !G13_AI_WORDS.iter().any(|k| text.contains(*k))),
         (
             "感叹号",
@@ -404,25 +437,49 @@ pub fn g13_scoring_67dim(text: &str, volume: &str, cfg: &Config, ctx: &dyn GateC
         ),
     ];
     let bad: Vec<&str> = det.iter().filter(|(_, ok)| !ok).map(|(n, _)| *n).collect();
+    // D19~D28 库规模维度（离线可算）
+    let counts = ctx.library_counts();
+    let targets: [(&str, &str, i64); 7] = [
+        ("文明数量达标", "文明", 30),
+        ("人物数量达标", "角色", 249),
+        ("地点数量达标", "地点", 146),
+        ("事件数量达标", "事件", 156),
+        ("功法数量达标", "功法", 1),
+        ("科技数量达标", "科技", 1),
+        ("物品数量达标", "物品", 1),
+    ];
+    let mut scale_ok = 0usize;
+    let mut scale_miss: Vec<String> = Vec::new();
+    for (label, key, target) in targets {
+        let n = *counts.get(key).unwrap_or(&0);
+        if n >= target { scale_ok += 1; } else { scale_miss.push(format!("{label}({n}/{target})")); }
+    }
+    let total_cards = *counts.get("_总卡").unwrap_or(&0);
+    let used_cards = *counts.get("_已引用").unwrap_or(&0);
+    let coverage = if total_cards > 0 { used_cards * 100 / total_cards } else { 0 };
+    let relations_ok = coverage >= 50;
+    let offline_scored = 4 + targets.len() + 2;
     let mut out = GateResult::ok(format!(
-        "67维={dims_total}，确定性可量化4维命中不达标={}，其余{}维 needs_llm=True（LLM解释层占位，0编造分数）",
-        if bad.is_empty() { "0".to_string() } else { format!("{bad:?}") },
-        dims_total.saturating_sub(4)
+        "67维：离线 {offline_scored} 维（4确定性 + {}规模 + 关系覆盖{coverage}% {}），剩{}维需LLM",
+        scale_ok,
+        if relations_ok {"ok"} else {"miss"},
+        dims_total.saturating_sub(offline_scored as i64)
     ));
     if !bad.is_empty() {
-        out.p1(
-            "G13_scoring_67dim",
-            format!("确定性维度不达标：{bad:?}"),
-            "按对应维度修复（字数/禁词/AI词/感叹号）；LLM 61维占位不阻断",
-        );
+        out.p1("G13_scoring_67dim", format!("确定性维度不达标：{bad:?}"), "按对应维度修复");
+    }
+    if !scale_miss.is_empty() {
+        out.p1("G13_scoring_67dim", format!("库规模未达标：{}", scale_miss.join("，")), "补齐资料卡；不阻断正文");
     }
     out
 }
 
 // ───────────────────────────── G14
-pub fn g14_world_consistency(text: &str, ctx: &dyn GateCtx) -> GateResult {
+pub fn g14_world_consistency(text: &str, cfg: &Config, ctx: &dyn GateCtx) -> GateResult {
     let mut out = GateResult { pass: true, detail: Some(String::new()), p0: vec![], p1: vec![] };
-    let myth = hits(text, MYTH_BANNED);
+    let myth_kw = cfg.book_profile.myth_banned();
+    let myth_ref: Vec<&str> = myth_kw.iter().map(|s| s.as_str()).collect();
+    let myth = hits(text, &myth_ref);
     if !myth.is_empty() {
         for (w, n) in &myth {
             out.p1(
@@ -454,10 +511,17 @@ pub fn g14_world_consistency(text: &str, ctx: &dyn GateCtx) -> GateResult {
 }
 
 // ───────────────────────────── G15
-pub fn g15_family_consistency(text: &str) -> GateResult {
+pub fn g15_family_consistency(text: &str, cfg: &Config) -> GateResult {
     let mut out = GateResult::ok("");
     let mut hit = 0usize;
-    let re_str = CANON_FAMILY
+    let canon_family = cfg.book_profile.canon_family();
+    let canon_names = cfg.book_profile.canon_names();
+    let canon_desc = canon_family
+        .iter()
+        .map(|(t, c)| format!("{t}={c}"))
+        .collect::<Vec<_>>()
+        .join("/");
+    let re_str = canon_family
         .iter()
         .map(|(t, _)| regex::escape(t))
         .collect::<Vec<_>>()
@@ -467,10 +531,10 @@ pub fn g15_family_consistency(text: &str) -> GateResult {
         let whole = caps.get(0).unwrap().as_str();
         let mentioned = caps.get(1).unwrap().as_str();
         // 找出命中的称谓 → 期望 canon 名
-        let title = CANON_FAMILY
+        let title = canon_family
             .iter()
-            .find(|(t, _)| whole.starts_with(t))
-            .map(|(t, c)| (*t, *c));
+            .find(|(t, _)| whole.starts_with(t.as_str()))
+            .map(|(t, c)| (t.as_str(), c.as_str()));
         let Some((title, canon_name)) = title else { continue };
         // 合法：mentioned 的 2/3/4 字前缀 ∈ CANON_NAMES
         let matched = (2..=4).any(|n| {
@@ -478,7 +542,7 @@ pub fn g15_family_consistency(text: &str) -> GateResult {
                 return false;
             }
             let prefix: String = mentioned.chars().take(n).collect();
-            CANON_NAMES.contains(&prefix.as_str())
+            canon_names.iter().any(|cn| cn == &prefix)
         });
         if matched {
             continue;
@@ -487,12 +551,12 @@ pub fn g15_family_consistency(text: &str) -> GateResult {
         out.p1(
             "G15_family_consistency",
             format!("称谓「{title}」提及「{mentioned}」≠canon「{canon_name}」（家庭定版·后续不得改）"),
-            "按 canon 改回：父=陈大山/母=林氏/弟=陈默/祖=陈老头",
+            format!("按 canon 改回：{canon_desc}"),
         );
     }
     out.pass = hit == 0;
     out.detail(format!(
-        "家庭canon错配={hit}处（父=陈大山/母=林氏/弟=陈默/祖=陈老头，后续不得改）"
+        "家庭canon错配={hit}处（{canon_desc}，后续不得改）"
     ));
     out
 }
@@ -516,10 +580,42 @@ pub fn g16_leak_words(text: &str) -> GateResult {
 // ───────────────────────────── G07 / G08（需 DB 输入）
 /// G07 OOC：简化口径——角色已死/境界倒退/情绪矛盾/压抑越界（4 判据）。
 /// 无角色状态数据 → skip_no_input（不阻断），与 Python 同口径。
-pub fn g07_ooc(_text: &str, _ctx: &dyn GateCtx) -> GateResult {
-    // 角色状态数据源（char_default_fill.json + char_state 表）尚未接入 Rust 侧，
-    // 按 Python 的降级口径 skip_no_input，不臆造判定。
-    GateResult::ok("角色状态数据未接入（对齐 Python skip_no_input 口径），G07 不阻断")
+pub fn g07_ooc(text: &str, volume: &str, chapter: u32, ctx: &dyn GateCtx) -> GateResult {
+    let states = ctx.char_states_for_ooc(volume, chapter);
+    if states.is_empty() {
+        return GateResult::ok("本章无角色状态数据，G07 skip_no_input 不阻断");
+    }
+    let ev_tpl = ctx.event_templates_map();
+    let kb = ctx.kb_consistency();
+    let ev_ref = ev_tpl.as_ref();
+    // action_desc：取正文首 200 字作“本章情节摘要”（判据1/2 仅用它做证据文本）
+    let action: String = text.chars().take(200).collect();
+    let mut out = GateResult::ok("");
+    let mut checked = 0usize;
+    for st in &states {
+        let findings = crate::ooc_gate::ooc_gate(
+            &action,
+            st,
+            ev_ref,
+            crate::ooc_gate::CONFLICT_THR,
+            Some(text),
+            kb.as_ref(),
+        );
+        checked += 1;
+        for f in findings {
+            let sev = f.severity.as_deref().unwrap_or("P1");
+            let msg = format!("{} [{}] {}", f.code, f.role, f.evidence);
+            if sev == "P0" {
+                out.p0("G07_OOC", msg, "修正角色行为/状态，与情绪引擎/世界设定对齐");
+            } else {
+                out.p1("G07_OOC", msg, "复核角色行为是否与既定设定冲突");
+            }
+        }
+    }
+    if out.p0.is_empty() && out.p1.is_empty() {
+        out = GateResult::ok(format!("OOC 5 判据真跑，{checked} 角色全部通过"));
+    }
+    out
 }
 
 /// G08 伏笔回收率：读 foreshadow 到期项，用贝叶斯后验双档（P2=0.6 / P1=0.5）判定。
@@ -619,6 +715,7 @@ pub const GATE_COUNT_ORDER: &[&str] = &[
     "G14_world_consistency",
     "G15_family_consistency",
     "G16_leak_words",
+    "P1_PARAGRAPH",
 ];
 
 #[derive(Debug, Clone, Serialize)]
@@ -628,6 +725,37 @@ pub struct GateReport {
     pub p1: Vec<Finding>,
     pub gates: std::collections::BTreeMap<String, GateBrief>,
     pub stats: GateStats,
+    /// P1-PARAGRAPH 修复后的全文（仅排版变化；无改动时为 None）。
+    /// 调用方（novel 落盘后）据此回写文件 —— 只改分段，一字不改。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fixed_text: Option<String>,
+}
+
+// ───────────────────────────── P1-PARAGRAPH（修复型，永不 P0）
+/// 段落格式门禁：段 40~80 汉字，超长按句末标点切分、过短与邻段合并。
+/// 逗:句 比值仅统计告警。**只调排版，一字不改**；绝不返回 P0。
+pub fn p1_paragraph(text: &str) -> (GateResult, Option<String>) {
+    let fx = crate::paragraph_gate::fix_paragraphs(text);
+    let mut out = GateResult::ok(format!(
+        "段落修复={}处；[逗号:{} / 句号:{}，比值:{:.2}]",
+        fx.fixed_count, fx.comma, fx.period, fx.ratio
+    ));
+    if fx.fixed_count > 0 {
+        out.p1(
+            "P1_PARAGRAPH",
+            format!("P1-PARAGRAPH_FIX 修改段落数：{}", fx.fixed_count),
+            "段落 40~80 汉字自动合并/切分（仅排版，文字未改）",
+        );
+    }
+    if !(1.7..=2.8).contains(&fx.ratio) {
+        out.p1(
+            "P1_PARAGRAPH",
+            "P1-PARAGRAPH_WARN 逗号句号比值超出参考区间，建议人工复核文笔节奏",
+            "仅告警：不在程序层改写文字",
+        );
+    }
+    let fixed = if fx.fixed_count > 0 { Some(fx.fixed) } else { None };
+    (out, fixed)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -664,18 +792,22 @@ pub fn run_all(text: &str, chapter: u32, volume: &str, cfg: &Config, ctx: &dyn G
     run!("G02_hook_density", g02_hook_density(text, chapter, cfg));
     run!("G03_shuang_interval", g03_shuang_interval(text, chapter, volume, ctx));
     run!("G04_ability_cost", g04_ability_cost(text, chapter, cfg));
-    run!("G05_pov_consistent", g05_pov_consistent(text, chapter));
+    run!("G05_pov_consistent", g05_pov_consistent(text, chapter, cfg));
     run!("G06_character_consistency", g06_character_consistency(text, ctx));
-    run!("G07_OOC", g07_ooc(text, ctx));
+    run!("G07_OOC", g07_ooc(text, volume, chapter, ctx));
     run!("G08_foreshadow_recover", g08_foreshadow_recover(text, chapter, volume, ctx));
     run!("G09_info_density", g09_info_density(text, chapter, cfg));
-    run!("G10_horror_chapter", g10_horror_chapter(text, chapter, volume, ctx));
+    run!("G10_horror_chapter", g10_horror_chapter(text, chapter, volume, cfg, ctx));
     run!("G11_vol9_reversal", g11_vol9_reversal(text, volume));
     run!("G12_naming_tier", g12_naming_tier(text, volume, cfg));
     run!("G13_scoring_67dim", g13_scoring_67dim(text, volume, cfg, ctx));
-    run!("G14_world_consistency", g14_world_consistency(text, ctx));
-    run!("G15_family_consistency", g15_family_consistency(text));
+    run!("G14_world_consistency", g14_world_consistency(text, cfg, ctx));
+    run!("G15_family_consistency", g15_family_consistency(text, cfg));
     run!("G16_leak_words", g16_leak_words(text));
+
+    // P1-PARAGRAPH：段落格式修复型门禁（只产 P1，永不 P0）
+    let (para_res, fixed_text) = p1_paragraph(text);
+    run!("P1_PARAGRAPH", para_res);
 
     let verdict = if !p0.is_empty() {
         "reject"
@@ -691,7 +823,8 @@ pub fn run_all(text: &str, chapter: u32, volume: &str, cfg: &Config, ctx: &dyn G
         p0,
         p1,
         gates,
-        stats: GateStats { words: words(text), gates_run: 16 },
+        stats: GateStats { words: words(text), gates_run: 17 },
+        fixed_text,
     }
 }
 
@@ -720,5 +853,83 @@ mod tests_g09_semantics {
         let r = g09_info_density(&text, 1, &cfg);
         assert!(!r.pass, ">word_max 必须 P0");
         assert_eq!(r.p0.len(), 1);
+    }
+
+    // ───────────────────────── 通用化回归：新书不得被《残响之河》硬编码打回
+
+    fn cfg_new_book() -> Config {
+        let mut c = Config::default();
+        c.book_profile = serde_json::from_value(serde_json::json!({
+            "title": "星尘渡口",
+            "protagonist": "林知远",
+            "myth_banned": ["星神本源"],
+            "canon_family": [["父亲", "林崇山"]],
+            "canon_names": ["林崇山"],
+            "banned_words": ["灵气"]
+        }))
+        .unwrap();
+        c
+    }
+
+    /// 新书主角名出现即过 G05；旧库默认仍认陈寂。
+    #[test]
+    fn g05_uses_configured_protagonist() {
+        let nbc = cfg_new_book();
+        let r = g05_pov_consistent("林知远走进渡口。", 1, &nbc);
+        assert!(r.pass, "新书主角应过 G05: {:?}", r.p0);
+        // 同一段文本在默认（残响之河）配置下应被打回
+        let old = Config::default();
+        let r2 = g05_pov_consistent("林知远走进渡口。", 1, &old);
+        assert!(!r2.pass, "默认配置下非陈寂主角应 P0");
+    }
+
+    /// G05 提示文案含本书主角名，不泄漏「陈寂」。
+    #[test]
+    fn g05_message_has_no_canxiang_leak() {
+        let nbc = cfg_new_book();
+        let r = g05_pov_consistent("无关正文。", 1, &nbc);
+        let blob = format!("{:?}", r.p0) + &r.detail.clone().unwrap_or_default();
+        assert!(blob.contains("林知远"));
+        assert!(!blob.contains("陈寂"), "不得泄漏旧书主角名: {blob}");
+    }
+
+    /// G15 家庭 canon 用本书设定；提示文案不泄漏旧书家族名。
+    #[test]
+    fn g15_uses_configured_family() {
+        let nbc = cfg_new_book();
+        let r = g15_family_consistency("父亲的姓名是王大力。", &nbc);
+        let blob = format!("{:?}", r.p1) + &r.detail.clone().unwrap_or_default();
+        assert!(!blob.contains("陈大山"), "不得泄漏旧书家族: {blob}");
+        assert!(blob.contains("林崇山"), "应给出本书 canon: {blob}");
+    }
+
+    /// G01 金手指/矛盾/身份断言用本书词表。
+    #[test]
+    fn g01_uses_configured_assertion_words() {
+        let mut c = cfg_new_book();
+        c.book_profile.g01_b = Some(vec!["星纹".into()]);
+        c.book_profile.g01_c = Some(vec!["星蚀".into()]);
+        c.book_profile.g01_d = Some(vec!["前世".into()]);
+        let text = "林知远掌心浮现星纹，他想起前世的星蚀。";
+        let r = g01_opening4(text, 1, &c);
+        assert!(r.pass, "四断言齐备应过 G01: {:?}", r.p0);
+    }
+
+    /// G14 神话禁词用本书词表：本书禁词命中应报，旧书词不误伤。
+    #[test]
+    fn g14_uses_configured_myth_banned() {
+        struct Bare;
+        impl GateCtx for Bare {
+            fn scene_of(&self, _v: &str, _c: u32) -> String { "未知".into() }
+            fn prev_chapters_text(&self, _v: &str, _c: u32, _w: u32) -> String { String::new() }
+            fn due_foreshadows(&self, _v: &str, _c: u32) -> Vec<(String, String)> { vec![] }
+            fn catchphrases(&self) -> Vec<String> { vec![] }
+            fn drift_terms(&self) -> Vec<String> { vec![] }
+            fn scoring_dims_total(&self) -> i64 { 0 }
+        }
+        let nbc = cfg_new_book();
+        let r = g14_world_consistency("提到星神本源这个词。", &nbc, &Bare);
+        let blob = format!("{:?}", r.p1);
+        assert!(blob.contains("星神本源"), "本书禁词应命中: {blob}");
     }
 }

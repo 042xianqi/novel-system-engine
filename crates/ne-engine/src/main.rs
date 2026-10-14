@@ -99,6 +99,87 @@ fn main() -> Result<()> {
             let volume = arg(&args, "--volume").unwrap_or_else(|| infer_volume(&path));
             do_check(&root, &text, chapter, &volume)
         }
+        "sync" => {
+            // 数据流回填：磁盘 04_正文/卷NN/第N章.md → chapters/char_state/events 表。
+            // 背景见 ne-db::tick_chapter 文档：落库事务早已实现，但无调用方，
+            // 导致磁盘正文与 DB 状态长期脱节（G08 伏笔回收门禁拿不到数据）。
+            use ne_core::extract_chapter;
+            let root = resolve_root(&args)?;
+            let vol_arg = arg(&args, "--volume").unwrap_or_else(|| "卷01".into());
+            let con = ne_db::connect(&root.join("novel.db").to_string_lossy())?; // 真库已存在，IF NOT EXISTS 不改结构
+            let content_dir = root.join("04_正文").join(&vol_arg);
+            if !content_dir.is_dir() {
+                anyhow::bail!("正文目录不存在：{}", content_dir.display());
+            }
+            let outline_dir = root.join("03_叙事规划").join("细纲");
+            let outline_text = std::fs::read_to_string(outline_dir.join(format!("{vol_arg}.md")))
+                .with_context(|| format!("读细纲失败：{}/{}.md", outline_dir.display(), vol_arg))?;
+            let mut entries: Vec<(u32, PathBuf)> = Vec::new();
+            for e in std::fs::read_dir(&content_dir)? {
+                let p = e?.path();
+                if p.extension().and_then(|x| x.to_str()) != Some("md") {
+                    continue;
+                }
+                let n = infer_chapter(&p.to_string_lossy());
+                if n > 0 {
+                    entries.push((n, p));
+                }
+            }
+            entries.sort();
+            if entries.is_empty() {
+                anyhow::bail!("{} 下没有可识别的 第N章.md", content_dir.display());
+            }
+            let mut synced = Vec::new();
+            for (n, path) in &entries {
+                let text = std::fs::read_to_string(path)?;
+                let Some(outline) = extract_chapter(&outline_text, *n) else {
+                    eprintln!("跳过第{n}章：细纲中找不到对应章");
+                    continue;
+                };
+                // 构造最小注入包：tick_chapter 只消费 chars/events/card_refs 相关字段
+                let packet = ne_core::InjectionPacket {
+                    chapter: outline.clone(),
+                    chars: outline
+                        .card_refs
+                        .iter()
+                        .filter(|c| c.starts_with("CHAR-"))
+                        .map(|c| ne_core::CharacterSnapshot {
+                            code: c.clone(),
+                            name: String::new(), // 名称留空：char_state 首键是 char_code
+                            ..Default::default()
+                        })
+                        .collect(),
+                    events: outline
+                        .card_refs
+                        .iter()
+                        .filter(|c| c.starts_with("EVNT-") || c.starts_with("EVT-"))
+                        .map(|c| ne_core::EventRef {
+                            id: c.clone(),
+                            name: String::new(),
+                            status: "referenced".into(),
+                        })
+                        .collect(),
+                    ..Default::default()
+                };
+                let title = if outline.title.is_empty() {
+                    format!("第{n}章")
+                } else {
+                    outline.title.clone()
+                };
+                ne_db::tick_chapter(
+                    &con,
+                    &vol_arg,
+                    *n,
+                    &title,
+                    text.chars().count(),
+                    &packet,
+                )?;
+                synced.push(n);
+            }
+            println!("sync 完成：{} 章已回填 chapters/char_state/events（volume={vol_arg}）", synced.len());
+            println!("章节：{:?}", synced);
+            Ok(())
+        }
         "gates" => {
             println!("16 门禁（Rust 版，逐条移植 engine/gate14.py）\n");
             for (i, g) in gates::GATE_COUNT_ORDER.iter().enumerate() {
@@ -238,7 +319,7 @@ fn main() -> Result<()> {
         }
         other => {
             eprintln!("未知子命令：{other}");
-            eprintln!("可用：check | check-file | gates | selftest | llm-probe | ai-probe | audit");
+            eprintln!("可用：check | check-file | sync | gates | selftest | llm-probe | ai-probe | audit");
             std::process::exit(2);
         }
     }

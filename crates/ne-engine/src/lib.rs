@@ -18,6 +18,7 @@ pub mod db;
 pub mod dynamics;
 pub mod emotion;
 pub mod ooc_gate;
+pub mod paragraph_gate;
 pub mod config;
 pub mod ctx;
 pub mod gates;
@@ -31,6 +32,7 @@ pub mod providers;
 pub mod role_samples;
 pub mod state_load;
 pub mod world_physics;
+pub mod wire;
 pub mod pyrandom;
 
 pub use config::Config;

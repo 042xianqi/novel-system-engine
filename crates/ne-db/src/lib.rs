@@ -148,13 +148,15 @@ pub fn tick_chapter(
     // 真库：chapter_no + content_path/outline/…；自建：chapter
     match dialect {
         Dialect::Real => {
+            let content_path = format!("04_正文/{volume}/第{chapter}章.md");
             tx.execute(
-                "INSERT INTO chapters(volume, chapter_no, title, status, words, updated_at)
-                 VALUES(?1, ?2, ?3, 'generated', ?4, datetime('now'))
+                "INSERT INTO chapters(volume, chapter_no, title, status, words, content_path, updated_at)
+                 VALUES(?1, ?2, ?3, 'generated', ?4, ?5, datetime('now'))
                  ON CONFLICT(volume, chapter_no) DO UPDATE SET
                    title=excluded.title, status=excluded.status,
-                   words=excluded.words, updated_at=datetime('now')",
-                params![volume, chapter as i64, title, words as i64],
+                   words=excluded.words, content_path=excluded.content_path,
+                   updated_at=datetime('now')",
+                params![volume, chapter as i64, title, words as i64, content_path],
             )?;
         }
         _ => {

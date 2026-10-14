@@ -254,6 +254,83 @@ pub fn select_materials<C: BudgetCtx>(
     (results, missing)
 }
 
+/// 从角色卡正文提取「语言风格」兜底（仅当结构化字段为空时用）。
+///
+/// 本库 `personality` 列当前全空，「语言风格」永远为空，导致 LLM 无约束。
+/// 兜底策略：从卡片正文的「性格」段摘一句风格类描述，原文照录、不改写、不臆造；
+/// 摘不到则返回空串（下游会填「未标定」而非空白）。
+fn extract_style_from_content(content: &str) -> String {
+    const KEYS: [&str; 8] = [
+        "不善言辞", "沉默寡言", "惜字如金", "健谈", "滔滔不绝",
+        "口语", "说话", "口吻",
+    ];
+    // 优先匹配「性格：…」「性格」段内首个含风格词的短句
+    let mut seg_start = None;
+    for (i, line) in content.lines().enumerate() {
+        if line.contains("**性格**") || line.trim_start().starts_with("性格") || line.contains("### 性格") {
+            seg_start = Some(i);
+            break;
+        }
+    }
+    let scan = match seg_start {
+        Some(i) => content.lines().skip(i).take(6).collect::<Vec<_>>(),
+        None => content.lines().collect::<Vec<_>>(),
+    };
+    for line in &scan {
+        // 剥掉 markdown 标记后找风格词
+        let clean = line.replace("**", "").replace("*", "").replace("- ", "");
+        if let Some(k) = KEYS.iter().find(|k| clean.contains(**k)) {
+            // 取该行含关键词的短句（按 ｜ ； 。 切）
+            for piece in clean.split(|c| ['。', '；', '|', '｜'].contains(&c)) {
+                if piece.contains(*k) {
+                    let s = piece.trim().trim_start_matches(|c: char| c == '：' || c == ':' || c == ' ');
+                    if s.chars().count() >= 4 && s.chars().count() <= 40 {
+                        return s.to_string();
+                    }
+                }
+            }
+            let s: String = clean.trim().chars().take(40).collect();
+            if s.chars().count() >= 4 {
+                return s;
+            }
+        }
+    }
+    String::new()
+}
+
+/// 从角色卡正文提取「定版台词」行（`### 标志性台词` 段内 `- 「…」`）。
+/// 返回去引号的纯台词，供 prompt 层加不可修改标记。
+fn extract_canon_lines(content: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut in_seg = false;
+    for line in content.lines() {
+        let t = line.trim();
+        if t.contains("标志性台词") {
+            in_seg = true;
+            continue;
+        }
+        if in_seg && t.starts_with('#') {
+            break; // 下一个标题段，结束
+        }
+        if in_seg {
+            if let Some(s) = t.strip_prefix("- ").or_else(|| t.strip_prefix("* ")) {
+                // 形如「锚点已建立。」（面板定版台词）
+                for (open, close) in [('「', '」'), ('“', '”'), ('"', '"')] {
+                    if let Some(a) = s.find(open) {
+                        if let Some(b) = s[a..].find(close) {
+                            let inner: String = s[a + open.len_utf8()..a + b].trim().to_string();
+                            if !inner.is_empty() && inner.chars().count() <= 40 {
+                                out.push(inner);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 /// 角色性格卡（照抄 get_char_cards 的字段投影）。
 pub fn get_char_cards<C: BudgetCtx>(ctx: &C, codes: &[String]) -> Vec<Value> {
     if codes.is_empty() {
@@ -266,16 +343,25 @@ pub fn get_char_cards<C: BudgetCtx>(ctx: &C, codes: &[String]) -> Vec<Value> {
             .and_then(|v| v.as_str())
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or_else(|| json!({}));
+        let content = r.get("content").and_then(|v| v.as_str()).unwrap_or("");
         let g = |k: &str| p.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        // 语言风格：结构化字段优先；为空则从卡片正文兜底提取（不臆造）
+        let mut style = g("语言风格");
+        if style.trim().is_empty() {
+            style = extract_style_from_content(content);
+        }
+        // 定版台词：从卡片正文提取，供 prompt 加不可修改标记
+        let canon_lines = extract_canon_lines(content);
         out.push(json!({
             "code": r.get("code").cloned().unwrap_or(json!("")),
             "name": r.get("name").cloned().unwrap_or(json!("")),
-            "speech_style": g("语言风格"),
+            "speech_style": style,
             "talk_amount": g("话量"),
             "inner_mode": g("内心模式"),
             "react_mode": g("反应模式"),
             "signature_action": g("特征动作"),
             "catchphrase": g("口头禅"),
+            "canon_lines": canon_lines,
             "realm": g("境界"),
             "location": g("位置"),
             "status": p.get("状态").and_then(|v| v.as_str()).unwrap_or("存活"),

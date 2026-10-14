@@ -210,10 +210,10 @@ impl ne_engine::budget::BudgetCtx for NovelCtx {
             return Vec::new();
         }
         let list = codes.iter().map(|c| format!("'{c}'")).collect::<Vec<_>>().join(",");
-        // 只读 personality 列（下游会把它当 JSON 解析取「口头禅」等字段）；
-        // 不塞 content 进 personality——那会破坏下游的 JSON 解析。
+        // personality = 结构化性格 JSON（本库当前全空，保留以兼容未来灌值）
+        // content     = 角色卡正文（用于「语言风格」兜底提取：性格/说话/口吻…）
         let sql = format!(
-            "SELECT code,name,coalesce(personality,'') FROM materials
+            "SELECT code,name,coalesce(personality,''),coalesce(content,'') FROM materials
              WHERE code IN ({list})"
         );
         self.query_json(&sql, &[], |r| {
@@ -221,6 +221,7 @@ impl ne_engine::budget::BudgetCtx for NovelCtx {
                 "code": r.get::<_, String>(0)?,
                 "name": r.get::<_, String>(1)?,
                 "personality": r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                "content": r.get::<_, Option<String>>(3)?.unwrap_or_default(),
                 "summary": "",
             }))
         })
@@ -279,6 +280,10 @@ impl ne_engine::chapter::ChapterCtx for NovelCtx {
 
     fn prompt_file(&self, name: &str) -> Option<String> {
         self.prompt_template(name, self.prompt_fallback.as_deref())
+    }
+
+    fn lib_root(&self) -> Option<std::path::PathBuf> {
+        Some(self.root.clone())
     }
 
     fn kb_rules(&self, _scene: &str, _limit: usize) -> Vec<Value> {

@@ -12,6 +12,7 @@
 //!
 //! 阶段进度见 `docs/ROADMAP-ne-agent.md`。当前：**M1（它自己）**。
 
+pub mod api;
 pub mod approval;
 pub mod ask_user;
 pub mod compaction;
@@ -24,6 +25,7 @@ pub mod dual_agent;
 pub mod harness;
 pub mod mcp;
 pub mod memory;
+pub mod memory_system;
 pub mod novel_ctx;
 pub mod output_retention;
 pub mod prompt;

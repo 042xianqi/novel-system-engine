@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 ne-core = { path = "../ne-core" }
+ne-db = { path = "../ne-db" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"

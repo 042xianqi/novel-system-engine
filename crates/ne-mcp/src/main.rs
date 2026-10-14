@@ -51,6 +51,13 @@ fn tool_specs() -> serde_json::Value {
                 "required":["text"]}
         },
         {
+            "name": "ne_materials",
+            "description": "L1→L4 资料对账：逐卷读 L2 分卷大纲，抽卡引用，对 novel.db + 02_资料库磁盘对账，按卷报已建/缺失卡与 DB-磁盘漂移。volume 留空扫全 10 卷。",
+            "inputSchema": {"type":"object","properties":{
+                "volume": {"type":"string","description":"卷号，如 01；留空=全 10 卷"}},
+                "required":[]}
+        },
+        {
             "name": "ne_db",
             "description": "连 novel.db，报各表行数与卡用量 Top（直连真实资料库）。",
             "inputSchema": {"type":"object","properties":{}}
@@ -188,6 +195,7 @@ fn tool_call(cfg: &Cfg, name: &str, args: &serde_json::Value) -> serde_json::Val
             tools::check(cfg, &s("text"), i("chapter"), &vol)
         }
         "ne_db" => tools::db_status(cfg),
+        "ne_materials" => tools::materials_audit(cfg, &vol),
         "ne_db_query" => {
             let lim = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
             tools::db_query(cfg, &s("sql"), lim.max(1))

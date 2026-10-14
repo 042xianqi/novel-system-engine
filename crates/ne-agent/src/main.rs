@@ -52,6 +52,7 @@ fn run() -> Result<()> {
             *plan,
             approval.as_deref(),
             cli.json,
+            cli.work_root.clone(),
         ),
         Cmd::Session { cmd } => cmds::run_session(&vault, cmd, cli.json),
         Cmd::Context { window, reserve, auto_compact, auto_threshold, keep_recent, dry_run } => {
@@ -78,8 +79,14 @@ fn run() -> Result<()> {
         ),
         Cmd::History { cmd } => cmds::run_history(&vault, cmd, cli.json),
         Cmd::Memory { cmd } => cmds::run_memory(&vault, cmd, cli.json),
-        Cmd::Novel { chap_id, volume, lib, dry_run, prompt_only } => {
-            run_novel(&vault, *chap_id, volume, lib.as_deref(), *dry_run, *prompt_only, cli.json)
+        Cmd::Score { chap_id, volume, lib, file } => {
+            run_score(&vault, *chap_id, volume, lib.as_deref(), file.as_deref())
+        }
+        Cmd::Fix { chap_id, volume, lib, findings, dry_run } => {
+            run_fix(&vault, *chap_id, volume, lib.as_deref(), findings.as_deref(), *dry_run)
+        }
+        Cmd::Novel { chap_id, volume, lib, dry_run, prompt_only, use_memory } => {
+            run_novel(&vault, *chap_id, volume, lib.as_deref(), *dry_run, *prompt_only, *use_memory, cli.json)
         }
         Cmd::Mcp { cmd } => run_mcp(&vault, cmd, cli.json),
         Cmd::Task { cmd } => cmds::run_task(&vault, cmd, cli.json),
@@ -313,6 +320,7 @@ fn run_chat(
     plan: bool,
     approval: Option<&str>,
     json: bool,
+    work_root_override: Option<std::path::PathBuf>,
 ) -> Result<()> {
     let mut h = build_runtime(vault)?;
     // CLI 覆盖 runtime.yaml 的审批设置
@@ -328,7 +336,9 @@ fn run_chat(
         None => "交互对话".to_string(),
     };
     let sid = pick_session(&h.store, session, resume, new, &title, message.is_some())?;
-
+    // 工作区沙箱：默认 vault.workspace()；--work-root 可覆盖（如指向资料库根，
+    // 让 chat 任务能直接读写真实库而不用绕 workspace 镜像）。
+    let work_root = work_root_override.unwrap_or_else(|| vault.workspace());
     if let Some(msg) = message {
         let (out, reasoning) = ne_agent::task::chat_once(
             &h.store,
@@ -336,7 +346,7 @@ fn run_chat(
             &sid,
             &h.cfg,
             h.llm,
-            vault.workspace(),
+            work_root,
             vault.path(ne_agent::vault::PROMPTS_DIR),
             h.enabled,
             msg,
@@ -363,7 +373,7 @@ fn run_chat(
         &sid,
         &h.cfg,
         h.llm,
-        vault.workspace(),
+        work_root,
         vault.path(ne_agent::vault::PROMPTS_DIR),
         h.enabled,
         vault.root().to_path_buf(),
@@ -474,6 +484,79 @@ fn run_mcp(vault: &Vault, cmd: &McpCmd, json: bool) -> Result<()> {
 ///
 /// 库根解析顺序：显式 `--lib` / `$NE_AGENT_LIB` → vault 的 `workspace/`
 /// （vault 里放一份库，或软链指向真实资料库）。
+/// 按 l5_质检.md 对正文做 LLM 深读（输出质检报告）。
+fn run_score(
+    vault: &Vault,
+    chap_id: u32,
+    volume: &str,
+    lib: Option<&Path>,
+    file: Option<&Path>,
+) -> Result<()> {
+    let lib_root = lib.map(|p| p.to_path_buf()).unwrap_or_else(|| vault.workspace());
+    let prompt_dir = vault.path(ne_agent::vault::PROMPTS_DIR);
+    let ctx = ne_agent::novel_ctx::NovelCtx::open(&lib_root)?.with_prompt_fallback(&prompt_dir);
+    // 读正文
+    let text_path = file
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| lib_root.join("04_正文").join(volume).join(format!("第{chap_id}章.md")));
+    let text = std::fs::read_to_string(&text_path)
+        .with_context(|| format!("读不到正文：{}", text_path.display()))?;
+    let tpl = ctx.prompt_template("l5_质检.md", Some(&prompt_dir)).unwrap_or_default();
+    let outline = ne_engine::chapter::ChapterCtx::injection(&ctx, volume, chap_id)
+        .ok()
+        .and_then(|v| v.get("chapter").and_then(|c| c.get("outline")).and_then(|o| o.as_str()).map(|s| s.to_string()))
+        .unwrap_or_default();
+    let prompt = format!("{tpl}\n\n── 待质检正文（第{chap_id}章）──\n{text}\n\n── 本章细纲 ──\n{outline}\n");
+    let llm = RuntimeConfig::load(vault.root())?.llm_params(&vault.llm_dir())?;
+    let msgs = vec![
+        ne_engine::llm::Message::system("你是《残响之河》的质检员。按模板逐维扫描，输出 findings（P0/P1）与总评，不要改写正文。"),
+        ne_engine::llm::Message::user(prompt),
+    ];
+    let out = ne_engine::llm::call(&llm, &msgs)?;
+    let rep = lib_root.join("07_勘误工坊").join(format!("质检_卷{volume}_第{chap_id}章.md"));
+    std::fs::create_dir_all(rep.parent().unwrap())?;
+    std::fs::write(&rep, &out.content)?;
+    println!("质检报告 → {}", rep.display());
+    println!("{}", out.content.chars().take(600).collect::<String>());
+    Ok(())
+}
+
+/// 按 l5_修复.md 定向修复（读质检 findings + 原文）。
+fn run_fix(
+    vault: &Vault,
+    chap_id: u32,
+    volume: &str,
+    lib: Option<&Path>,
+    findings: Option<&Path>,
+    dry_run: bool,
+) -> Result<()> {
+    let lib_root = lib.map(|p| p.to_path_buf()).unwrap_or_else(|| vault.workspace());
+    let prompt_dir = vault.path(ne_agent::vault::PROMPTS_DIR);
+    let ctx = ne_agent::novel_ctx::NovelCtx::open(&lib_root)?.with_prompt_fallback(&prompt_dir);
+    let text_path = lib_root.join("04_正文").join(volume).join(format!("第{chap_id}章.md"));
+    let text = std::fs::read_to_string(&text_path)
+        .with_context(|| format!("读不到正文：{}", text_path.display()))?;
+    let fnd = match findings {
+        Some(p) => std::fs::read_to_string(p).unwrap_or_default(),
+        None => std::fs::read_to_string(lib_root.join("07_勘误工坊").join(format!("质检_卷{volume}_第{chap_id}章.md"))).unwrap_or_default(),
+    };
+    let tpl = ctx.prompt_template("l5_修复.md", Some(&prompt_dir)).unwrap_or_default();
+    let prompt = format!("{tpl}\n\n── 质检 findings ──\n{fnd}\n\n── 原正文 ──\n{text}\n");
+    let llm = RuntimeConfig::load(vault.root())?.llm_params(&vault.llm_dir())?;
+    let msgs = vec![
+        ne_engine::llm::Message::system("你是《残响之河》的修复者。最小改动，只修命中的维度，输出修复后正文全文。"),
+        ne_engine::llm::Message::user(prompt),
+    ];
+    let out = ne_engine::llm::call(&llm, &msgs)?;
+    if dry_run {
+        println!("{}", out.content);
+    } else {
+        let path = ne_engine::chapter::write_chapter(&lib_root, &out.content, chap_id, volume)?;
+        println!("修复后正文 → {path}");
+    }
+    Ok(())
+}
+
 fn run_novel(
     vault: &Vault,
     chap_id: u32,
@@ -481,6 +564,7 @@ fn run_novel(
     lib: Option<&Path>,
     dry_run: bool,
     prompt_only: bool,
+    use_memory: bool,
     json: bool,
 ) -> Result<()> {
     vault.init()?;
@@ -519,8 +603,7 @@ fn run_novel(
     }
 
     let llm = cfg.llm_params(&vault.llm_dir())?;
-
-    let out = ne_agent::task::novel_chapter(
+    let out = ne_agent::task::novel_chapter_with_memory(
         &lib_root,
         volume,
         chap_id,
@@ -528,6 +611,7 @@ fn run_novel(
         &vault.workspace(),
         &prompt_dir,
         dry_run,
+        use_memory,
     )?;
 
     if json {

@@ -1,0 +1,572 @@
+//! 治理层（gov）—— 独立外挂巡检工具集，**绝不改写生成/注入/记忆链路**。
+//!
+//! # 铁则
+//! - 只读巡检：不修改/删除任何总纲、细纲、资料卡、正文。
+//! - 新增表（risk_index / library_index）只通过 `governance_schema.sql` 幂等创建。
+//! - 所有 `--semantic` 默认关闭；开启才调模型，且只产报告不落正文改动。
+//! - 新增开关（如 `--check-compliance`）默认关闭。
+use anyhow::Result;
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
+use serde_json::{json, Value};
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
+
+// ────────────────────────────────── 术语
+
+/// 层级法理优先级（数值越大越高）：L0 > L0.5 > L1 > L1x > 跨卷锚点。
+pub const LAYER_PRIORITY: &[(&str, i32)] = &[
+    ("L0", 100),
+    ("L0.5", 90),
+    ("L1", 80),
+    ("L1x", 70),
+    ("GUARD", 60),
+    ("ANCHOR", 50),
+    ("L2", 40),
+    ("L3", 30),
+    ("L4", 20),
+];
+
+pub fn layer_priority(layer: &str) -> i32 {
+    LAYER_PRIORITY.iter().find(|(l, _)| *l == layer).map(|(_, p)| *p).unwrap_or(0)
+}
+
+/// LTM category → 治理层名。
+pub fn ltm_category_to_layer(cat: &str, key: &str) -> &'static str {
+    match cat {
+        "顶层设定" => {
+            if key.contains("脊梁") { "L0.5" } else { "L0" }
+        }
+        "分卷大纲" => {
+            if key.contains("宏大对抗") { "L1x" }
+            else if key.contains("护栏") { "GUARD" }
+            else { "L1" }
+        }
+        "锚点元" => "ANCHOR",
+        "世界观铁则" | "角色静态档案" => "GUARD",
+        _ => "L4",
+    }
+}
+
+// ────────────────────────────────── 通用模型
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LayerEntry {
+    pub layer: String,
+    pub category: String,
+    pub key: String,
+    pub source: String,
+    pub chars: usize,
+    /// 条目内出现的 code 前缀集合（如 CHAR/LOCA/EVNT…）
+    pub types: Vec<String>,
+    /// 检查结论：OK | WARN | HIGH-RISK
+    pub level: String,
+    pub notes: Vec<String>,
+}
+
+/// 治理库打开：只读既有库 + 幂等附加治理表。
+pub fn open_gov(lib_root: &Path) -> Result<Connection> {
+    let conn = Connection::open(lib_root.join("novel.db"))?;
+    conn.execute_batch(include_str!("governance_schema.sql"))?;
+    Ok(conn)
+}
+
+/// 写入一条风险（幂等：同 type+volume+chapter+message 未解决时不重复插入）。
+pub fn record_risk(
+    conn: &Connection,
+    risk_type: &str,
+    volume: Option<&str>,
+    chapter: Option<u32>,
+    source: &str,
+    level: &str,
+    message: &str,
+) -> Result<()> {
+    let exists: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM risk_index WHERE risk_type=?1 AND IFNULL(volume,'')=IFNULL(?2,'')
+               AND IFNULL(chapter,0)=IFNULL(?3,0) AND message=?4 AND resolved=0 LIMIT 1",
+            params![risk_type, volume, chapter, message],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if exists.is_none() {
+        conn.execute(
+            "INSERT INTO risk_index(risk_type,volume,chapter,source,message,level)
+             VALUES(?1,?2,?3,?4,?5,?6)",
+            params![risk_type, volume, chapter, source, message, level],
+        )?;
+    }
+    Ok(())
+}
+
+/// 从文本抽取全局 code（大写前缀-NN-NNN）。
+pub fn extract_codes(text: &str) -> Vec<String> {
+    // 算法：先定位 `-NN-NNN` 三段，再向前回吃连续大写字母作前缀。
+    // 这样 `CHAR-90-038` 不会被截成 `HAR-90-038`。
+    let mut out = BTreeSet::new();
+    let chars: Vec<char> = text.chars().collect();
+    let is_d = |c: char| c.is_ascii_digit();
+    let is_up = |c: char| c.is_ascii_uppercase();
+    let mut i = 0usize;
+    while i + 6 < chars.len() {
+        // 期望 chars[i] == '-'
+        if chars[i] == '-'
+            && is_d(chars[i + 1]) && is_d(chars[i + 2])
+            && chars[i + 3] == '-'
+            && is_d(chars[i + 4]) && is_d(chars[i + 5]) && is_d(chars[i + 6])
+        {
+            // 第 7 个字符必须不是数字（防止 -99-0001 误拼）
+            let tail_digit = i + 7 < chars.len() && is_d(chars[i + 7]);
+            if !tail_digit {
+                // 向前回吃大写前缀
+                let mut p = i;
+                while p > 0 && is_up(chars[p - 1]) { p -= 1; }
+                let plen = i - p;
+                // 前缀边界：前一个字符不能是大写或数字
+                let boundary_ok = p == 0 || !(is_up(chars[p - 1]) || is_d(chars[p - 1]));
+                if plen >= 2 && plen <= 5 && boundary_ok {
+                    let prefix: String = chars[p..i].iter().collect();
+                    let d1: String = chars[i + 1..i + 3].iter().collect();
+                    let d2: String = chars[i + 4..i + 7].iter().collect();
+                    out.insert(format!("{prefix}-{d1}-{d2}"));
+                    i += 7;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    out.into_iter().collect()
+}
+
+/// 从 code 提取类型前缀（CHAR / LOCA / EVNT …）。
+pub fn code_prefix(code: &str) -> String {
+    code.split('-').next().unwrap_or("").to_string()
+}
+
+// ────────────────────────────────── 1. audit-layer-health
+
+/// 枚举当前生效 L0~锚点（来自 long_term_memory）+ 可选语义。
+pub fn layer_health(conn: &Connection) -> Result<Vec<LayerEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT category,key,content,priority,IFNULL(source,'') FROM long_term_memory
+         ORDER BY priority, category, key",
+    )?;
+    let rows: Vec<(String, String, String, i64, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
+        .filter_map(|x| x.ok())
+        .collect();
+    let mut out = Vec::new();
+    for (cat, key, content, _pri, source) in rows {
+        let layer = ltm_category_to_layer(&cat, &key).to_string();
+        let chars = content.chars().count();
+        let mut types: Vec<String> = extract_codes(&content).iter().map(|c| code_prefix(c)).collect();
+        types.sort();
+        types.dedup();
+        let mut notes = Vec::new();
+        let mut level = "OK".to_string();
+        if content.trim().is_empty() {
+            notes.push("空条目".into());
+            level = "HIGH-RISK".into();
+        }
+        if chars > 8000 {
+            notes.push(format!("超长条目（{chars} 字 > 8000）"));
+            level = "WARN".into();
+        }
+        if key.trim().is_empty() {
+            notes.push("缺 key".into());
+            level = "HIGH-RISK".into();
+        }
+        if cat.trim().is_empty() {
+            notes.push("缺 category".into());
+            level = "HIGH-RISK".into();
+        }
+        if types.is_empty() && layer == "L4" {
+            notes.push("缺 type（无可识别 code 前缀）".into());
+            if level == "OK" { level = "WARN".into(); }
+        }
+        out.push(LayerEntry { layer, category: cat, key, source, chars, types, level, notes });
+    }
+    Ok(out)
+}
+
+// ────────────────────────────────── 2. library-ctl
+
+/// 扫描 02_资料库 全部 md，提取 层级/分类/key/类型/脏标记 并写入 library_index。
+/// **只建索引，不动原文件**。返回脏条目清单。
+pub fn library_init(conn: &Connection, lib_root: &Path) -> Result<Value> {
+    let base = lib_root.join("02_资料库");
+    let mut files = Vec::new();
+    collect_md(&base, &mut files)?;
+    let mut dirty = Vec::new();
+    let mut total = 0usize;
+    let mut with_code = 0usize;
+    conn.execute("DELETE FROM library_index WHERE layer='L4'", [])?;
+    for f in &files {
+        let rel = f.strip_prefix(lib_root).unwrap_or(f).to_string_lossy().to_string();
+        let txt = std::fs::read_to_string(f).unwrap_or_default();
+        total += 1;
+        // 分类=相对 02_资料库 的首层目录；key=文件名（去扩展名）；code 从 H1 抽取。
+        let category = rel.split('/').nth(1).unwrap_or("").to_string();
+        let key = f.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let codes = extract_codes(&txt);
+        let mut types: Vec<String> = codes.iter().map(|c| code_prefix(c)).collect();
+        types.sort(); types.dedup();
+        if !codes.is_empty() { with_code += 1; }
+        let mut dirty_note = None;
+        if category.is_empty() { dirty_note = Some("缺 category（不在子目录）".to_string()); }
+        else if key.is_empty() { dirty_note = Some("缺 key".to_string()); }
+        else if codes.is_empty() { dirty_note = Some("缺 type（无可识别 code）".to_string()); }
+        let is_dirty = dirty_note.is_some();
+        conn.execute(
+            "INSERT INTO library_index(layer,category,key,source,chars,types,dirty,dirty_note)
+             VALUES('L4',?1,?2,?3,?4,?5,?6,?7)
+             ON CONFLICT(layer,key) DO UPDATE SET category=excluded.category,source=excluded.source,
+               chars=excluded.chars,types=excluded.types,dirty=excluded.dirty,dirty_note=excluded.dirty_note",
+            params![category, key, rel, txt.chars().count(), serde_json::to_string(&types).unwrap(),
+                    if is_dirty {1} else {0}, dirty_note],
+        )?;
+        if let Some(n) = dirty_note { dirty.push(json!({"file": rel, "note": n})); }
+    }
+    Ok(json!({
+        "scanned_md": total,
+        "with_code": with_code,
+        "dirty_count": dirty.len(),
+        "dirty": dirty,
+    }))
+}
+
+fn collect_md(dir: &Path, out: &mut Vec<std::path::PathBuf>) -> Result<()> {
+    if !dir.exists() { return Ok(()); }
+    for e in std::fs::read_dir(dir)? {
+        let p = e?.path();
+        if p.is_dir() { collect_md(&p, out)?; }
+        else if p.extension().map(|x| x == "md").unwrap_or(false) { out.push(p); }
+    }
+    Ok(())
+}
+
+/// 资料库深度巡检（无模型）。
+pub fn library_audit(conn: &Connection, lib_root: &Path) -> Result<Value> {
+    // ① 同 category 疑似重复 key
+    let mut dup = Vec::new();
+    {
+        let mut st = conn.prepare("SELECT category,key,COUNT(*) c FROM library_index WHERE layer='L4' GROUP BY category,key HAVING c>1")?;
+        let it = st.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,i64>(2)?)))?;
+        for x in it.filter_map(|v| v.ok()) { dup.push(json!({"category": x.0, "key": x.1, "count": x.2})); }
+    }
+    // ② v1/v2/v3 多版本残留（文件名含 _vN）
+    let mut versions = Vec::new();
+    {
+        let mut st = conn.prepare("SELECT key,source FROM library_index WHERE layer='L4' AND key LIKE '%_v%'")?;
+        let it = st.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?)))?;
+        for x in it.filter_map(|v| v.ok()) { versions.push(json!({"key": x.0, "source": x.1})); }
+    }
+    // ③ 悬空引用：L3 细纲引用了 code，但 materials 表无此卡
+    let detail = lib_root.join("03_叙事规划/细纲");
+    let mut dangling = Vec::new();
+    let mut l3_refs: BTreeSet<String> = BTreeSet::new();
+    if let Ok(rd) = std::fs::read_dir(&detail) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().map(|x| x == "md").unwrap_or(false) {
+                let txt = std::fs::read_to_string(&p).unwrap_or_default();
+                for c in extract_codes(&txt) { l3_refs.insert(c); }
+            }
+        }
+    }
+    let mut st = conn.prepare("SELECT code FROM materials")?;
+    let have: BTreeSet<String> = st.query_map([], |r| r.get::<_, String>(0))?
+        .filter_map(|x| x.ok()).collect();
+    for c in &l3_refs { if !have.contains(c) { dangling.push(c.clone()); } }
+    // ④ 孤立卡片：materials 有卡，但无任何卷/章节引用（ref_by 为空且不在 l3_refs）
+    let mut orphan = Vec::new();
+    {
+        let mut st = conn.prepare("SELECT code FROM materials")?;
+        let codes: Vec<String> = st.query_map([], |r| r.get::<_, String>(0))?.filter_map(|x| x.ok()).collect();
+        for c in codes {
+            if !l3_refs.contains(&c) { orphan.push(c); }
+        }
+    }
+    // ⑤ 非法标签/type/格式
+    let mut bad = Vec::new();
+    {
+        let mut st = conn.prepare("SELECT source,types FROM library_index WHERE layer='L4'")?;
+        let it = st.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?)))?;
+        for x in it.filter_map(|v| v.ok()) {
+            let ts: Vec<String> = serde_json::from_str(&x.1).unwrap_or_default();
+            if ts.is_empty() { bad.push(json!({"source": x.0, "note": "无 type" })); }
+        }
+    }
+    // 入库风险
+    for d in &dup { record_risk(conn, "library", None, None, "library-ctl audit", "WARN",
+        &format!("疑似重复 key: {} {}", d["category"], d["key"]))?; }
+    for c in &dangling { record_risk(conn, "library", None, None, "library-ctl audit", "HIGH-RISK",
+        &format!("悬空引用：L3 引用 {c} 但 materials 无此卡"))?; }
+    Ok(json!({
+        "dup_key": dup,
+        "version_residue": versions,
+        "dangling_refs": dangling,
+        "orphan_cards_count": orphan.len(),
+        "orphan_cards_sample": orphan.iter().take(20).collect::<Vec<_>>(),
+        "bad_entries": bad,
+        "l3_refs_total": l3_refs.len(),
+        "materials_total": have.len(),
+    }))
+}
+
+/// 导出全部生效 L0~L4 条目为 JSON + Markdown 包（写文件，不动库）。
+pub fn library_export(conn: &Connection, lib_root: &Path, out_dir: &Path) -> Result<Value> {
+    std::fs::create_dir_all(out_dir)?;
+    let layers = layer_health(conn)?;
+    let json_path = out_dir.join("L0-L4_export.json");
+    std::fs::write(&json_path, serde_json::to_string_pretty(&layers)?)?;
+    let mut md = String::from("# 当前生效 L0~L4 条目导出\n\n");
+    for e in &layers {
+        md.push_str(&format!("## [{}] {} / {}\n- 来源: {}\n- 字数: {}\n- 类型: {:?}\n- 结论: {}{}\n\n",
+            e.layer, e.category, e.key, e.source, e.chars, e.types, e.level,
+            if e.notes.is_empty() { String::new() } else { format!("（{}）", e.notes.join("；")) }));
+    }
+    // L4 索引
+    md.push_str("## L4 卡片索引（library_index）\n\n");
+    if let Ok(mut st) = conn.prepare("SELECT category,key,source,chars,dirty FROM library_index WHERE layer='L4' ORDER BY category,key") {
+        if let Ok(it) = st.query_map([], |r| Ok((r.get::<_,Option<String>>(0)?, r.get::<_,String>(1)?, r.get::<_,Option<String>>(2)?, r.get::<_,i64>(3)?, r.get::<_,i64>(4)?))) {
+            for x in it.filter_map(|v| v.ok()) {
+                md.push_str(&format!("- {} / {}（{} 字）{}\n", x.0.unwrap_or_default(), x.1, x.3, if x.4==1 {" ⚠脏"} else {""}));
+            }
+        }
+    }
+    let md_path = out_dir.join("L0-L4_export.md");
+    std::fs::write(&md_path, md)?;
+    Ok(json!({"json": json_path.to_string_lossy(), "markdown": md_path.to_string_lossy(), "entries": layers.len()}))
+}
+
+/// 基于磁盘源重建 LTM 索引（**不覆盖库**，只出清单供人工核对/import_ltm 用）。
+pub fn library_reindex(lib_root: &Path) -> Result<Value> {
+    let pairs = [
+        ("L0", "03_叙事规划/00_整本概括.md"),
+        ("L0.5", "03_叙事规划/00_故事脊梁.md"),
+        ("L1", "03_叙事规划/00_叙事总纲.md"),
+        ("L1x", "03_叙事规划/00_宏大对抗总规划.md"),
+        ("GUARD", "03_叙事规划/护栏·规划约束.md"),
+    ];
+    let mut found = Vec::new();
+    for (layer, rel) in pairs {
+        let p = lib_root.join(rel);
+        let exists = p.exists();
+        let chars = if exists { std::fs::read_to_string(&p).map(|t| t.chars().count()).unwrap_or(0) } else { 0 };
+        found.push(json!({"layer": layer, "source": rel, "exists": exists, "chars": chars}));
+    }
+    Ok(json!({"disk_sources": found, "note": "仅清单；不覆盖库。如需同步 LTM 请手动跑 import_ltm"}))
+}
+
+// ────────────────────────────────── 4. audit-refs / audit-risk-list
+
+/// 全卷引用图谱：【显式引用】= L3 细纲主动写的 code；【被动带入】= 注入包选中但未显式引用。
+pub fn refs_graph(conn: &Connection, lib_root: &Path, volume: &str) -> Result<Value> {
+    let outline = std::fs::read_to_string(lib_root.join("03_叙事规划/细纲").join(format!("{volume}.md"))).unwrap_or_default();
+    // 逐章切分，取每章显式引用
+    let mut per_chapter = Vec::new();
+    let mut cur = 0u32;
+    let mut buf = String::new();
+    for line in outline.lines() {
+        if let Some(rest) = line.trim().strip_prefix("### ") {
+            if cur > 0 {
+                let refs: Vec<String> = extract_codes(&buf);
+                per_chapter.push(json!({"chapter": cur, "explicit_refs": refs}));
+            }
+            cur = rest.trim_start_matches('第').split(|c: char| !c.is_ascii_digit()).next().unwrap_or("0").parse().unwrap_or(0);
+            buf.clear();
+        } else { buf.push_str(line); buf.push('\n'); }
+    }
+    if cur > 0 { let refs: Vec<String> = extract_codes(&buf); per_chapter.push(json!({"chapter": cur, "explicit_refs": refs})); }
+    let _ = conn;
+    Ok(json!({"volume": volume, "chapters": per_chapter.len(), "per_chapter": per_chapter}))
+}
+
+/// 风险清单（支持只看未解决）。
+pub fn risk_list(conn: &Connection, unresolved_only: bool) -> Result<Value> {
+    let sql = if unresolved_only {
+        "SELECT id,risk_type,IFNULL(volume,''),IFNULL(chapter,0),source,level,message,ts,resolved FROM risk_index WHERE resolved=0 ORDER BY level DESC, id DESC"
+    } else {
+        "SELECT id,risk_type,IFNULL(volume,''),IFNULL(chapter,0),source,level,message,ts,resolved FROM risk_index ORDER BY id DESC"
+    };
+    let mut st = conn.prepare(sql)?;
+    let rows: Vec<Value> = st.query_map([], |r| Ok(json!({
+        "id": r.get::<_,i64>(0)?, "risk_type": r.get::<_,String>(1)?,
+        "volume": r.get::<_,String>(2)?, "chapter": r.get::<_,i64>(3)?,
+        "source": r.get::<_,String>(4)?, "level": r.get::<_,String>(5)?,
+        "message": r.get::<_,String>(6)?, "ts": r.get::<_,String>(7)?,
+        "resolved": r.get::<_,i64>(8)?,
+    }))).map(|it| it.filter_map(|x| x.ok()).collect()).unwrap_or_default();
+    let counts: BTreeMap<String, i64> = {
+        let mut m = BTreeMap::new();
+        if let Ok(mut s2) = conn.prepare("SELECT level,COUNT(*) FROM risk_index WHERE resolved=0 GROUP BY level") {
+            if let Ok(it) = s2.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,i64>(1)?))) {
+                for x in it.filter_map(|v| v.ok()) { m.insert(x.0, x.1); }
+            }
+        }
+        m
+    };
+    Ok(json!({"total": rows.len(), "unresolved_by_level": counts, "items": rows}))
+}
+
+// ────────────────────────────────── 5. lib-checkpoint
+
+/// 里程碑快照：checkpoint + 导出 L0~L4 清单 + 章节索引（**不自动执行**）。
+pub fn lib_checkpoint(conn: &Connection, lib_root: &Path, out_root: &Path) -> Result<Value> {
+    let ts = chrono_like_now();
+    let dir = out_root.join(format!("checkpoint_{ts}"));
+    std::fs::create_dir_all(&dir)?;
+    // ① wal_checkpoint(TRUNCATE)
+    let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get::<_, i64>(0));
+    // ② 干净库快照
+    let snap = dir.join("novel.db");
+    conn.execute("VACUUM INTO ?1", params![snap.to_string_lossy()])?;
+    // ③ L0~L4 清单
+    let layers = layer_health(conn)?;
+    std::fs::write(dir.join("layers.json"), serde_json::to_string_pretty(&layers)?)?;
+    // ④ 章节索引
+    let mut chapters = Vec::new();
+    if let Ok(mut st) = conn.prepare("SELECT volume,chapter,status,IFNULL(chars,0) FROM chapters") {
+        if let Ok(it) = st.query_map([], |r| Ok(json!({"volume":r.get::<_,String>(0)?,"chapter":r.get::<_,i64>(1)?,"status":r.get::<_,String>(2)?}))) {
+            for x in it.filter_map(|v| v.ok()) { chapters.push(x); }
+        }
+    }
+    std::fs::write(dir.join("chapters.json"), serde_json::to_string_pretty(&chapters)?)?;
+    Ok(json!({"dir": dir.to_string_lossy(), "db_snapshot": snap.to_string_lossy(), "layers": layers.len(), "chapters": chapters.len()}))
+}
+
+
+/// 幂等补齐 chapter_meta 治理列（已存在则跳过）。只 ADD COLUMN，不改既有列。
+pub fn ensure_chapter_meta_gov_cols(conn: &Connection) -> Result<()> {
+    let mut have = std::collections::HashSet::new();
+    {
+        let mut st = conn.prepare("PRAGMA table_info(chapter_meta)")?;
+        let it = st.query_map([], |r| r.get::<_, String>(1))?;
+        for x in it.filter_map(|v| v.ok()) { have.insert(x); }
+    }
+    let cols = [
+        ("compliance_level", "TEXT DEFAULT ''"),
+        ("compliance_note", "TEXT DEFAULT ''"),
+        ("compliance_check_ts", "TEXT DEFAULT ''"),
+        ("refs_l3", "TEXT DEFAULT '[]'"),
+        ("refs_l4", "TEXT DEFAULT '[]'"),
+    ];
+    for (name, ty) in cols {
+        if !have.contains(name) {
+            conn.execute(&format!("ALTER TABLE chapter_meta ADD COLUMN {name} {ty}"), [])?;
+        }
+    }
+    Ok(())
+}
+
+/// 回写合规结论（只更新指定章的 3 列，不碰正文）。
+pub fn set_compliance(
+    conn: &Connection, volume: &str, chapter: u32, level: &str, note: &str,
+) -> Result<()> {
+    ensure_chapter_meta_gov_cols(conn)?;
+    conn.execute(
+        "UPDATE chapter_meta SET compliance_level=?1, compliance_note=?2,
+           compliance_check_ts=datetime('now') WHERE volume=?3 AND chapter=?4",
+        params![level, note, volume, chapter],
+    )?;
+    Ok(())
+}
+
+/// 回写本章 refs（显式 L3 引用集合、L4 key 集合）。
+pub fn set_refs(conn: &Connection, volume: &str, chapter: u32, refs_l3: &[String], refs_l4: &[String]) -> Result<()> {
+    ensure_chapter_meta_gov_cols(conn)?;
+    conn.execute(
+        "UPDATE chapter_meta SET refs_l3=?1, refs_l4=?2 WHERE volume=?3 AND chapter=?4",
+        params![serde_json::to_string(refs_l3)?, serde_json::to_string(refs_l4)?, volume, chapter],
+    )?;
+    Ok(())
+}
+
+// ────────────────────────────────── 3. audit-chapter-compliance
+
+/// 合规复核（--semantic 后才由调用方传 llm）；此处组装权威基准文本。
+pub fn compliance_baseline(conn: &Connection, lib_root: &Path, volume: &str, chapter: u32) -> Result<(String, Vec<String>, Vec<String>)> {
+    // 权威基准 = 全套 L0~L4 + 本卷锚点（截断防爆）
+    let layers = layer_health(conn)?;
+    let mut base = String::from("# 权威基准（L0≫L0.5≫L1≫L1x≫锚点≫L3≫L4）
+");
+    for e in &layers {
+        base.push_str(&format!("
+## [{}] {}
+", e.layer, e.key));
+        // 只取前 800 字作基准（避免超大）
+        if let Ok(mut st) = conn.prepare("SELECT substr(content,1,800) FROM long_term_memory WHERE category=?1 AND key=?2") {
+            if let Ok(v) = st.query_row(params![e.category, e.key], |r| r.get::<_, String>(0)) {
+                base.push_str(&v); base.push('\n');
+            }
+        }
+    }
+    // 本卷 L3 细纲本章显式引用 + L4 卡片
+    let outline = std::fs::read_to_string(lib_root.join("03_叙事规划/细纲").join(format!("{volume}.md"))).unwrap_or_default();
+    // 简单切本章
+    let mut cur = 0u32; let mut buf = String::new(); let mut this = String::new();
+    for line in outline.lines() {
+        if let Some(rest) = line.trim().strip_prefix("### ") {
+            if cur == chapter { this = buf.clone(); }
+            cur = rest.trim_start_matches('第').split(|c: char| !c.is_ascii_digit()).next().unwrap_or("0").parse().unwrap_or(0);
+            buf.clear();
+        } else { buf.push_str(line); buf.push('\n'); }
+    }
+    if cur == chapter { this = buf; }
+    let refs_l3 = extract_codes(&this);
+    let mut refs_l4 = Vec::new();
+    for c in &refs_l3 {
+        if let Ok(mut st) = conn.prepare("SELECT code FROM materials WHERE code=?1 LIMIT 1") {
+            if st.query_row(params![c], |r| r.get::<_, String>(0)).is_ok() { refs_l4.push(c.clone()); }
+        }
+    }
+    base.push_str(&format!("
+## 本章 L3 细纲（第{chapter}章）
+{}", this));
+    Ok((base, refs_l3, refs_l4))
+}
+
+fn chrono_like_now() -> String {
+    // 避免引入新依赖：用系统时间手拼。
+    let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    format!("{}", d.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// code 抽取必须完整：CHAR-90-038 不得被截成 HAR-90-038。
+    #[test]
+    fn extract_codes_keeps_full_prefix() {
+        let t = "主角 CHAR-90-038 与 CIVI-99-014、FORE-99-020、ITEM-99-005，坐标 -10-20。";
+        let c = extract_codes(t);
+        assert!(c.contains(&"CHAR-90-038".to_string()), "got {c:?}");
+        assert!(c.contains(&"CIVI-99-014".to_string()), "got {c:?}");
+        assert!(c.contains(&"FORE-99-020".to_string()), "got {c:?}");
+        assert!(c.contains(&"ITEM-99-005".to_string()), "got {c:?}");
+        assert!(!c.iter().any(|x| x.starts_with("HAR-")), "不应有截断前缀: {c:?}");
+    }
+
+    /// 层级优先级：L0 > L0.5 > L1 > L1x > ANCHOR。
+    #[test]
+    fn layer_priority_supremacy() {
+        assert!(layer_priority("L0") > layer_priority("L0.5"));
+        assert!(layer_priority("L0.5") > layer_priority("L1"));
+        assert!(layer_priority("L1") > layer_priority("L1x"));
+        assert!(layer_priority("L1x") > layer_priority("ANCHOR"));
+        assert!(layer_priority("ANCHOR") > layer_priority("L3"));
+    }
+
+    /// category→layer 映射。
+    #[test]
+    fn category_maps_to_layer() {
+        assert_eq!(ltm_category_to_layer("顶层设定", "整本概括"), "L0");
+        assert_eq!(ltm_category_to_layer("顶层设定", "故事脊梁"), "L0.5");
+        assert_eq!(ltm_category_to_layer("分卷大纲", "叙事总纲"), "L1");
+        assert_eq!(ltm_category_to_layer("分卷大纲", "宏大对抗总规划"), "L1x");
+        assert_eq!(ltm_category_to_layer("锚点元", "跨卷线锚点表"), "ANCHOR");
+    }
+}

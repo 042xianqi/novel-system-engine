@@ -1,0 +1,14 @@
+第 25 章（卷01） 804 字 · 门禁 REJECT
+  已落盘：/sdcard/Download/小说相关备份/projects/projects/系统/资料库/04_正文/卷01/第25章.md
+  P0 1 · P1 4
+  P1-PARAGRAPH_FIX 修改段落数：3
+  · P0 G03_shuang_interval: 滚动5章0大爽点
+  · P1 G02_hook_density: 章末钩密度不足（命中0<1）
+  · P1 G13_scoring_67dim: 确定性维度不达标：["字数"]
+  · P1 G13_scoring_67dim: 库规模未达标：人物数量达标(242/249)，地点数量达标(41/146)，事件数量达标(98/156)
+  · P1 P1_PARAGRAPH: P1-PARAGRAPH_FIX 修改段落数：3
+  · P1-PARAGRAPH_FIX 修改段落数：3（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch25 dominant=calm
+  · 情绪回写 CHAR-99-001: ch25 dominant=fear
+  · 记忆回写：提取 1 项，警告 0，裁旧 17 章
+  · chapter_meta 已存档（in≈1145 / out≈722 token）

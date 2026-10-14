@@ -26,6 +26,7 @@ pub mod dual_agent;
 pub mod harness;
 pub mod mcp;
 pub mod memory;
+pub mod governance;
 pub mod memory_system;
 pub mod novel_ctx;
 pub mod output_retention;

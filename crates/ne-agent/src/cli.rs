@@ -186,6 +186,60 @@ pub enum Cmd {
         /// 省略则用默认值 true。
         #[arg(long, num_args = 0..=1, default_value_t = true, default_missing_value = "true")]
         use_memory: bool,
+        /// 落盘后可选合规复核（默认关闭；开启只记录 refs/待评，不改生成内容）
+        #[arg(long)]
+        check_compliance: bool,
+    },
+    /// L0~锚点层级健康巡检（独立外挂；--semantic 默认关闭）
+    AuditLayerHealth {
+        /// 开启后才调轻量模型做语义检查
+        #[arg(long)]
+        semantic: bool,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
+    /// 资料库整套治理工具集
+    LibraryCtl {
+        #[command(subcommand)]
+        cmd: LibraryCtlCmd,
+    },
+    /// 章节合规复核（独立外挂；--semantic 开启才调模型）
+    AuditChapterCompliance {
+        #[arg(long, default_value_t = 0)]
+        from: u32,
+        #[arg(long)]
+        to: Option<u32>,
+        #[arg(long, default_value = "卷01")]
+        volume: String,
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+        /// 开启才调模型
+        #[arg(long)]
+        semantic: bool,
+    },
+    /// 全卷引用图谱（显式引用 vs 上下文带入）
+    AuditRefs {
+        #[arg(long, default_value = "卷01")]
+        volume: String,
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
+    /// 风险清单（默认只看未解决）
+    AuditRiskList {
+        /// 列出已解决的风险
+        #[arg(long)]
+        all: bool,
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
+    /// 里程碑快照（仅提供能力，不自动执行）
+    LibCheckpoint {
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+        /// 输出目录（默认 <库根>/09_冷备份）
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// 只读审计：验证生成链路实际取材覆盖面（不调模型、不写库）
     AuditMaterialCoverage {
@@ -378,4 +432,23 @@ pub enum ModelsCmd {
     List,
     /// 校验配置能否组装出可用的 LlmParams（不发请求）
     Check,
+}
+
+
+#[derive(Subcommand, Debug)]
+pub enum LibraryCtlCmd {
+    /// 资料库标准化初始化（只建索引、只标记脏数据，不动原文件）
+    Init,
+    /// 资料库深度巡检（--semantic 默认关闭）
+    Audit {
+        #[arg(long)]
+        semantic: bool,
+    },
+    /// 导出生效 L0~L4 条目为 JSON+Markdown
+    Export {
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// 基于磁盘源重建 LTM 索引清单（不覆盖库）
+    Reindex,
 }

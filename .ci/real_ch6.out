@@ -1,0 +1,15 @@
+第 6 章（卷01） 2149 字 · 门禁 REJECT
+  已落盘：/sdcard/Download/小说相关备份/projects/projects/系统/资料库/04_正文/卷01/第6章.md
+  P0 1 · P1 3
+  P1-PARAGRAPH_FIX 修改段落数：17
+  · P0 G03_shuang_interval: 滚动5章0大爽点
+  · P1 G02_hook_density: 章末钩密度不足（命中0<1）
+  · P1 G13_scoring_67dim: 库规模未达标：人物数量达标(242/249)，地点数量达标(41/146)，事件数量达标(98/156)
+  · P1 P1_PARAGRAPH: P1-PARAGRAPH_FIX 修改段落数：17
+  · P1-PARAGRAPH_FIX 修改段落数：17（仅排版，文字未改）
+  · 情绪回写 CHAR-90-038: ch6 dominant=calm
+  · 情绪回写 CHAR-99-001: ch6 dominant=fear
+  · 情绪回写 CHAR-99-097: ch6 dominant=—
+  · 记忆回写：提取 1 项，警告 1，裁旧 0 章
+  · 记忆警告：锚点出现多个候选词 ["锚点", "推演"]，未写入快照（待人工复核）
+  · chapter_meta 已存档（in≈1124 / out≈1908 token）

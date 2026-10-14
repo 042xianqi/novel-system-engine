@@ -13,7 +13,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use crate::cli::{Cli, Cmd, McpCmd, ModelsCmd, VaultCmd};
+use crate::cli::{Cli, Cmd, LibraryCtlCmd, McpCmd, ModelsCmd, VaultCmd};
 use ne_agent::{RuntimeConfig, Vault};
 use std::path::{Path, PathBuf};
 
@@ -85,8 +85,42 @@ fn run() -> Result<()> {
         Cmd::Fix { chap_id, volume, lib, findings, dry_run } => {
             run_fix(&vault, *chap_id, volume, lib.as_deref(), findings.as_deref(), *dry_run)
         }
-        Cmd::Novel { chap_id, volume, lib, dry_run, prompt_only, use_memory } => {
-            run_novel(&vault, *chap_id, volume, lib.as_deref(), *dry_run, *prompt_only, *use_memory, cli.json)
+        Cmd::Novel { chap_id, volume, lib, dry_run, prompt_only, use_memory, check_compliance } => {
+            let r = run_novel(&vault, *chap_id, volume, lib.as_deref(), *dry_run, *prompt_only, *use_memory, cli.json);
+            // 可选：落盘后独立做一次治理登记（默认关；只记录 refs/待评，不改正文）
+            if *check_compliance && r.is_ok() {
+                let lib_root = lib.clone().unwrap_or_else(|| vault.workspace());
+                if let Ok(conn) = ne_agent::governance::open_gov(&lib_root) {
+                    if let Ok((_b, r3, r4)) = ne_agent::governance::compliance_baseline(&conn, &lib_root, volume, *chap_id) {
+                        let _ = ne_agent::governance::set_refs(&conn, volume, *chap_id, &r3, &r4);
+                    }
+                }
+            }
+            return r;
+        }
+        Cmd::AuditLayerHealth { semantic, lib } => {
+            let lib_root = lib.clone().unwrap_or_else(|| vault.workspace());
+            run_layer_health(&lib_root, *semantic, cli.json)
+        }
+        Cmd::LibraryCtl { cmd } => {
+            let lib_root = cli.work_root.clone().unwrap_or_else(|| vault.workspace());
+            run_library_ctl(&lib_root, cmd, cli.json)
+        }
+        Cmd::AuditChapterCompliance { from, to, volume, lib, semantic } => {
+            let lib_root = lib.clone().unwrap_or_else(|| vault.workspace());
+            run_compliance(&vault, &lib_root, *from, *to, volume, *semantic, cli.json)
+        }
+        Cmd::AuditRefs { volume, lib } => {
+            let lib_root = lib.clone().unwrap_or_else(|| vault.workspace());
+            run_refs(&lib_root, volume, cli.json)
+        }
+        Cmd::AuditRiskList { all, lib } => {
+            let lib_root = lib.clone().unwrap_or_else(|| vault.workspace());
+            run_risk_list(&lib_root, !*all, cli.json)
+        }
+        Cmd::LibCheckpoint { lib, out } => {
+            let lib_root = lib.clone().unwrap_or_else(|| vault.workspace());
+            run_checkpoint(&lib_root, out.clone(), cli.json)
         }
         Cmd::AuditMaterialCoverage { from, to, volume, lib } => {
             let lib_root = lib.clone().unwrap_or_else(|| vault.workspace());
@@ -727,4 +761,98 @@ fn print_audit_batch(rep: &serde_json::Value) {
             );
         }
     }
+}
+
+
+// ─────────────────────────── 治理工具实现（独立外挂，默认只读/默认关）
+
+fn run_layer_health(lib_root: &Path, semantic: bool, json: bool) -> Result<()> {
+    let conn = ne_agent::governance::open_gov(lib_root)?;
+    let entries = ne_agent::governance::layer_health(&conn)?;
+    // 入库风险
+    for e in &entries {
+        if e.level != "OK" {
+            ne_agent::governance::record_risk(&conn, "layer_health", None, None,
+                "audit-layer-health", &e.level, &format!("{} / {}: {}", e.layer, e.key, e.notes.join("；")))?;
+        }
+    }
+    if json {
+        println!("{}", serde_json::to_string_pretty(&entries)?);
+    } else {
+        println!("== L0~锚点 层级健康巡检（{} 条）==", entries.len());
+        for e in &entries {
+            println!("[{:8}] {:6} {} / {}（{} 字）{:?} {}", e.level, e.layer, e.category, e.key, e.chars, e.types,
+                if e.notes.is_empty() { String::new() } else { format!("← {}", e.notes.join("；")) });
+        }
+    }
+    if semantic {
+        eprintln!("[提示] --semantic 需要模型；当前为无模型元检查。语义检查请由上层 agent 调 LLM（本工具只产基准文本，不自行调用）。");
+    }
+    Ok(())
+}
+
+fn run_library_ctl(lib_root: &Path, cmd: &LibraryCtlCmd, json: bool) -> Result<()> {
+    let conn = ne_agent::governance::open_gov(lib_root)?;
+    let out = match cmd {
+        LibraryCtlCmd::Init => ne_agent::governance::library_init(&conn, lib_root)?,
+        LibraryCtlCmd::Audit { semantic: _ } => ne_agent::governance::library_audit(&conn, lib_root)?,
+        LibraryCtlCmd::Export { out } => {
+            let dir = out.clone().unwrap_or_else(|| lib_root.join("07_勘误工坊/export"));
+            ne_agent::governance::library_export(&conn, lib_root, &dir)?
+        }
+        LibraryCtlCmd::Reindex => ne_agent::governance::library_reindex(lib_root)?,
+    };
+    if json { println!("{}", serde_json::to_string_pretty(&out)?); }
+    else { println!("{}", serde_json::to_string_pretty(&out)?); }
+    Ok(())
+}
+
+fn run_compliance(vault: &Vault, lib_root: &Path, from: u32, to: Option<u32>, volume: &str, _semantic: bool, json: bool) -> Result<()> {
+    let conn = ne_agent::governance::open_gov(lib_root)?;
+    let lo = if from == 0 { 1 } else { from };
+    let hi = to.unwrap_or(lo);
+    let mut out = Vec::new();
+    for ch in lo..=hi {
+        let (_base, refs_l3, refs_l4) = ne_agent::governance::compliance_baseline(&conn, lib_root, volume, ch)?;
+        ne_agent::governance::set_refs(&conn, volume, ch, &refs_l3, &refs_l4)?;
+        // 无模型时只登记基准与 refs；合规等级交由上层 agent 写入
+        out.push(serde_json::json!({"chapter": ch, "refs_l3": refs_l3, "refs_l4": refs_l4, "level": "(未评)"}));
+    }
+    let _ = vault;
+    if json { println!("{}", serde_json::to_string_pretty(&out)?); }
+    else { println!("合规基准已生成/refs 已回写：{} 章", out.len()); }
+    Ok(())
+}
+
+fn run_refs(lib_root: &Path, volume: &str, json: bool) -> Result<()> {
+    let conn = ne_agent::governance::open_gov(lib_root)?;
+    let g = ne_agent::governance::refs_graph(&conn, lib_root, volume)?;
+    if json { println!("{}", serde_json::to_string_pretty(&g)?); }
+    else { println!("{}", serde_json::to_string_pretty(&g)?); }
+    Ok(())
+}
+
+fn run_risk_list(lib_root: &Path, unresolved_only: bool, json: bool) -> Result<()> {
+    let conn = ne_agent::governance::open_gov(lib_root)?;
+    let r = ne_agent::governance::risk_list(&conn, unresolved_only)?;
+    if json { println!("{}", serde_json::to_string_pretty(&r)?); }
+    else {
+        println!("== 风险清单（unresolved_only={unresolved_only}）total={} ==", r["total"]);
+        if let Some(items) = r["items"].as_array() {
+            for it in items.iter().take(50) {
+                println!("[{}] #{} {} {} :: {}", it["level"], it["id"], it["risk_type"],
+                    it["volume"].as_str().unwrap_or(""), it["message"].as_str().unwrap_or(""));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn run_checkpoint(lib_root: &Path, out: Option<PathBuf>, json: bool) -> Result<()> {
+    let conn = ne_agent::governance::open_gov(lib_root)?;
+    let dir = out.unwrap_or_else(|| lib_root.join("09_冷备份"));
+    let r = ne_agent::governance::lib_checkpoint(&conn, lib_root, &dir)?;
+    if json { println!("{}", serde_json::to_string_pretty(&r)?); }
+    else { println!("里程碑包：{}", r["dir"]); }
+    Ok(())
 }

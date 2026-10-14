@@ -84,7 +84,10 @@ def main():
     ap.add_argument('--delay-min', type=float, default=None)
     ap.add_argument('--delay-max', type=float, default=None)
     ap.add_argument('--no-snapshot', action='store_true', help='跳过每轮快照（预演时可省）')
+    ap.add_argument('--retries', type=int, default=None,
+                    help='real 模式下 transport 类失败（BACKEND_ERROR）的单卡重试次数，默认 2；dry/locked 不重试')
     a = ap.parse_args()
+    retries = a.retries if a.retries is not None else (2 if a.mode == 'real' else 0)
 
     # 软限流：real 默认 8~12s；dry/locked 默认 0.2~0.5s（仍走休眠链路，验证调度）
     if a.delay_min is not None and a.delay_max is not None:
@@ -133,7 +136,16 @@ def main():
                 args['real_semantic'] = False
             else:  # real
                 args['real_semantic'] = True
-            err, r = sess.call('wg_inspect_card', args)
+            attempt, err, r = 0, True, None
+            while True:
+                err, r = sess.call('wg_inspect_card', args)
+                st = r.get('status', '?') if isinstance(r, dict) else '?'
+                if st != 'BACKEND_ERROR' or attempt >= retries:
+                    break
+                attempt += 1
+                wait = 5.0 * attempt  # 线性退避 5s/10s…
+                print(f"    ↻ {key} 第 {attempt} 次 transport 失败，退避 {wait:.0f}s 后重试…")
+                time.sleep(wait)
             status = r.get('status', 'DRY_RENDER' if a.mode == 'dry' else '?') if isinstance(r, dict) else '?'
             if a.mode == 'dry' and isinstance(r, dict) and r.get('dry_run'):
                 status = 'DRY_RENDER'

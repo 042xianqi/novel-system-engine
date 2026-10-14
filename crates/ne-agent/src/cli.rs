@@ -541,6 +541,28 @@ pub enum WorldGovCmd {
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,
     },
+    /// 【调试】prompt_builder 预览：探针 JSON → 结构化 prompt 文本（**独立于推理管线，零外呼**）
+    #[command(hide = true)]
+    PromptPreview {
+        /// 探针类型：inspect-card | scan-library | check-outline
+        #[arg(long)]
+        kind: String,
+        /// inspect-card：卡片 key（走真实探针产出）；与 --probe-file 二选一
+        #[arg(long)]
+        key: Option<String>,
+        /// 直接读探针 JSON 文件（scan-library/check-outline 报告或 inspect-card 探针包）
+        #[arg(long)]
+        probe_file: Option<PathBuf>,
+        /// check-outline：卷名（走真实探针产出）；与 --probe-file 二选一
+        #[arg(long)]
+        volume: Option<String>,
+        /// 打印完整 user（默认只打印统计 + 前 800 字）
+        #[arg(long)]
+        full: bool,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand, Debug)]

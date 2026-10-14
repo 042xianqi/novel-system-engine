@@ -1126,6 +1126,93 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool) 
                 println!("端点配置：{}", cfg.safe_snapshot());
             }
         }
+        WorldGovCmd::PromptPreview { kind, key, probe_file, volume, full, lib: _ } => {
+            use ne_agent::governance::prompt_builder as pb;
+            // ① 取探针 payload：优先文件；否则走真实探针产出（纯只读、零外呼）
+            let payload: serde_json::Value = if let Some(pf) = probe_file {
+                let raw = std::fs::read_to_string(pf)
+                    .with_context(|| format!("读取探针文件失败: {}", pf.display()))?;
+                serde_json::from_str(&raw)
+                    .with_context(|| format!("探针文件不是合法 JSON: {}", pf.display()))?
+            } else {
+                match kind.as_str() {
+                    "inspect-card" => {
+                        let k = key.as_deref().ok_or_else(|| {
+                            anyhow::anyhow!("inspect-card 预览需 --key 或 --probe-file")
+                        })?;
+                        let r = world_gov::inspect_card(&conn, lib_root, k)?;
+                        if r["status"] == "NOT_FOUND" {
+                            println!("未找到 key={k}（不做任何判定）");
+                            return Ok(());
+                        }
+                        r["probe_pack"].clone()
+                    }
+                    "check-outline" => {
+                        let v = volume.as_deref().unwrap_or("卷01");
+                        world_gov::check_outline(&conn, lib_root, v, false, true)?
+                    }
+                    "scan-library" => anyhow::bail!(
+                        "scan-library 预览请用 --probe-file 指向 scan_probe_*.json（或先落盘再预览）"
+                    ),
+                    other => anyhow::bail!(
+                        "未知探针类型 '{other}'（inspect-card | scan-library | check-outline）"
+                    ),
+                }
+            };
+            // ② inspect-card 若传的是整包报告，卸出 probe_pack
+            let payload = if kind == "inspect-card" {
+                payload.get("probe_pack").cloned().unwrap_or(payload)
+            } else {
+                payload
+            };
+            // ③ 组装（纯规则层：零外呼、零推理、零落盘）
+            let built = pb::build_by_kind(kind, &payload)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "command": "world-gov prompt-preview",
+                    "kind": kind,
+                    "system_chars": built.system.chars().count(),
+                    "user_chars": built.user.chars().count(),
+                    "stats": built.stats,
+                    "provenance": built.provenance_index(),
+                    "system": built.system,
+                    "user": if *full { built.user.clone() }
+                            else { built.user.chars().take(800).collect::<String>() },
+                    "note": "规则层预览：零外呼、不写库、不推理。",
+                }))?);
+            } else {
+                println!("== prompt-preview（规则层预览；零外呼/零推理/零落盘）==");
+                println!("类型: {kind}");
+                println!(
+                    "片段数: {}  截断段: {}  user 总量: {} 字  总量降级: {}",
+                    built.stats.section_count, built.stats.truncated_sections,
+                    built.stats.total_chars, built.stats.truncated_total
+                );
+                println!(
+                    "预算: 单段 ≤{} 字 / 总量 ≤{} 字",
+                    built.stats.max_section_chars, built.stats.max_total_chars
+                );
+                println!("\n── system（{} 字）──\n{}", built.system.chars().count(), built.system);
+                println!("── 溯源总表（{} 段）──", built.sections.len());
+                for s in &built.sections {
+                    println!(
+                        "  [{}] {} ← {} @{}  {} 字{}",
+                        s.layer, s.key, s.heading, s.found_in, s.text.chars().count(),
+                        if s.truncated { "（已裁剪）" } else { "" }
+                    );
+                }
+                println!(
+                    "\n── user（{} 字{}）──",
+                    built.user.chars().count(),
+                    if *full { "" } else { "，仅示前 800 字" }
+                );
+                if *full {
+                    println!("{}", built.user);
+                } else {
+                    println!("{}", built.user.chars().take(800).collect::<String>());
+                }
+            }
+        }
         WorldGovCmd::Queue { cmd } => {
             use ne_agent::governance::pipeline as pipe;
             use ne_agent::governance::pipeline_store as store;

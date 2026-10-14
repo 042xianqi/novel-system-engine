@@ -294,19 +294,12 @@ pub fn inspect_card(conn: &Connection, lib_root: &Path, key: &str) -> Result<Val
 }
 
 /// 组装 `--semantic` 用的对话消息（system, user）。main.rs 负责真正调用模型。
+///
+/// **自第 6 批起委托给 `governance::prompt_builder`**（单一事实源）：
+/// 结构化片段 + 溯源标记 + 裁剪防护统一在那里实现，避免此处另起一套。
 pub fn semantic_messages(probe: &Value) -> (String, String) {
-    let system = "你是《残响之河》的**世界观法务官**。法理优先级：L0 ≫ L0.5 ≫ L1 ≫ L1x ≫ ANCHOR ≫ GUARD ≫ L3 ≫ L4；\
-上层是法理来源，下层只能细化/实例化，不得反向否定。\n\
-你的任务：只出**证据与建议**，不改写、不删改任何内容。\n\
-铁律：\n\
-1) 判“冲突/违背”必须引用**上层基线的原话或原文片段**作为依据，找不到依据一律判 UNCERTAIN，禁止幻觉式报警。\n\
-2) 输出严格 JSON：{\"key\":\"...\",\"verdict\":\"OK|WARN|HIGH-RISK|UNCERTAIN\",\"findings\":[{\"kind\":\"内部矛盾|推翻上层|法理倒转|应遵从约束\",\"law_ref\":\"违反/依据的上层条目key与原话\",\"card_snippet\":\"卡片原文片段\",\"explain\":\"...\",\"suggest\":\"仅供人参考\"}]}。\n\
-3) 无法确证的一律进 findings 且 kind 标注清楚、verdict 至少 UNCERTAIN。";
-    let user = format!(
-        "【待检视卡片探针包】\n{}\n\n请按上述 JSON 格式输出检视结论。",
-        serde_json::to_string_pretty(probe).unwrap_or_default()
-    );
-    (system.to_string(), user.to_string())
+    let built = crate::governance::prompt_builder::build_inspect_prompt(probe);
+    (built.system, built.user)
 }
 
 /// 解析模型返回（宽容）：能解析出 JSON 就用，否则整体标 UNCERTAIN。

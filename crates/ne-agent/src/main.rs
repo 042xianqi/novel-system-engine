@@ -2391,7 +2391,7 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                 }
             }
         }
-        WorldGovCmd::InspectBatch { from_scan, id_list, since, slice, dry_run, enqueue, persist, all_layers, with_tag, without_tag, real_semantic, lib: _ } => {
+        WorldGovCmd::InspectBatch { from_scan, id_list, since, slice, dry_run, list_keys, enqueue, persist, all_layers, with_tag, without_tag, real_semantic, lib: _ } => {
             use ne_agent::governance::inspect_batch as ib;
             use ne_agent::governance::progress;
             // 第 13 批：--real-semantic 是三重锁的命令行锁；未全开则明确拦截，绝不外呼。
@@ -2459,6 +2459,12 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                 a.iter().filter_map(|v| v.as_str().map(String::from)).collect()
             }).unwrap_or_default();
             progress::emit(quiet, "inspect-batch", 1, 1, Some(0));
+            // 【第 18.2 批】--list-keys：只输出 key 清单（每行一个，纯文本），不推理/不落库/不入队。
+            // 供 shell 脚本逐卡消费（如受控试运行 scripts）。
+            if *list_keys {
+                for k in &keys { println!("{k}"); }
+                return Ok(());
+            }
             // 第 17 批：--dry-run + --real-semantic → 只渲染**报文预览**（不发送、不写缓存、不需闸门）。
             let mut preview: Option<serde_json::Value> = None;
             if *dry_run && *real_semantic {

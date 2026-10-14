@@ -683,6 +683,9 @@ pub enum WorldGovCmd {
         /// 只算数量，不写任何任务/探针
         #[arg(long)]
         dry_run: bool,
+        /// 【第 18.2 批】只输出 key 清单（每行一个，纯文本，便于脚本消费）；不推理、不落库
+        #[arg(long)]
+        list_keys: bool,
         /// 入队（默认只预览不入队）
         #[arg(long)]
         enqueue: bool,

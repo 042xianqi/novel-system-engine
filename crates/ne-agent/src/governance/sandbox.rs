@@ -459,6 +459,122 @@ pub fn delete(conn: &Connection, run_id: i64) -> Result<bool> {
     Ok(n > 0)
 }
 
+/// 从逻辑快照派生沙箱初始态（第 17 批）—— **只读**，不落库、不推演。
+///
+/// 快照只存索引元信息（key/layer/mtime/hash），不含正文；故派生出的沙箱
+/// `world` 采用**确定性**映射：以快照条目数与元指纹为相位输入，绝不臆造剧情数值。
+/// `--save` 才把该初始态作为 scenario 落库成一条 0 步基线记录（可选）。
+pub fn spawn_from_snapshot(
+    conn: &Connection,
+    lib_root: &Path,
+    snap_id: &str,
+    save: bool,
+) -> Result<Value> {
+    ensure_table(conn)?;
+    let meta = crate::governance::diff_snapshot::read_meta(conn, snap_id)?;
+    let Some(meta) = meta else {
+        return Ok(json!({
+            "command": "world-gov sandbox spawn",
+            "status": "SNAPSHOT_NOT_FOUND",
+            "snap_id": snap_id,
+            "note": "未找到该快照；先 world-gov diff snap create --label ...",
+        }));
+    };
+    let n = meta.len();
+    let meta_fp = crate::governance::diff_snapshot::meta_fingerprint(&meta);
+    // 确定性初始相：由快照规模 + 指纹首字节派生（纯函数，可重放；不涉剧情语义）。
+    let b0 = u8::from_str_radix(meta_fp.get(0..2).unwrap_or("00"), 16).unwrap_or(0);
+    let phase = 30.0 + (b0 as f64 / 255.0) * 40.0; // [30,70)
+    let scenario = json!({
+        "steps": 0,
+        "world": {
+            "chapter": 0, "last_chapter": 0,
+            "phase": (phase * 100.0).round() / 100.0,
+            "stance": "守成", "entropy_debt": 0.0, "intensity": 1.0,
+            "age_ch": 0, "decay_rate": 0.92,
+        },
+        "ops": [],
+        "spawned_from_snap": snap_id,
+    });
+    let affected = if let Some(first) = meta.first() {
+        affected_cards(conn, &first.key)
+    } else {
+        json!({"actor": null, "cards": []})
+    };
+    let mut out = json!({
+        "command": "world-gov sandbox spawn",
+        "status": "OK",
+        "snap_id": snap_id,
+        "entries": n,
+        "meta_fingerprint": meta_fp,
+        "scenario": scenario,
+        "affected": affected,
+        "saved": false,
+        "note": "从逻辑快照派生的沙箱初始态（确定性；只读快照，不复制正文）。用 sandbox run --scenario <导出文件> 推进。",
+    });
+    let _ = lib_root;
+    if save {
+        let (final_state, steps, verdict, crit) = simulate(&scenario)?;
+        let fp = fingerprint(&scenario, &final_state, &steps);
+        let ts = now_secs();
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO sandbox_run(label,actor,steps,created_ts,scenario_json,final_json,verdict,critical_steps,fingerprint,engine_epoch)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![
+                format!("spawn:{snap_id}"), Option::<String>::None, steps.len() as i64, ts,
+                serde_json::to_string(&scenario)?, serde_json::to_string(&final_state)?,
+                verdict, crit as i64, fp, ENGINE_EPOCH
+            ],
+        )?;
+        let run_id = tx.last_insert_rowid();
+        tx.commit()?;
+        out["saved"] = json!(true);
+        out["run_id"] = json!(run_id);
+    }
+    Ok(out)
+}
+
+/// trace 轨迹：把一次推演的逐步状态列成可读轨迹（只读，不落库）。
+pub fn trace(conn: &Connection, run_id: i64) -> Result<Value> {
+    ensure_table(conn)?;
+    let head: Option<(String, i64, String, i64)> = conn
+        .query_row(
+            "SELECT IFNULL(label,''),steps,verdict,engine_epoch FROM sandbox_run WHERE id=?1",
+            params![run_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    let Some((label, steps, verdict, epoch)) = head else {
+        return Ok(json!({"command": "world-gov sandbox trace", "run_id": run_id, "status": "NOT_FOUND"}));
+    };
+    let mut stmt = conn.prepare("SELECT step,state_json FROM sandbox_step WHERE run_id=?1 ORDER BY step")?;
+    let trace: Vec<Value> = stmt
+        .query_map(params![run_id], |r| {
+            let sj: String = r.get(1)?;
+            let v: Value = serde_json::from_str(&sj).unwrap_or(json!({}));
+            Ok(json!({
+                "step": r.get::<_, i64>(0)?,
+                "chapter": v["chapter"],
+                "verdict": v["verdict"],
+                "state": v["state"],
+                "op": v["op"],
+            }))
+        })?
+        .filter_map(|x| x.ok())
+        .collect();
+    Ok(json!({
+        "command": "world-gov sandbox trace",
+        "run_id": run_id,
+        "label": label,
+        "steps": steps,
+        "verdict": verdict,
+        "engine_epoch": epoch,
+        "trace": trace,
+        "note": "逐步轨迹（只读；数值来自 world_physics，可重放）。",
+    }))
+}
+
 /// 供 self-check：结构 + 脏检查（只读）。
 pub fn table_check(conn: &Connection) -> Result<Value> {
     let exists: i64 = conn
@@ -640,5 +756,69 @@ mod tests {
         assert_eq!(table_check(&c).unwrap()["ok"], false);
         let c2 = mem();
         assert_eq!(table_check(&c2).unwrap()["ok"], true);
+    }
+
+    #[test]
+    fn spawn_from_snapshot_not_found() {
+        let c = mem();
+        seed_lib(&c);
+        let r = spawn_from_snapshot(&c, Path::new("/tmp"), "nonexistent", false).unwrap();
+        assert_eq!(r["status"], "SNAPSHOT_NOT_FOUND");
+    }
+
+    /// 让 seed_lib 的极简 library_index 具备 diff_snapshot::collect_meta 需要的列。
+    fn full_library_index(c: &Connection) {
+        c.execute_batch(
+            "CREATE TABLE library_index(key TEXT, layer TEXT, source TEXT, src_mtime INTEGER NOT NULL DEFAULT 0);
+             INSERT INTO library_index(key,layer,source,src_mtime) VALUES('K1','L3','',0),('K2','L4','',0);",
+        ).unwrap();
+    }
+
+    #[test]
+    fn spawn_from_snapshot_derives_deterministic_state() {
+        let c = mem();
+        full_library_index(&c);
+        // 造一个逻辑快照（lib_snapshot 由 diff_snapshot::create 建）
+        let (sid, n) = crate::governance::diff_snapshot::create(&c, Path::new("/tmp"), "spawn-test").unwrap();
+        let r = spawn_from_snapshot(&c, Path::new("/tmp"), &sid, false).unwrap();
+        assert_eq!(r["status"], "OK");
+        assert_eq!(r["snap_id"], sid);
+        assert_eq!(r["entries"], n);
+        // 确定性：同快照两次派生 → 完全一致
+        let r2 = spawn_from_snapshot(&c, Path::new("/tmp"), &sid, false).unwrap();
+        assert_eq!(r["meta_fingerprint"], r2["meta_fingerprint"]);
+        assert_eq!(r["scenario"]["world"]["phase"], r2["scenario"]["world"]["phase"]);
+        // phase 落在 [30,70)
+        let ph = r["scenario"]["world"]["phase"].as_f64().unwrap();
+        assert!((30.0..70.0).contains(&ph), "phase 应落在 [30,70)，实得 {ph}");
+        assert_eq!(r["saved"], false);
+    }
+
+    #[test]
+    fn spawn_save_creates_baseline_run() {
+        let c = mem();
+        full_library_index(&c);
+        let (sid, _) = crate::governance::diff_snapshot::create(&c, Path::new("/tmp"), "spawn-save").unwrap();
+        let r = spawn_from_snapshot(&c, Path::new("/tmp"), &sid, true).unwrap();
+        assert_eq!(r["saved"], true);
+        assert_eq!(list(&c, 10).unwrap()["count"], 1);
+    }
+
+    #[test]
+    fn trace_lists_steps() {
+        let c = mem();
+        seed_lib(&c);
+        let r = run(&c, Path::new("/tmp"), "t-trace", None, &base_scenario(), true).unwrap();
+        let id = r["run_id"].as_i64().unwrap();
+        let tr = trace(&c, id).unwrap();
+        assert_eq!(tr["steps"], 5);
+        assert_eq!(tr["trace"].as_array().unwrap().len(), 5);
+        assert_eq!(tr["trace"][0]["step"], 0);
+    }
+
+    #[test]
+    fn trace_not_found() {
+        let c = mem();
+        assert_eq!(trace(&c, 12345).unwrap()["status"], "NOT_FOUND");
     }
 }

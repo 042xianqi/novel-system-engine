@@ -15,6 +15,10 @@ path = "src/main.rs"
 # 开启后才编译 reqwest 出网分支；三重锁之一。见 governance/llm_gate.rs。
 default = []
 real-semantic = ["dep:reqwest"]
+# 第 17 批：完整 LLM 适配层（多后端/缓存/护栏/管线）。比 real-semantic 更全；
+# 默认关闭 → 出网代码为死分支。仍需三重闸门（见 governance/llm_gate.rs）。
+# 注：本 feature 复用仓库既有的零依赖阻塞 HTTP（ne-engine::http），**不引入 reqwest/tokio**。
+llm_integration = []
 
 [dependencies]
 ne-core = { path = "../ne-core" }

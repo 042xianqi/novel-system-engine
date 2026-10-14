@@ -623,6 +623,9 @@ pub enum WorldGovCmd {
         /// 模式 c：增量取 key（Unix 时间戳或 last）
         #[arg(long)]
         since: Option<String>,
+        /// 分片：只取第 N/M 片（如 1/4）；结合 --since/全库再切分（第 17 批）
+        #[arg(long, value_name = "N/M")]
+        slice: Option<String>,
         /// 只算数量，不写任何任务/探针
         #[arg(long)]
         dry_run: bool,
@@ -741,6 +744,15 @@ pub enum WorldGovCmd {
     /// 【调试】终态总览（只读聚合全批次产物：能力/隔离表/关系网/沙盘/三重锁/闭环链）
     #[command(hide = true)]
     Status {
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
+    /// 【调试】LLM 深度接入（llm stats|backends|cache|config|preview；默认三重闸门锁死）
+    #[command(hide = true)]
+    Llm {
+        #[command(subcommand)]
+        cmd: LlmCmd,
         /// 资料库根
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,
@@ -878,6 +890,113 @@ pub enum SandboxCmd {
     /// 删除一条推演记录（含步骤）
     Delete {
         run_id: i64,
+    },
+    /// 从逻辑快照派生沙箱初始态（第 17 批；只读快照，不推演）
+    Spawn {
+        /// 逻辑快照 id（world-gov diff snap create 产出）
+        #[arg(long)]
+        from_snap: String,
+        /// 把派生初始态落库成一条 0 步基线记录（默认只算不写）
+        #[arg(long)]
+        save: bool,
+    },
+    /// 逐步轨迹（第 17 批；只读某次推演的 step 序列）
+    Trace {
+        #[command(subcommand)]
+        cmd: SandboxTraceCmd,
+    },
+}
+
+/// sandbox trace 子命令。
+#[derive(Subcommand, Debug)]
+pub enum SandboxTraceCmd {
+    /// 列出某次推演的逐步轨迹（--run 指定 run_id）
+    List {
+        #[arg(long)]
+        run: i64,
+    },
+}
+#[derive(Subcommand, Debug)]
+pub enum LlmCmd {
+    /// 调用统计（token 累计 / 缓存命中 / 熔断状态）
+    Stats {
+        /// 重置熔断
+        #[arg(long)]
+        reset_breaker: bool,
+    },
+    /// 可用后端清单（含 feature 状态）
+    Backends,
+    /// 推理缓存管理：status | list | gc | clear
+    #[command(subcommand)]
+    Cache(LlmCacheCmd),
+    /// 配置：show（安全快照）| init（写注释模板）| path
+    #[command(subcommand)]
+    Config(LlmConfigCmd),
+    /// 预览 prompt（只渲染不发送；需 --template）
+    Preview {
+        /// 模板名（check_world | entity_extract | sandbox_step）
+        #[arg(long)]
+        template: String,
+        /// 探针 JSON 文件（其指纹进 cache_key）
+        #[arg(long)]
+        probe: Option<String>,
+        /// 导出完整 prompt 到文件（不发起调用）
+        #[arg(long)]
+        out: Option<String>,
+    },
+    /// 跑一次管线调用（默认 mock；--real-semantic + 三重闸门才真出网）
+    Run {
+        /// 模板名
+        #[arg(long)]
+        template: String,
+        /// 探针 JSON 文件
+        #[arg(long)]
+        probe: Option<String>,
+        /// 真实调用（还需 feature + WOGOV_ALLOW_REAL_LLM=yes）
+        #[arg(long)]
+        real_semantic: bool,
+        /// 只用 mock 后端（不联网）
+        #[arg(long)]
+        mock: bool,
+        /// 跳过缓存
+        #[arg(long)]
+        bypass_cache: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum LlmCacheCmd {
+    /// 缓存状态（条数/大小/过期）
+    Status,
+    /// 列出缓存条目
+    List {
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
+    /// GC：删过期缓存
+    Gc {
+        #[arg(long, default_value_t = 30)]
+        ttl_days: u64,
+    },
+    /// 清空全部缓存
+    Clear,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum LlmConfigCmd {
+    /// 显示安全快照（不回显 key/URL）
+    Show,
+    /// 写注释模板到 {work-root}/config/llm.toml（已存在不覆盖，除非 --force）
+    Init {
+        #[arg(long)]
+        force: bool,
+    },
+    /// 打印配置文件路径
+    Path,
+    /// 写提示词模板目录（prompts/*.toml）
+    InitPrompts {
+        #[arg(long)]
+        force: bool,
     },
 }
 #[derive(Subcommand, Debug)]

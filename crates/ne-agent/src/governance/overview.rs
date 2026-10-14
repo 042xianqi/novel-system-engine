@@ -17,7 +17,7 @@ use std::path::Path;
 use super::{conflict_store, diff_snapshot, llm_gate, note_tag_store, probe_cache, rel_graph, sandbox, self_check};
 
 /// 本轮终态纪元（与 self_check epoch 对齐）。
-pub const TERMINAL_EPOCH: i64 = 16;
+pub const TERMINAL_EPOCH: i64 = 17;
 
 /// 受保护的主表（**绝不允许**被辅助表逻辑替换/覆盖）。
 const PROTECTED_TABLES: &[&str] = &["library_index", "materials", "task_jobs", "risk_index"];

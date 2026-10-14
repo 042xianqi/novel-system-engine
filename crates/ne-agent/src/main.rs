@@ -13,7 +13,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use crate::cli::{Cli, Cmd, LibraryCtlCmd, McpCmd, ModelsCmd, QueueCmd, VaultCmd, WorldGovCmd, AuditExportCmd, CacheCmd, ProbeExportCmd, SelfCheckCmd, TagCmd, NoteCmd, DiffCmd, DiffSnapCmd, WebCmd, ConflictCmd, GraphCmd, SandboxCmd};
+use crate::cli::{Cli, Cmd, LibraryCtlCmd, McpCmd, ModelsCmd, QueueCmd, VaultCmd, WorldGovCmd, AuditExportCmd, CacheCmd, ProbeExportCmd, SelfCheckCmd, TagCmd, NoteCmd, DiffCmd, DiffSnapCmd, WebCmd, ConflictCmd, GraphCmd, SandboxCmd, SandboxTraceCmd, LlmCmd, LlmCacheCmd, LlmConfigCmd};
 use ne_agent::{RuntimeConfig, Vault};
 use std::path::{Path, PathBuf};
 mod cli;
@@ -912,11 +912,41 @@ fn world_gov_emit(
 ) -> Result<usize> {
     ne_agent::world_gov::emit_semantic_findings(conn, &format!("world-gov {label} --enqueue"), findings)
 }
-
 /// 探针包内容指纹（第 13 批）：稳定 40-hex，用于冲突库审计锚点。纯函数。
 fn wg_probe_hash(probe: &serde_json::Value) -> String {
     ne_agent::governance::digest::sha1_hex(probe.to_string().as_bytes())
 }
+
+/// 读可选 JSON 探针文件（第 17 批）：`None` → `Value::Null`；路径不存在 → 报错。
+fn read_optional_json(path: &Option<String>) -> Result<serde_json::Value> {
+    match path {
+        None => Ok(serde_json::Value::Null),
+        Some(p) => {
+            let text = std::fs::read_to_string(p)
+                .with_context(|| format!("读探针文件失败：{p}"))?;
+            let v: serde_json::Value = serde_json::from_str(&text)
+                .with_context(|| format!("探针文件不是合法 JSON：{p}"))?;
+            Ok(v)
+        }
+    }
+}
+
+/// 由模板名 + 探针 JSON 构造模板变量（第 17 批）。
+///
+/// 探针对象里的顶层键**原样**成为模板变量（供 `{{var}}` 渲染）；无探针时给空表，
+/// 渲染结果会保留未替换的占位符（只渲染不执行，不报错）。
+fn build_prompt_vars(template: &str, probe: &serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    let mut vars = serde_json::Map::new();
+    vars.insert("template".into(), serde_json::json!(template));
+    if let Some(obj) = probe.as_object() {
+        for (k, v) in obj {
+            vars.insert(k.clone(), v.clone());
+        }
+    }
+    vars
+}
+
+
 /// 最近一次逻辑快照的 snap_id（第 13 批）：作为冲突记录锚点；无快照则 None。
 fn wg_latest_snapshot(conn: &rusqlite::Connection) -> Option<String> {
     ne_agent::governance::diff_snapshot::list(conn)
@@ -955,7 +985,21 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool, 
             st["incremental_scan_ready"] = serde_json::json!(true);
             st["batch_inspect_ready"] = serde_json::json!(true);
             // 工具链版本标记（仅标识，无逻辑作用）
-            st["toolchain_epoch"] = serde_json::json!(16);
+            st["toolchain_epoch"] = serde_json::json!(17);
+            st["llm_epoch"] = serde_json::json!(17);
+            st["llm_integrated"] = serde_json::json!(true);
+            // 第 17 批：LLM 深度接入状态（与第 13 批三重锁打通）
+            {
+                let ls = ne_agent::governance::llm_gate::lock_status(false);
+                st["llm_available"] = serde_json::json!(ne_agent::governance::llm_gate::llm_integration_enabled());
+                st["llm_gate_locked"] = ls["gate_locked"].clone();
+                st["active_backend"] = serde_json::json!(
+                    ne_agent::governance::llm_config::load(lib_root)
+                        .map(|c| c.default_backend).unwrap_or_else(|_| "ollama".into()));
+                st["cache_enabled"] = serde_json::json!(
+                    ne_agent::governance::llm_config::load(lib_root)
+                        .map(|c| c.inference_cache_enable).unwrap_or(true));
+            }
             st["tag_note_ready"] = serde_json::json!(true);
             st["diff_snap_ready"] = serde_json::json!(true);
             st["webpanel_ready"] = serde_json::json!(true);
@@ -1446,6 +1490,38 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                     if json { println!("{}", serde_json::json!({"deleted": ok, "run_id": run_id})); }
                     else { println!("{}推演记录 #{}", if ok { "已删除" } else { "未找到" }, run_id); }
                 }
+                SandboxCmd::Spawn { from_snap, save } => {
+                    let r = sb::spawn_from_snapshot(&conn, lib_root, from_snap, *save)?;
+                    if json { println!("{}", serde_json::to_string_pretty(&r)?); }
+                    else if r["status"] == "SNAPSHOT_NOT_FOUND" {
+                        println!("未找到快照 {from_snap}；先 world-gov diff snap create --label ...");
+                    } else {
+                        println!("== 沙盘 spawn（从快照派生初始态）==");
+                        println!("快照: {}  条目: {}", r["snap_id"].as_str().unwrap_or("-"), r["entries"]);
+                        println!("元指纹: {}", r["meta_fingerprint"].as_str().unwrap_or("-"));
+                        println!("初始态: {}", serde_json::to_string(&r["scenario"]["world"])?);
+                        if r["saved"] == true { println!("已落库为 0 步基线记录 #{}", r["run_id"]); }
+                        println!("{}", r["note"].as_str().unwrap_or(""));
+                    }
+                }
+                SandboxCmd::Trace { cmd } => match cmd {
+                    SandboxTraceCmd::List { run } => {
+                        let r = sb::trace(&conn, *run)?;
+                        if json { println!("{}", serde_json::to_string_pretty(&r)?); }
+                        else if r["status"] == "NOT_FOUND" {
+                            println!("未找到推演记录 #{run}");
+                        } else {
+                            println!("== 沙盘轨迹 #{}（{} 步）==", run, r["steps"]);
+                            if let Some(tr) = r["trace"].as_array() {
+                                for s in tr {
+                                    println!("  step {} chap {} [{}]  state={}",
+                                        s["step"], s["chapter"], s["verdict"].as_str().unwrap_or("-"),
+                                        serde_json::to_string(&s["state"]).unwrap_or_default());
+                                }
+                            }
+                        }
+                    }
+                },
             }
         }
         WorldGovCmd::Status { lib: _ } => {
@@ -1474,6 +1550,162 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                 }
                 println!("── 零污染证明 ── {}", if r["no_pollution"]["ok"] == true { "✅ 主索引未被污染" } else { "⚠ 见 --json 缺项" });
                 println!("{}", r["note"].as_str().unwrap_or(""));
+            }
+        }
+        WorldGovCmd::Llm { cmd, lib: _ } => {
+            use ne_agent::governance::{inference_cache as ic, llm_adapter as la, llm_config as lc, llm_obs as lo, prompt_lib as pl, semantic_pipeline as sp};
+            let cfg = lc::load(lib_root)?;
+            match cmd {
+                LlmCmd::Stats { reset_breaker } => {
+                    if *reset_breaker { lo::reset_breaker(&conn)?; }
+                    let s = lo::stats(&conn)?;
+                    if json { println!("{}", serde_json::to_string_pretty(&s)?); }
+                    else {
+                        println!("== LLM 调用统计 ==");
+                        println!("总调用: {}  失败: {}  缓存命中: {}  命中率 {:.1}%",
+                            s["total_calls"], s["total_fail"], s["cache_hits"],
+                            s["cache_hit_rate"].as_f64().unwrap_or(0.0) * 100.0);
+                        println!("token 累计: in={} out={}", s["token_in_total"], s["token_out_total"]);
+                        println!("平均耗时: {:.0} ms", s["avg_elapsed_ms"].as_f64().unwrap_or(0.0));
+                        println!("熔断: {}", if s["breaker_tripped"] == true { "已触发（退化为静态模式）" } else { "正常" });
+                        if *reset_breaker { println!("（已重置熔断计数）"); }
+                    }
+                }
+                LlmCmd::Backends => {
+                    let b = la::available_backends(&cfg);
+                    if json { println!("{}", serde_json::to_string_pretty(&b)?); }
+                    else {
+                        println!("== LLM 后端 ==");
+                        println!("默认: {}", b["default_backend"].as_str().unwrap_or("-"));
+                        println!("真实后端: {}（feature {}）", b["real_backends"],
+                            if b["feature_enabled"] == true { "已开" } else { "未开→死分支" });
+                        println!("测试后端: {}", b["test_backend"].as_str().unwrap_or("-"));
+                        println!("{}", b["note"].as_str().unwrap_or(""));
+                    }
+                }
+                LlmCmd::Cache(c) => match c {
+                    LlmCacheCmd::Status => {
+                        let s = ic::status(lib_root, cfg.cache_ttl_days)?;
+                        if json { println!("{}", serde_json::to_string_pretty(&s)?); }
+                        else {
+                            println!("== 推理缓存状态 ==");
+                            println!("目录: {}", s["dir"]);
+                            println!("条目: {}  总大小: {} bytes  过期: {}", s["entries"], s["total_bytes"], s["stale_entries"]);
+                        }
+                    }
+                    LlmCacheCmd::List { limit } => {
+                        let l = ic::list(lib_root, *limit)?;
+                        if json { println!("{}", serde_json::to_string_pretty(&l)?); }
+                        else {
+                            println!("== 推理缓存（{} 条）==", l["shown"]);
+                            if let Some(es) = l["entries"].as_array() {
+                                for e in es {
+                                    println!("  {} [{}] {} in={} out={}",
+                                        e["key"].as_str().unwrap_or("").chars().take(12).collect::<String>(),
+                                        e["backend"].as_str().unwrap_or(""), e["model"].as_str().unwrap_or(""),
+                                        e["token_in"], e["token_out"]);
+                                }
+                            }
+                        }
+                    }
+                    LlmCacheCmd::Gc { ttl_days } => {
+                        let n = ic::gc(lib_root, *ttl_days)?;
+                        if json { println!("{}", serde_json::json!({"removed": n, "ttl_days": ttl_days})); }
+                        else { println!("已清理 {n} 条过期缓存（ttl={ttl_days} 天）"); }
+                    }
+                    LlmCacheCmd::Clear => {
+                        let n = ic::clear(lib_root)?;
+                        if json { println!("{}", serde_json::json!({"cleared": n})); }
+                        else { println!("已清空 {n} 条缓存（不影响主库/校验逻辑）"); }
+                    }
+                },
+                LlmCmd::Config(c) => match c {
+                    LlmConfigCmd::Show => {
+                        let s = lc::safe_snapshot(&cfg);
+                        if json { println!("{}", serde_json::to_string_pretty(&s)?); }
+                        else {
+                            println!("== LLM 配置（安全快照）==");
+                            println!("默认后端: {}", s["default_backend"].as_str().unwrap_or("-"));
+                            if let Some(eps) = s["endpoints"].as_object() {
+                                for (k, v) in eps {
+                                    println!("  {k}: base={} key={} model={}",
+                                        v["base_configured"], v["api_key_configured"], v["model_configured"]);
+                                }
+                            }
+                            println!("{}", s["note"].as_str().unwrap_or(""));
+                        }
+                    }
+                    LlmConfigCmd::Init { force } => {
+                        let p = lc::init_template(lib_root, *force)?;
+                        println!("配置模板: {}（{}）", p.display(), if *force { "已覆盖" } else { "已存在则不覆盖" });
+                    }
+                    LlmConfigCmd::Path => {
+                        println!("{}", lib_root.join(lc::CONFIG_REL).display());
+                    }
+                    LlmConfigCmd::InitPrompts { force } => {
+                        let w = pl::init_templates(lib_root, *force)?;
+                        println!("已写提示词模板 {} 个：", w.len());
+                        for p in w { println!("  {}", p.display()); }
+                    }
+                },
+                LlmCmd::Preview { template, probe, out } => {
+                    let probe_json = read_optional_json(probe)?;
+                    let vars = build_prompt_vars(template, &probe_json);
+                    let ph = if probe_json.is_null() { String::new() } else { sp::probe_hash(&probe_json) };
+                    let req = sp::PipelineRequest { template: template.clone(), vars, probe_hash: ph, ..Default::default() };
+                    let v = sp::preview(lib_root, &cfg, &req)?;
+                    if let Some(path) = out {
+                        std::fs::write(path, format!("== system ==\n{}\n\n== user ==\n{}",
+                            v["system"].as_str().unwrap_or(""), v["user"].as_str().unwrap_or("")))?;
+                        if json { println!("{}", serde_json::to_string_pretty(&v)?); }
+                        else { println!("完整 prompt 已导出（未发起任何调用）：{path}"); }
+                    } else if json { println!("{}", serde_json::to_string_pretty(&v)?); }
+                    else {
+                        println!("== prompt 预览（只渲染不发送）==");
+                        println!("模板: {}  后端: {}  模型: {}",
+                            v["template"].as_str().unwrap_or("-"),
+                            v["backend"].as_str().unwrap_or("-"),
+                            v["model"].as_str().unwrap_or("-"));
+                        println!("cache_key: {}", v["cache_key"].as_str().unwrap_or("-"));
+                        println!("── system ──\n{}", v["system"].as_str().unwrap_or(""));
+                        println!("── user ──\n{}", v["user"].as_str().unwrap_or(""));
+                    }
+                }
+                LlmCmd::Run { template, probe, real_semantic, mock, bypass_cache } => {
+                    let probe_json = read_optional_json(probe)?;
+                    let vars = build_prompt_vars(template, &probe_json);
+                    let ph = if probe_json.is_null() { String::new() } else { sp::probe_hash(&probe_json) };
+                    let req = sp::PipelineRequest {
+                        template: template.clone(), vars, probe_hash: ph,
+                        bypass_cache: *bypass_cache, use_mock: *mock, ..Default::default()
+                    };
+                    let o = sp::call(&conn, lib_root, &cfg, *real_semantic, &req)?;
+                    let oj = o.to_json();
+                    if json { println!("{}", serde_json::to_string_pretty(&oj)?); }
+                    else {
+                        println!("== LLM 管线调用 ==");
+                        println!("状态: {}  后端: {}  模型: {}",
+                            oj["status"].as_str().unwrap_or("-"),
+                            oj["backend"].as_str().unwrap_or("-"), oj["model"].as_str().unwrap_or("-"));
+                        match &o {
+                            sp::Outcome::GateLocked(_) => {
+                                println!("[三重闸门锁死] 未发起任何请求。缺：feature `llm_integration` + WOGOV_ALLOW_REAL_LLM=yes + --real-semantic");
+                            }
+                            sp::Outcome::BreakerOpen => println!("[熔断] 连续失败触发熔断；退化为静态模式，稍后自动恢复。"),
+                            sp::Outcome::Unavailable(m) => println!("[不可用] {m}"),
+                            sp::Outcome::CacheHit { key, .. } => println!("[缓存命中] {key}（未外呼）"),
+                            sp::Outcome::Success { content, guards, token_in, token_out, .. } => {
+                                println!("token: in={token_in} out={token_out}");
+                                println!("护栏: {}", serde_json::to_string(guards)?);
+                                println!("输出: {}", serde_json::to_string_pretty(content)?);
+                            }
+                            sp::Outcome::GuardRejected { reason, guards } => {
+                                println!("[护栏拒绝] {reason}: {}", serde_json::to_string(guards)?);
+                            }
+                            sp::Outcome::BackendError { kind, message } => println!("[后端错误] {kind}: {message}"),
+                        }
+                    }
+                }
             }
         }
         WorldGovCmd::Trace { key, dry_run: _, lib: _ } => {
@@ -1887,13 +2119,14 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                 }
             }
         }
-        WorldGovCmd::InspectBatch { from_scan, id_list, since, dry_run, enqueue, persist, all_layers, with_tag, without_tag, real_semantic, lib: _ } => {
+        WorldGovCmd::InspectBatch { from_scan, id_list, since, slice, dry_run, enqueue, persist, all_layers, with_tag, without_tag, real_semantic, lib: _ } => {
             use ne_agent::governance::inspect_batch as ib;
             use ne_agent::governance::progress;
             // 第 13 批：--real-semantic 是三重锁的命令行锁；未全开则明确拦截，绝不外呼。
-            if *real_semantic {
+            // 第 17 批：--dry-run 组合下只做**报文预览**（渲染 prompt/cache_key），连闸门都不需要开。
+            let real_ok = if *real_semantic {
                 let st = ne_agent::governance::llm_gate::lock_status(true);
-                if !ne_agent::governance::llm_gate::real_llm_unlocked(true) {
+                if !ne_agent::governance::llm_gate::real_llm_unlocked(true) && !*dry_run {
                     if json {
                         println!("{}", serde_json::to_string_pretty(&serde_json::json!({
                             "command": "world-gov inspect-batch",
@@ -1909,20 +2142,33 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                     }
                     return Ok(());
                 }
-                // 三重锁全开（skeleton：真实批量语义调用待放行令填充；仍只入队不自动跑）
-                if !quiet { eprintln!("[note] 三重锁已开；批量真实语义调用为骨架，待放行令填充。"); }
-            }
-            // 三模式互斥
-            let modes = [from_scan.is_some(), id_list.is_some(), since.is_some()];
-            if modes.iter().filter(|x| **x).count() != 1 {
-                anyhow::bail!("inspect-batch 需且仅需一个输入模式：--from-scan | --id-list | --since");
+                if *dry_run {
+                    if !quiet { eprintln!("[note] --dry-run：只渲染报文，不发送、不写缓存（无需开闸门）。"); }
+                    true
+                } else {
+                    if !quiet { eprintln!("[note] 三重锁已开；批量真实语义调用为骨架，待放行令填充。"); }
+                    false
+                }
+            } else {
+                false
+            };
+            let _ = real_ok;
+            // 分片解析（第 17 批）：--slice N/M 可选；给了就切
+            let slice_nm: Option<(usize, usize)> = match slice.as_deref() {
+                Some(s) => Some(ne_agent::world_gov::parse_slice_strict(s).map_err(|e| anyhow::anyhow!("{e}"))?),
+                None => None,
+            };
+            // 三模式互斥；第 17 批：给了 --slice 而没给任何输入模式时，默认全库（all）
+            let given = [from_scan.is_some(), id_list.is_some(), since.is_some()];
+            let n_modes = given.iter().filter(|x| **x).count();
+            if n_modes != 1 && !(n_modes == 0 && slice_nm.is_some()) {
+                anyhow::bail!("inspect-batch 需且仅需一个输入模式：--from-scan | --id-list | --since（或仅给 --slice 走全库分片）");
             }
             let source = if let Some(p) = from_scan {
                 ib::BatchSource::FromScan(p.clone())
             } else if let Some(p) = id_list {
                 ib::BatchSource::IdList(p.clone())
-            } else {
-                let v = since.as_deref().unwrap();
+            } else if let Some(v) = since {
                 match ib::parse_since(v, lib_root)? {
                     (Some(ts), _) => ib::BatchSource::Since(ts),
                     (None, note) => {
@@ -1930,14 +2176,33 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                         anyhow::bail!("inspect-batch --since 无有效锚点（无快照）；请给出时间戳或先 scan --write-snapshot");
                     }
                 }
+            } else {
+                ib::BatchSource::All
             };
             progress::emit(quiet, "inspect-batch", 0, 1, None);
             let tag_filter = ne_agent::governance::note_tag_store::TagFilter::build(with_tag, without_tag)?;
-            let report = ib::build_batch_report(&conn, lib_root, &source, *all_layers, *dry_run, Some(&tag_filter))?;
+            let report = ib::build_batch_report_sliced(&conn, lib_root, &source, *all_layers, *dry_run, Some(&tag_filter), slice_nm)?;
             let keys: Vec<String> = report["keys"].as_array().map(|a| {
                 a.iter().filter_map(|v| v.as_str().map(String::from)).collect()
             }).unwrap_or_default();
             progress::emit(quiet, "inspect-batch", 1, 1, Some(0));
+            // 第 17 批：--dry-run + --real-semantic → 只渲染**报文预览**（不发送、不写缓存、不需闸门）。
+            let mut preview: Option<serde_json::Value> = None;
+            if *dry_run && *real_semantic {
+                if let Some(k) = keys.first() {
+                    use ne_agent::governance::{llm_config as lc, semantic_pipeline as sp};
+                    let cfg = lc::load(lib_root)?;
+                    let probe = serde_json::json!({"card_key": k});
+                    let ph = sp::probe_hash(&probe);
+                    let req = sp::PipelineRequest {
+                        template: "check_world".into(),
+                        vars: build_prompt_vars("check_world", &probe),
+                        probe_hash: ph,
+                        ..Default::default()
+                    };
+                    preview = Some(sp::preview(lib_root, &cfg, &req)?);
+                }
+            }
             // 入队（默认只预览；--enqueue 才入队；不自动 step）
             let mut enqueued = 0usize;
             if *enqueue && !*dry_run {
@@ -1952,18 +2217,33 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
             if json {
                 let mut out = report.clone();
                 out["enqueued"] = serde_json::json!(enqueued);
+                if let Some(p) = &preview { out["llm_preview"] = p.clone(); }
                 println!("{}", serde_json::to_string_pretty(&out)?);
             } else {
-                println!("== inspect-batch（批量检视；{}；默认不推理）==", report["source_kind"]);
+                println!("== inspect-batch（批量检视；{}；默认不推理）==", report["source_kind"].as_str().unwrap_or("-"));
                 println!("批量条目数: {}", report["counts"]["batch_size"]);
+                if let Some(s) = report["counts"]["slice"].as_object() {
+                    println!("分片: {}/{}（切分前 {} 条）", s["n"], s["m"], s["selected_before_slice"]);
+                }
                 if report["counts"]["since_degraded"].as_bool().unwrap_or(false) {
                     println!("[warn] 增量降级：index 无有效 src_mtime（重跑 library-ctl init 可修复）");
                 }
                 println!("条目前 10：");
                 for k in keys.iter().take(10) { println!("  - {k}"); }
                 if keys.len() > 10 { println!("  … 共 {} 条", keys.len()); }
+                if let Some(p) = &preview {
+                    println!("── LLM 报文预览（--dry-run；只渲染不发送）──");
+                    println!("模板: {}  后端: {}  模型: {}",
+                        p["template"].as_str().unwrap_or("-"),
+                        p["backend"].as_str().unwrap_or("-"),
+                        p["model"].as_str().unwrap_or("-"));
+                    println!("cache_key: {}", p["cache_key"].as_str().unwrap_or("-"));
+                    println!("── system ──\n{}", p["system"].as_str().unwrap_or(""));
+                    println!("── user ──\n{}", p["user"].as_str().unwrap_or(""));
+                }
                 if *dry_run {
-                    println!("[--dry-run] 只算数量，未写任何任务/探针。");
+                    println!("[--dry-run] 只算数量，未写任何任务/探针{}。",
+                        if preview.is_some() { "，未发送、未写缓存" } else { "" });
                 } else if *enqueue {
                     println!("已入队 {enqueued} 条（{}）；推进需手打 world-gov queue step（不自动跑）",
                         if *persist { "持久 task_jobs" } else { "内存队列" });

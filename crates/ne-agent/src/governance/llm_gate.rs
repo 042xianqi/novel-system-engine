@@ -20,9 +20,14 @@ use serde_json::{json, Value};
 /// 环境变量名（解锁第 2 条）。
 pub const ENV_ALLOW: &str = "WOGOV_ALLOW_REAL_LLM";
 
-/// 编译期 feature 是否启用（由 `cfg(feature="real-semantic")` 决定；默认 false）。
+/// 编译期 feature 是否启用（`real-semantic` 或 `llm_integration`；默认均 false）。
 pub const fn compile_feature_enabled() -> bool {
-    cfg!(feature = "real-semantic")
+    cfg!(feature = "real-semantic") || cfg!(feature = "llm_integration")
+}
+
+/// 第 17 批完整适配层 feature（比 `real-semantic` 更全：多后端/缓存/护栏/管线）。
+pub const fn llm_integration_enabled() -> bool {
+    cfg!(feature = "llm_integration")
 }
 
 /// 环境变量是否放行（严格等于 `yes`）。
@@ -48,7 +53,7 @@ pub fn lock_status(cli_real_semantic: bool) -> Value {
     let unlocked = triple_lock(cf, env, cli);
     let mut missing: Vec<&str> = Vec::new();
     if !cf {
-        missing.push("编译 feature `real-semantic` 未启用（默认构建无出网代码）");
+        missing.push("编译 feature `llm_integration`（或 `real-semantic`）未启用（默认构建无出网代码）");
     }
     if !env {
         missing.push("环境变量 WOGOV_ALLOW_REAL_LLM 未设为 yes");
@@ -58,6 +63,8 @@ pub fn lock_status(cli_real_semantic: bool) -> Value {
     }
     json!({
         "compile_feature": cf,
+        "compile_feature_real_semantic": cfg!(feature = "real-semantic"),
+        "compile_feature_llm_integration": cfg!(feature = "llm_integration"),
         "env_allowed": env,
         "cli_flag": cli,
         "gate_locked": !unlocked,
@@ -83,7 +90,8 @@ mod tests {
     #[test]
     fn compile_feature_off_by_default() {
         // 默认构建不带 feature → 出网代码不参与编译
-        assert!(!compile_feature_enabled(), "默认构建必须无 real-semantic feature");
+        assert!(!compile_feature_enabled(), "默认构建必须无 real-semantic/llm_integration feature");
+        assert!(!llm_integration_enabled(), "默认构建必须无 llm_integration feature");
     }
 
     #[test]

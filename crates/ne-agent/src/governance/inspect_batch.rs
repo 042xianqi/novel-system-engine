@@ -28,6 +28,8 @@ pub enum BatchSource {
     IdList(String),
     /// 按增量时间条件取 key（读 index.src_mtime）
     Since(i64),
+    /// 全库取 key（默认仅 L2/L3/L4；配合 `--slice` 分片）——第 17 批
+    All,
 }
 
 impl BatchSource {
@@ -36,6 +38,7 @@ impl BatchSource {
             BatchSource::FromScan(_) => "from-scan",
             BatchSource::IdList(_) => "id-list",
             BatchSource::Since(_) => "since",
+            BatchSource::All => "all",
         }
     }
 }
@@ -144,7 +147,21 @@ pub fn resolve_keys(
             Ok((keys_from_id_list(&raw), false))
         }
         BatchSource::Since(ts) => keys_since(conn, *ts, all_layers),
+        BatchSource::All => Ok((keys_all(conn, all_layers)?, false)),
     }
+}
+
+/// 取第 `n/m` 片（1 基；`n` ∈ [1,m]）。纯函数：稳定顺序切分，空输入安全。
+/// 与 `scan-library --slice` 同源语义（`world_gov::parse_slice_strict` 负责校验 N/M）。
+pub fn slice_keys(keys: Vec<String>, n: usize, m: usize) -> Vec<String> {
+    if m == 0 || keys.is_empty() {
+        return Vec::new();
+    }
+    let i = n.saturating_sub(1); // 1 基 → 0 基
+    let len = keys.len();
+    let start = len * i / m;
+    let end = len * (i + 1) / m;
+    keys.into_iter().skip(start).take(end.saturating_sub(start)).collect()
 }
 
 /// 从 `--since <val>` 字符串复用 scan_snapshot 的解析（支持 `last`）。
@@ -154,6 +171,7 @@ pub fn parse_since(val: &str, lib_root: &Path) -> Result<(Option<i64>, String)> 
 
 /// 组装批量预览报告（**纯读**，不写任何文件/任务）。
 /// `tag_filter`（可选）：人工标签筛选（第 10 批）；`None`/空 = 不过滤（默认行为不变）。
+/// `slice`（可选）：取第 N/M 片（第 17 批）；`None` = 不分片（默认行为不变）。
 pub fn build_batch_report(
     conn: &Connection,
     lib_root: &Path,
@@ -161,6 +179,21 @@ pub fn build_batch_report(
     all_layers: bool,
     dry_run: bool,
     tag_filter: Option<&crate::governance::note_tag_store::TagFilter>,
+) -> Result<Value> {
+    build_batch_report_sliced(conn, lib_root, source, all_layers, dry_run, tag_filter, None)
+}
+
+/// 同 `build_batch_report`，但额外支持 `--slice N/M` 分片（第 17 批）。
+/// 分片在**标签筛选之后**进行：先得候选全集，再取第 N/M 片，保证各片不重不漏。
+#[allow(clippy::too_many_arguments)]
+pub fn build_batch_report_sliced(
+    conn: &Connection,
+    lib_root: &Path,
+    source: &BatchSource,
+    all_layers: bool,
+    dry_run: bool,
+    tag_filter: Option<&crate::governance::note_tag_store::TagFilter>,
+    slice: Option<(usize, usize)>,
 ) -> Result<Value> {
     let (keys, degraded) = resolve_keys(conn, lib_root, source, all_layers)?;
     // 标签筛选：默认不过滤（None/空 → 全放行，向后兼容）
@@ -176,6 +209,12 @@ pub fn build_batch_report(
         _ => keys,
     };
     let tag_filtered = before - keys.len();
+    // 分片：默认不分片（None → 全量，向后兼容）
+    let selected_before_slice = keys.len();
+    let keys: Vec<String> = match slice {
+        Some((n, m)) => slice_keys(keys, n, m),
+        None => keys,
+    };
     Ok(json!({
         "command": "world-gov inspect-batch",
         "mode": "batch_preview",
@@ -185,6 +224,7 @@ pub fn build_batch_report(
             "all_layers": all_layers,
             "since_degraded": degraded,
             "tag_filtered": tag_filtered,
+            "slice": slice.map(|(n, m)| json!({"n": n, "m": m, "selected_before_slice": selected_before_slice})).unwrap_or(json!(null)),
         },
         "tag_filter": tag_filter.map(|f| f.describe()).unwrap_or(json!(null)),
         "keys": keys,
@@ -327,5 +367,41 @@ mod tests {
         assert_eq!(r["counts"]["tag_filtered"], 2);
         assert_eq!(r["keys"][0], "A-2");
         let _ = std::fs::remove_file(&f);
+    }
+
+    #[test]
+    fn slice_keys_partitions_without_overlap() {
+        let keys: Vec<String> = (0..10).map(|i| format!("K{i}")).collect();
+        // 4 片：按 len*i/m 切（10 条 → 2/3/2/3）
+        let s1 = slice_keys(keys.clone(), 1, 4);
+        let s2 = slice_keys(keys.clone(), 2, 4);
+        let s3 = slice_keys(keys.clone(), 3, 4);
+        let s4 = slice_keys(keys.clone(), 4, 4);
+        assert_eq!(s1.len() + s2.len() + s3.len() + s4.len(), 10, "各片不重不漏");
+        let mut all: Vec<String> = vec![];
+        all.extend(s1); all.extend(s2); all.extend(s3); all.extend(s4);
+        assert_eq!(all, keys, "拼接后应还原全集且顺序稳定");
+    }
+
+    #[test]
+    fn slice_keys_edge_cases() {
+        assert!(slice_keys(vec![], 1, 4).is_empty(), "空输入安全");
+        assert!(slice_keys(vec!["A".into()], 1, 0).is_empty(), "m=0 安全");
+        // 3 条切 2 片 → 1/2（按 len*i/m：start=0,end=1 / start=1,end=3）
+        assert_eq!(slice_keys(vec!["A".into(), "B".into(), "C".into()], 1, 2), vec!["A"]);
+        assert_eq!(slice_keys(vec!["A".into(), "B".into(), "C".into()], 2, 2), vec!["B", "C"]);
+    }
+
+    #[test]
+    fn batch_report_slice_subsets_keys() {
+        let conn = mem_conn();
+        let lib = std::env::temp_dir();
+        // All 源（L4 A-1,A-2 + L3 L3-1；AUX 被层过滤），切 2 片取第 1 片
+        let r = build_batch_report_sliced(&conn, &lib, &BatchSource::All, false, true, None, Some((1, 2))).unwrap();
+        assert_eq!(r["source_kind"], "all");
+        assert_eq!(r["counts"]["slice"]["n"], 1);
+        assert_eq!(r["counts"]["slice"]["m"], 2);
+        let full = build_batch_report_sliced(&conn, &lib, &BatchSource::All, false, true, None, None).unwrap();
+        assert!(r["counts"]["batch_size"].as_u64().unwrap() < full["counts"]["batch_size"].as_u64().unwrap());
     }
 }

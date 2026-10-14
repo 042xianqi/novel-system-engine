@@ -245,6 +245,40 @@ pub fn run(conn: &Connection, lib_root: &Path, fix: bool, older_than_days: u64) 
         "detail": proof,
     }));
 
+    // ⑮ LLM 深度接入（第 17 批）：配置合法性 + 目录权限 + feature/闸门状态（只读，锁死不报错）
+    let llm_cfg = super::llm_config::load(lib_root);
+    let cfg_ok = llm_cfg.is_ok();
+    let cfg_snap = llm_cfg.as_ref().map(super::llm_config::safe_snapshot).unwrap_or(json!({}));
+    let cache_dir = lib_root.join(super::inference_cache::CACHE_REL);
+    // 目录权限：能创建/访问缓存目录即视为可写；缺失不算错（惰性创建）
+    let cache_writable = if cache_dir.is_dir() {
+        std::fs::metadata(&cache_dir).map(|m| !m.permissions().readonly()).unwrap_or(false)
+    } else {
+        // 尝试探测父目录可写（不真正建目录，避免副作用）
+        lib_root.join("07_勘误工坊").is_dir()
+    };
+    let enable = format!(
+        "cargo build -p ne-agent --features llm_integration（当前 feature_enabled={}）",
+        super::llm_gate::llm_integration_enabled()
+    );
+    items.push(json!({
+        "name": "llm_integration",
+        "ok": true,
+        "warn": !cfg_ok || !cache_writable,
+        "detail": {
+            "config_ok": cfg_ok,
+            "config_path": lib_root.join(super::llm_config::CONFIG_REL).display().to_string(),
+            "config_present": lib_root.join(super::llm_config::CONFIG_REL).is_file(),
+            "default_backend": cfg_snap.get("default_backend").cloned().unwrap_or(json!(null)),
+            "cache_enabled": cfg_snap.get("cache_enabled").cloned().unwrap_or(json!(true)),
+            "cache_dir_writable": cache_writable,
+            "feature_enabled": super::llm_gate::llm_integration_enabled(),
+            "gate_locked": super::llm_gate::lock_status(false)["gate_locked"],
+            "enable_hint": enable,
+            "note": "闸门锁死是**默认正常态**，非故障；开启需 feature + WOGOV_ALLOW_REAL_LLM=yes + --real-semantic。",
+        }
+    }));
+
     let failed = items.iter().filter(|x| x["ok"] == false).count();
     Ok(json!({
         "command": "world-gov self-check",
@@ -254,7 +288,7 @@ pub fn run(conn: &Connection, lib_root: &Path, fix: bool, older_than_days: u64) 
         "failed": failed,
         "all_ok": failed == 0,
         "items": items,
-        "toolchain_epoch": 16,
+        "toolchain_epoch": 17,
         "note": "自检只读为主；--fix 仅创建缺失目录，绝不 ALTER 表/删任务/改资料库。",
     }))
 }
@@ -295,7 +329,8 @@ pub fn capabilities() -> Value {
         "real_semantic_triple_lock": true,
         "rel_graph_ready": true,
         "sandbox_ready": true,
-        "toolchain_epoch": 16,
+        "llm_integration_ready": true,
+        "toolchain_epoch": 17,
     })
 }
 
@@ -365,7 +400,7 @@ mod tests {
     #[test]
     fn capabilities_marker() {
         let c = capabilities();
-        assert_eq!(c["toolchain_epoch"], 16);
+        assert_eq!(c["toolchain_epoch"], 17);
         assert_eq!(c["selfcheck_ready"], true);
         assert_eq!(c["tag_note_ready"], true);
         assert_eq!(c["diff_snap_ready"], true);

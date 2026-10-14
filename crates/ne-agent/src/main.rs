@@ -795,12 +795,17 @@ fn run_library_ctl(lib_root: &Path, cmd: &LibraryCtlCmd, json: bool) -> Result<(
     let conn = ne_agent::governance::open_gov(lib_root)?;
     let out = match cmd {
         LibraryCtlCmd::Init => ne_agent::governance::library_init(&conn, lib_root)?,
-        LibraryCtlCmd::Audit { semantic: _ } => ne_agent::governance::library_audit(&conn, lib_root)?,
-        LibraryCtlCmd::Export { out } => {
+        LibraryCtlCmd::Classify { out } => {
             let dir = out.clone().unwrap_or_else(|| lib_root.join("07_勘误工坊/export"));
-            ne_agent::governance::library_export(&conn, lib_root, &dir)?
+            ne_agent::governance::library_classify(&conn, Some(&dir))?
         }
-        LibraryCtlCmd::Reindex => ne_agent::governance::library_reindex(lib_root)?,
+        LibraryCtlCmd::Audit { semantic: _ } => ne_agent::governance::library_audit(&conn, lib_root)?,
+        LibraryCtlCmd::Export { out, layer } => {
+            let dir = out.clone().unwrap_or_else(|| lib_root.join("07_勘误工坊/export"));
+            ne_agent::governance::library_export_layer(&conn, lib_root, &dir, layer.as_deref())?
+        }
+        LibraryCtlCmd::Reindex { batch: _ } => ne_agent::governance::library_reindex(lib_root)?,
+        LibraryCtlCmd::Stats => ne_agent::governance::library_stats(&conn)?,
     };
     if json { println!("{}", serde_json::to_string_pretty(&out)?); }
     else { println!("{}", serde_json::to_string_pretty(&out)?); }

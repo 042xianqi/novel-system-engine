@@ -439,16 +439,31 @@ pub enum ModelsCmd {
 pub enum LibraryCtlCmd {
     /// 资料库标准化初始化（只建索引、只标记脏数据，不动原文件）
     Init,
+    /// 分类建议（只读；输出当前层级|建议层级|建议tag|字数，可导 CSV/MD）
+    Classify {
+        /// 导出目录（默认 <库根>/07_勘误工坊/export）
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// 资料库深度巡检（--semantic 默认关闭）
     Audit {
         #[arg(long)]
         semantic: bool,
     },
-    /// 导出生效 L0~L4 条目为 JSON+Markdown
+    /// 导出生效 L0~L4 条目为 JSON+Markdown（可 --layer 分层）
     Export {
         #[arg(long)]
         out: Option<PathBuf>,
+        /// 只导出指定层级（如 L4 / L0 / L0-L1x），省略=全导
+        #[arg(long)]
+        layer: Option<String>,
     },
-    /// 基于磁盘源重建 LTM 索引清单（不覆盖库）
-    Reindex,
+    /// 基于磁盘源重建 LTM 索引清单（不覆盖库；支持 --batch 断点续扫）
+    Reindex {
+        /// 每批处理文件数（万级库分批用；0=不分批）
+        #[arg(long, default_value_t = 0)]
+        batch: usize,
+    },
+    /// 资料库大盘统计（总条目/总字符/分层/碎片/未归类/孤立/重复）
+    Stats,
 }

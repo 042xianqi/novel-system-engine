@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS library_index (
     source     TEXT,                   -- 相对路径或 DB 来源
     chars      INTEGER DEFAULT 0,
     types      TEXT DEFAULT '[]',      -- JSON：该条目所含 code 前缀集合
+    title      TEXT DEFAULT '',        -- H1 标题
+    tags       TEXT DEFAULT '[]',      -- JSON：标签集合
     dirty      INTEGER NOT NULL DEFAULT 0, -- 1 = 缺 category/key/type 等脏标记
     dirty_note TEXT,
     ts         TEXT NOT NULL DEFAULT (datetime('now')),

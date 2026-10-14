@@ -68,7 +68,95 @@ pub struct LayerEntry {
 pub fn open_gov(lib_root: &Path) -> Result<Connection> {
     let conn = Connection::open(lib_root.join("novel.db"))?;
     conn.execute_batch(include_str!("governance_schema.sql"))?;
+    ensure_library_index_cols(&conn)?;
     Ok(conn)
+}
+
+/// 幂等补齐 library_index 的新列（title/tags）；已存在则跳过。
+fn ensure_library_index_cols(conn: &Connection) -> Result<()> {
+    let mut have = std::collections::HashSet::new();
+    {
+        let mut st = conn.prepare("PRAGMA table_info(library_index)")?;
+        let it = st.query_map([], |r| r.get::<_, String>(1))?;
+        for x in it.filter_map(|v| v.ok()) { have.insert(x); }
+    }
+    for (name, ty) in [("title", "TEXT DEFAULT ''"), ("tags", "TEXT DEFAULT '[]'")] {
+        if !have.contains(name) {
+            conn.execute(&format!("ALTER TABLE library_index ADD COLUMN {name} {ty}"), [])?;
+        }
+    }
+    Ok(())
+}
+
+/// 层级识别（基于相对路径）。百万库关键函数。
+pub fn classify_layer(rel: &str) -> &'static str {
+    let r = rel.replace('\\', "/");
+    if r.ends_with("03_叙事规划/00_整本概括.md") { return "L0"; }
+    if r.contains("00_故事脊梁") { return "L0.5"; }
+    if r.contains("00_叙事总纲") { return "L1"; }
+    if r.contains("00_宏大对抗总规划") { return "L1x"; }
+    if r.contains("护栏") { return "GUARD"; }
+    if r.contains("跨卷线锚点表") { return "ANCHOR"; }
+    if r.contains("_规范/全局铁则") { return "GUARD"; }
+    if r.contains("03_叙事规划/细纲") { return "L3"; }
+    if r.contains("03_叙事规划/分卷大纲") { return "L2"; }
+    if r.contains("02_资料库/") { return "L4"; }
+    "UNCLASSIFIED"
+}
+
+/// 提取 H1 标题（首行 `# ...`）。
+pub fn extract_title(text: &str) -> String {
+    for line in text.lines().take(20) {
+        let t = line.trim_start();
+        if let Some(rest) = t.strip_prefix("# ") { return rest.trim().to_string(); }
+    }
+    String::new()
+}
+
+/// 提取标签：YAML frontmatter 的 tags 字段 + 行内 `> 胶囊：` 首词。
+pub fn extract_tags(text: &str) -> Vec<String> {
+    let mut tags = Vec::new();
+    // frontmatter
+    if let Some(rest) = text.strip_prefix("---") {
+        if let Some(end) = rest.find("\n---") {
+            for line in rest[..end].lines() {
+                let l = line.trim();
+                if let Some(v) = l.strip_prefix("tags:") {
+                    for part in v.trim_matches(['[', ']']).split(',') {
+                        let t = part.trim_matches(|c: char| c=='\'' || c=='"' || c==' ').to_string();
+                        if !t.is_empty() { tags.push(t); }
+                    }
+                }
+            }
+        }
+    }
+    tags.sort(); tags.dedup();
+    tags
+}
+
+/// 从内存行读小文本（百万体量：按字节上限读，不整库入内存）。
+pub fn read_head(path: &Path, max_bytes: usize) -> String {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else { return String::new(); };
+    let mut buf = vec![0u8; max_bytes];
+    let n = f.read(&mut buf).unwrap_or(0);
+    buf.truncate(n);
+    String::from_utf8_lossy(&buf).to_string()
+}
+
+/// 文件字符数（不整读内存：流式统计）。
+pub fn file_chars(path: &Path) -> usize {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else { return 0; };
+    let mut buf = [0u8; 64 * 1024];
+    let mut s = String::new();
+    loop {
+        let n = f.read(&mut buf).unwrap_or(0);
+        if n == 0 { break; }
+        s.push_str(&String::from_utf8_lossy(&buf[..n]));
+        if s.len() > 8 * 1024 * 1024 { break; } // 单文件上限保护
+    }
+    s.chars().count()
 }
 
 /// 写入一条风险（幂等：同 type+volume+chapter+message 未解决时不重复插入）。
@@ -195,44 +283,53 @@ pub fn layer_health(conn: &Connection) -> Result<Vec<LayerEntry>> {
 /// 扫描 02_资料库 全部 md，提取 层级/分类/key/类型/脏标记 并写入 library_index。
 /// **只建索引，不动原文件**。返回脏条目清单。
 pub fn library_init(conn: &Connection, lib_root: &Path) -> Result<Value> {
-    let base = lib_root.join("02_资料库");
+    // 扫描资料库工程全部 md（覆盖 02_资料库/03_叙事规划/05_管线框架 等）
     let mut files = Vec::new();
-    collect_md(&base, &mut files)?;
+    for sub in ["02_资料库", "03_叙事规划", "05_管线框架"] {
+        collect_md(&lib_root.join(sub), &mut files)?;
+    }
     let mut dirty = Vec::new();
-    let mut total = 0usize;
-    let mut with_code = 0usize;
-    conn.execute("DELETE FROM library_index WHERE layer='L4'", [])?;
+    let mut by_layer: BTreeMap<String, (usize, usize)> = BTreeMap::new(); // layer -> (files, chars)
+    let mut total_chars = 0usize;
+    let mut unclassified = 0usize;
+    conn.execute("DELETE FROM library_index", [])?;
     for f in &files {
         let rel = f.strip_prefix(lib_root).unwrap_or(f).to_string_lossy().to_string();
-        let txt = std::fs::read_to_string(f).unwrap_or_default();
-        total += 1;
-        // 分类=相对 02_资料库 的首层目录；key=文件名（去扩展名）；code 从 H1 抽取。
-        let category = rel.split('/').nth(1).unwrap_or("").to_string();
-        let key = f.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-        let codes = extract_codes(&txt);
+        let head = read_head(f, 4096);
+        let chars = file_chars(f);
+        total_chars += chars;
+        let layer = classify_layer(&rel).to_string();
+        let title = extract_title(&head);
+        let tags = extract_tags(&head);
+        let codes = extract_codes(&head);
         let mut types: Vec<String> = codes.iter().map(|c| code_prefix(c)).collect();
         types.sort(); types.dedup();
-        if !codes.is_empty() { with_code += 1; }
-        let mut dirty_note = None;
-        if category.is_empty() { dirty_note = Some("缺 category（不在子目录）".to_string()); }
-        else if key.is_empty() { dirty_note = Some("缺 key".to_string()); }
-        else if codes.is_empty() { dirty_note = Some("缺 type（无可识别 code）".to_string()); }
-        let is_dirty = dirty_note.is_some();
+        let category = rel.split('/').nth(1).unwrap_or("").to_string();
+        let key = f.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let e = by_layer.entry(layer.clone()).or_default();
+        e.0 += 1; e.1 += chars;
+        let mut notes: Vec<String> = Vec::new();
+        if layer == "UNCLASSIFIED" { notes.push("未归类".into()); unclassified += 1; }
+        if chars == 0 { notes.push("空文件".into()); }
+        if title.is_empty() && layer != "L3" { notes.push("缺标题(H1)".into()); }
+        let is_dirty = !notes.is_empty();
         conn.execute(
-            "INSERT INTO library_index(layer,category,key,source,chars,types,dirty,dirty_note)
-             VALUES('L4',?1,?2,?3,?4,?5,?6,?7)
-             ON CONFLICT(layer,key) DO UPDATE SET category=excluded.category,source=excluded.source,
-               chars=excluded.chars,types=excluded.types,dirty=excluded.dirty,dirty_note=excluded.dirty_note",
-            params![category, key, rel, txt.chars().count(), serde_json::to_string(&types).unwrap(),
-                    if is_dirty {1} else {0}, dirty_note],
+            "INSERT INTO library_index(layer,category,key,source,chars,types,title,tags,dirty,dirty_note)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![layer, category, key, rel, chars as i64,
+                    serde_json::to_string(&types)?, title, serde_json::to_string(&tags)?,
+                    if is_dirty {1} else {0}, notes.join("；")],
         )?;
-        if let Some(n) = dirty_note { dirty.push(json!({"file": rel, "note": n})); }
+        if is_dirty { dirty.push(json!({"file": rel, "layer": layer, "note": notes.join("；")})); }
     }
+    let layers: Vec<Value> = by_layer.iter().map(|(k, (n, c))| json!({"layer": k, "files": n, "chars": c})).collect();
     Ok(json!({
-        "scanned_md": total,
-        "with_code": with_code,
+        "total_files": files.len(),
+        "total_chars": total_chars,
+        "by_layer": layers,
+        "unclassified": unclassified,
         "dirty_count": dirty.len(),
-        "dirty": dirty,
+        "dirty_sample": dirty.iter().take(20).collect::<Vec<_>>(),
     }))
 }
 
@@ -313,6 +410,143 @@ pub fn library_audit(conn: &Connection, lib_root: &Path) -> Result<Value> {
         "l3_refs_total": l3_refs.len(),
         "materials_total": have.len(),
     }))
+}
+
+
+/// 分类建议（只读；不改原文件）。输出每条：当前层级|建议层级|建议tag|字数，可导 CSV/MD。
+pub fn library_classify(conn: &Connection, out: Option<&Path>) -> Result<Value> {
+    let mut st = conn.prepare(
+        "SELECT source,layer,category,key,title,chars,tags,types FROM library_index ORDER BY layer,source")?;
+    let rows: Vec<(String,String,String,String,String,i64,String,String)> = st
+        .query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?)))?
+        .filter_map(|x| x.ok()).collect();
+    let mut items = Vec::new();
+    let mut md = String::from("| 文件 | 当前层级 | 建议层级 | 建议tag | 字数 |
+|---|---|---|---|---|
+");
+    let mut csv = String::from("source,current_layer,suggest_layer,suggest_tag,chars
+");
+    for (src, layer, cat, key, title, chars, tags_json, types_json) in rows {
+        let types: Vec<String> = serde_json::from_str(&types_json).unwrap_or_default();
+        // 建议层级：路径判定；L4 卡若有专有 type 保持 L4，否则若在 _规范 下建议 GUARD。
+        let mut suggest = layer.clone();
+        let mut reason = String::new();
+        if layer == "UNCLASSIFIED" {
+            if src.contains("_规范") { suggest = "GUARD".into(); reason = "_规范 目录".into(); }
+            else if types.contains(&"CHAR".to_string()) || src.contains("角色") { suggest = "L4".into(); reason = "疑似角色卡".into(); }
+            else { suggest = "L4".into(); reason = "未匹配专规→按卡片".into(); }
+        }
+        // 建议 tag：类型前缀 join
+        let mut tag = types.join("|");
+        if tag.is_empty() { tag = "(无)".into(); }
+        let _ = (cat, key, title);
+        md.push_str(&format!("| {} | {} | {} | {} | {} |\n", src, layer, suggest, tag, chars));
+        csv.push_str(&format!("{},{},{},{},{}
+", src, layer, suggest, tag, chars));
+        if suggest != layer {
+            items.push(json!({"source": src, "current": layer, "suggest": suggest, "reason": reason}));
+        }
+    }
+    let mut written = Vec::new();
+    if let Some(dir) = out {
+        std::fs::create_dir_all(dir)?;
+        let md_p = dir.join("classify_list.md");
+        let csv_p = dir.join("classify_list.csv");
+        std::fs::write(&md_p, md)?;
+        std::fs::write(&csv_p, csv)?;
+        written.push(json!({"markdown": md_p.to_string_lossy(), "csv": csv_p.to_string_lossy()}));
+    }
+    Ok(json!({"total": items.len() + 0, "suggest_changes": items, "written": written}))
+}
+
+/// 大盘统计：一眼掌握百万库全貌。
+pub fn library_stats(conn: &Connection) -> Result<Value> {
+    let mut by_layer: Vec<Value> = Vec::new();
+    {
+        let mut st = conn.prepare(
+            "SELECT layer,COUNT(*),COALESCE(SUM(chars),0),COALESCE(SUM(dirty),0) FROM library_index GROUP BY layer ORDER BY layer")?;
+        let it = st.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,i64>(1)?, r.get::<_,i64>(2)?, r.get::<_,i64>(3)?)))?;
+        for x in it.filter_map(|v| v.ok()) {
+            by_layer.push(json!({"layer": x.0, "items": x.1, "chars": x.2, "dirty": x.3}));
+        }
+    }
+    let total_items: i64 = conn.query_row("SELECT COUNT(*) FROM library_index", [], |r| r.get(0)).unwrap_or(0);
+    let total_chars: i64 = conn.query_row("SELECT COALESCE(SUM(chars),0) FROM library_index", [], |r| r.get(0)).unwrap_or(0);
+    let version_frag: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM library_index WHERE key LIKE '%_v%'", [], |r| r.get(0)).unwrap_or(0);
+    let unclassified: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM library_index WHERE layer='UNCLASSIFIED'", [], |r| r.get(0)).unwrap_or(0);
+    let dup: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(c-1),0) FROM (SELECT category,key,COUNT(*) c FROM library_index WHERE layer='L4' GROUP BY category,key HAVING c>1)", [], |r| r.get(0)).unwrap_or(0);
+    Ok(json!({
+        "total_items": total_items,
+        "total_chars": total_chars,
+        "by_layer": by_layer,
+        "version_fragments": version_frag,
+        "unclassified": unclassified,
+        "dup_key_excess": dup,
+    }))
+}
+
+/// 分层导出版（--layer），写文件不动库。支持 "L4" 或 "L0-L1x" 或省略。
+pub fn library_export_layer(conn: &Connection, lib_root: &Path, out_dir: &Path, layer: Option<&str>) -> Result<Value> {
+    std::fs::create_dir_all(out_dir)?;
+    // 解析 layer 过滤
+    let set: Option<std::collections::HashSet<String>> = layer.map(|l| {
+        if let Some((a, b)) = l.split_once('-') {
+            let order = ["L0","L0.5","L1","L1x","GUARD","ANCHOR","L2","L3","L4"];
+            let ia = order.iter().position(|x| *x == a).unwrap_or(0);
+            let ib = order.iter().position(|x| *x == b).unwrap_or(order.len()-1);
+            order[ia.min(ib)..=ia.max(ib)].iter().map(|s| s.to_string()).collect()
+        } else {
+            let mut h = std::collections::HashSet::new();
+            h.insert(l.to_string()); h
+        }
+    });
+    // LTM 层
+    let layers = layer_health(conn)?;
+    let ltm: Vec<&LayerEntry> = layers.iter().filter(|e| set.as_ref().map(|s| s.contains(&e.layer)).unwrap_or(true)).collect();
+    // L4 卡索引
+    let mut l4 = Vec::new();
+    if set.as_ref().map(|s| s.contains("L4")).unwrap_or(true) {
+        if let Ok(mut st) = conn.prepare("SELECT category,key,source,chars,title,types,tags,dirty FROM library_index WHERE layer='L4' ORDER BY category,key") {
+            if let Ok(it) = st.query_map([], |r| Ok(json!({
+                "category": r.get::<_,Option<String>>(0)?,
+                "key": r.get::<_,String>(1)?,
+                "source": r.get::<_,Option<String>>(2)?,
+                "chars": r.get::<_,i64>(3)?,
+                "title": r.get::<_,Option<String>>(4)?,
+                "types": r.get::<_,Option<String>>(5)?,
+                "tags": r.get::<_,Option<String>>(6)?,
+                "dirty": r.get::<_,i64>(7)?,
+            }))) {
+                for x in it.filter_map(|v| v.ok()) { l4.push(x); }
+            }
+        }
+    }
+    let tag = layer.unwrap_or("all").replace('/', "_");
+    let json_p = out_dir.join(format!("export_{tag}.json"));
+    std::fs::write(&json_p, serde_json::to_string_pretty(&json!({"ltm": ltm, "l4": l4}))?)?;
+    let mut md = format!("# 分层导出（layer={}）
+
+## LTM 层级条目 {} 条
+
+", layer.unwrap_or("all"), ltm.len());
+    for e in &ltm { md.push_str(&format!("- [{}] {} / {}（{} 字）
+", e.layer, e.category, e.key, e.chars)); }
+    md.push_str(&format!("
+## L4 卡片 {} 条
+
+", l4.len()));
+    for c in l4.iter().take(5000) {
+        md.push_str(&format!("- {}/{}{}（{} 字）
+", c["category"].as_str().unwrap_or(""), c["key"].as_str().unwrap_or(""),
+            if c["dirty"].as_i64().unwrap_or(0)==1 {" ⚠脏"} else {""}, c["chars"]));
+    }
+    let md_p = out_dir.join(format!("export_{tag}.md"));
+    std::fs::write(&md_p, md)?;
+    Ok(json!({"layer": layer.unwrap_or("all"), "ltm_entries": ltm.len(), "l4_cards": l4.len(),
+              "json": json_p.to_string_lossy(), "markdown": md_p.to_string_lossy()}))
 }
 
 /// 导出全部生效 L0~L4 条目为 JSON + Markdown 包（写文件，不动库）。

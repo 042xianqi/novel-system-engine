@@ -60,8 +60,8 @@
     },
     {
       "name": "ne-mcp",
-      "mayDependOn": ["ne-core", "ne-db", "ne-engine", "ne-qc", "ne-injection"],
-      "note": "MCP 服务端（对外暴露既有能力）"
+      "mayDependOn": ["ne-core", "ne-db", "ne-engine", "ne-qc", "ne-injection", "ne-agent"],
+      "note": "MCP 服务端（对外暴露既有能力）。第 18 批起依赖 ne-agent（lib）：直接复用 governance/world_gov 的纯库函数把 world-gov 能力暴露为 MCP 工具（不 fork shell、不另起一套）。ne-agent 不反向依赖 ne-mcp，无环。"
     },
     {
       "name": "ne-agent",
@@ -69,7 +69,7 @@
         "ne-core", "ne-db", "ne-engine", "ne-qc", "ne-injection", "ne-funnel",
         "ne-cardgen", "ne-import"
       ],
-      "note": "智能体本体：可调用所有既有能力；不依赖 ne-mcp（那是另一条出口）"
+      "note": "智能体本体：可调用所有既有能力；不依赖 ne-mcp（那是另一条出口）。注意：ne-mcp 反向依赖本 crate 的 lib，本 crate 不得依赖 ne-mcp（无环）。"
     }
   ],
   "importBans": [

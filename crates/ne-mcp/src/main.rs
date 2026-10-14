@@ -10,6 +10,7 @@
 
 mod jsonrpc;
 mod tools;
+mod wg_tools;
 
 use tools::Cfg;
 
@@ -69,6 +70,83 @@ fn tool_specs() -> serde_json::Value {
                 "sql": {"type":"string"},
                 "limit": {"type":"integer","description":"最大返回行数，默认 100"}},
                 "required":["sql"]}
+        },
+        {
+            "name": "wg_scan_library",
+            "description": "world-gov 全库语义脏点扫描（world-gov scan-library 的 MCP 封装）。产探针清单；--semantic 仅标注通路，不在此处外呼。默认只扫 L2/L3/L4。",
+            "inputSchema": {"type":"object","properties":{
+                "slice": {"type":"string","description":"分片 N/M（如 1/4）；留空=不分片"},
+                "semantic": {"type":"boolean","description":"是否开启语义通路（默认 false，仅产零模型骨架）"},
+                "dry_run": {"type":"boolean","description":"只算不落盘（默认 false）"},
+                "all_layers": {"type":"boolean","description":"关闭层过滤，扫描全部条目（默认 false）"},
+                "since": {"type":"string","description":"增量：Unix 时间戳或 last（默认全量）"}},
+                "required":[]}
+        },
+        {
+            "name": "wg_inspect_card",
+            "description": "world-gov 单卡深度检视（world-gov inspect-card 的 MCP 封装）。默认产探针包；semantic=true 才组装题面，real_semantic=true 才走统一收口真实推理并落 conflict_records（仍需三重锁）。",
+            "inputSchema": {"type":"object","properties":{
+                "key": {"type":"string","description":"卡片 key（如 CHAR-90-038）"},
+                "semantic": {"type":"boolean","description":"开启才组装语义题面（默认 false）"},
+                "real_semantic": {"type":"boolean","description":"真实外呼（三重锁之命令行锁；默认 false）"},
+                "dry_run": {"type":"boolean","description":"只渲染 prompt 不发送（默认 false）"}},
+                "required":["key"]}
+        },
+        {
+            "name": "wg_inspect_batch",
+            "description": "world-gov 批量检视（world-gov inspect-batch 的 MCP 封装）。keys 显式列表（空=全库 L2/L3/L4），slice 分片 N/M。默认只预览；real_semantic=true 才逐卡真实推理（仍需三重锁）。",
+            "inputSchema": {"type":"object","properties":{
+                "keys": {"type":"array","items":{"type":"string"},"description":"要检视的 key 列表；空或缺省=全库"},
+                "slice": {"type":"string","description":"分片 N/M（如 1/4）"},
+                "all_layers": {"type":"boolean","description":"关闭层过滤（默认 false）"},
+                "real_semantic": {"type":"boolean","description":"真实逐卡推理（三重锁之命令行锁；默认 false）"}},
+                "required":[]}
+        },
+        {
+            "name": "wg_snapshot",
+            "description": "world-gov 逻辑快照管理（world-gov diff snap 的 MCP 封装）。只存索引+元信息哈希，不复制正文；与基准库隔离。",
+            "inputSchema": {"type":"object","properties":{
+                "action": {"type":"string","description":"create | list | show | delete"},
+                "label": {"type":"string","description":"create 时的标签（可空）"},
+                "snap_id": {"type":"string","description":"show/delete 需要的快照 id"}},
+                "required":["action"]}
+        },
+        {
+            "name": "wg_conflict",
+            "description": "world-gov 冲突记录库查询（world-gov conflict 的 MCP 封装）。存 AI 观点，人是终审；只读。",
+            "inputSchema": {"type":"object","properties":{
+                "action": {"type":"string","description":"list | show | summary"},
+                "status": {"type":"string","description":"list 过滤：pending|valid|false_alarm|ignored"},
+                "key": {"type":"string","description":"list 过滤：probe_key"},
+                "id": {"type":"integer","description":"show 需要的记录 id"}},
+                "required":["action"]}
+        },
+        {
+            "name": "wg_sandbox",
+            "description": "world-gov 沙盘推演（world-gov sandbox 的 MCP 封装）。确定性多步推演、可重放；与基准资料库强隔离（不覆盖基准库）。",
+            "inputSchema": {"type":"object","properties":{
+                "action": {"type":"string","description":"run | list | show | spawn | verify | trace"},
+                "scenario": {"type":"object","description":"run：场景对象（与 quick 二选一）"},
+                "quick": {"type":"string","description":"run：快捷预设 warn|critical|tip|calm"},
+                "actor": {"type":"string","description":"run：主体卡 key（给出受影响集）"},
+                "save": {"type":"boolean","description":"是否落库（默认 false=只算不写）"},
+                "run_id": {"type":"integer","description":"show/verify/trace 需要的推演记录 id"},
+                "from_snap": {"type":"string","description":"spawn：源逻辑快照 id"}},
+                "required":["action"]}
+        },
+        {
+            "name": "wg_llm_status",
+            "description": "world-gov LLM 状态与缓存（world-gov llm 的 MCP 封装）。全部只读、不外呼：三重锁状态/调用统计/推理缓存/后端清单/配置安全快照。",
+            "inputSchema": {"type":"object","properties":{
+                "action": {"type":"string","description":"gate | stats | cache | backends | config"}},
+                "required":["action"]}
+        },
+        {
+            "name": "wg_self_check",
+            "description": "world-gov 健康自检（world-gov self-check 的 MCP 封装）。检查工作根/库 schema/目录/管线；fix=true 仅创建缺失目录（不改表、不删任务）。",
+            "inputSchema": {"type":"object","properties":{
+                "fix": {"type":"boolean","description":"安全自动修复：仅创建缺失目录（默认 false）"}},
+                "required":[]}
         }
     ]})
 }
@@ -200,6 +278,46 @@ fn tool_call(cfg: &Cfg, name: &str, args: &serde_json::Value) -> serde_json::Val
             let lim = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
             tools::db_query(cfg, &s("sql"), lim.max(1))
         }
+        // ── world-gov 能力（第 18 批 · MCP 可调用接口集；底层复用 ne-agent 成熟逻辑）──
+        "wg_scan_library" => wg_tools::scan_library(
+            cfg,
+            args.get("slice").and_then(|v| v.as_str()),
+            b("semantic"), b("dry_run"), b("all_layers"),
+            args.get("since").and_then(|v| v.as_str()),
+        ),
+        "wg_inspect_card" => wg_tools::inspect_card(cfg, &s("key"), b("semantic"), b("real_semantic"), b("dry_run")),
+        "wg_inspect_batch" => {
+            let keys: Option<Vec<String>> = args.get("keys").and_then(|v| v.as_array()).map(|a| {
+                a.iter().filter_map(|x| x.as_str().map(String::from)).collect()
+            });
+            wg_tools::inspect_batch(
+                cfg, keys.as_deref(),
+                args.get("slice").and_then(|v| v.as_str()),
+                b("all_layers"), b("real_semantic"),
+            )
+        }
+        "wg_snapshot" => wg_tools::snapshot(
+            cfg, &s("action"),
+            args.get("label").and_then(|v| v.as_str()),
+            args.get("snap_id").and_then(|v| v.as_str()),
+        ),
+        "wg_conflict" => wg_tools::conflict(
+            cfg, &s("action"),
+            args.get("status").and_then(|v| v.as_str()),
+            args.get("key").and_then(|v| v.as_str()),
+            args.get("id").and_then(|v| v.as_i64()),
+        ),
+        "wg_sandbox" => wg_tools::sandbox(
+            cfg, &s("action"),
+            args.get("quick").and_then(|v| v.as_str()),
+            args.get("scenario"),
+            args.get("actor").and_then(|v| v.as_str()),
+            b("save"),
+            args.get("run_id").and_then(|v| v.as_i64()),
+            args.get("from_snap").and_then(|v| v.as_str()),
+        ),
+        "wg_llm_status" => wg_tools::llm_status(cfg, &s("action")),
+        "wg_self_check" => wg_tools::self_check(cfg, b("fix")),
         other => return text_content(format!("未知工具：{other}")),
     };
 
@@ -332,5 +450,77 @@ mod volume_tests {
     fn volume_missing_is_empty() {
         assert_eq!(norm_volume(None), "");
         assert_eq!(norm_volume(Some(&serde_json::Value::Null)), "");
+    }
+}
+
+#[cfg(test)]
+mod wg_tool_tests {
+    use super::{tool_specs, validate_args};
+    use serde_json::json;
+
+    /// 第 18 批：world-gov 8 个工具必须都在 tool_specs 里（MCP 可调用接口集）。
+    #[test]
+    fn wg_tools_registered() {
+        let specs = tool_specs();
+        let names: Vec<&str> = specs["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        for want in [
+            "wg_scan_library", "wg_inspect_card", "wg_inspect_batch", "wg_snapshot",
+            "wg_conflict", "wg_sandbox", "wg_llm_status", "wg_self_check",
+        ] {
+            assert!(names.contains(&want), "缺 MCP 工具：{want}（现有：{names:?}）");
+        }
+        // 原有 7 个只读/质检工具仍在（增量补齐，非替换）
+        for keep in ["funnel", "ne_cardgen", "ne_inject", "ne_check", "ne_materials", "ne_db", "ne_db_query"] {
+            assert!(names.contains(&keep), "原有工具被误删：{keep}");
+        }
+    }
+
+    /// 每个 tool 的 inputSchema 必须是合法对象且 `required`（若有）是数组。
+    #[test]
+    fn wg_tool_schemas_wellformed() {
+        for t in tool_specs()["tools"].as_array().unwrap() {
+            let name = t["name"].as_str().unwrap();
+            let schema = &t["inputSchema"];
+            assert_eq!(schema["type"], "object", "{name} inputSchema.type 非 object");
+            assert!(schema["properties"].is_object(), "{name} 缺 properties");
+            if let Some(req) = schema.get("required") {
+                assert!(req.is_array(), "{name} required 非数组");
+            }
+        }
+    }
+
+    /// 必填参数校验：缺 `key`/`action` 应被拒（对齐 inputSchema）。
+    #[test]
+    fn wg_required_args_enforced() {
+        assert!(validate_args("wg_inspect_card", &json!({})).is_some(), "wg_inspect_card 缺 key 应被拒");
+        assert!(validate_args("wg_inspect_card", &json!({"key": "CHAR-10-001"})).is_none());
+        assert!(validate_args("wg_snapshot", &json!({})).is_some(), "wg_snapshot 缺 action 应被拒");
+        assert!(validate_args("wg_llm_status", &json!({"action": "gate"})).is_none());
+        // 无必填参数的探针类工具：空对象应放行
+        assert!(validate_args("wg_scan_library", &json!({})).is_none());
+        assert!(validate_args("wg_self_check", &json!({})).is_none());
+    }
+
+    /// wg_sandbox 的 action 集应覆盖规约要求的 spawn（--ai-sandbox 的 MCP 等价入口）。
+    #[test]
+    fn wg_sandbox_schema_lists_spawn() {
+        let specs = tool_specs();
+        let sandbox = specs["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "wg_sandbox")
+            .expect("wg_sandbox 未注册");
+        let desc = sandbox["inputSchema"]["properties"]["action"]["description"]
+            .as_str()
+            .unwrap_or("");
+        for a in ["run", "list", "show", "spawn", "verify", "trace"] {
+            assert!(desc.contains(a), "wg_sandbox action 描述缺 {a}：{desc}");
+        }
     }
 }

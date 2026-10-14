@@ -275,6 +275,26 @@ pub enum Cmd {
         #[command(subcommand)]
         cmd: McpCmd,
     },
+    /// 【规约适配】全局系统自检（= world-gov self-check run 的别名入口）
+    ///
+    /// 第 18 批：对齐《项目总规约》的 `sys-check full --json`。底层**复用**
+    /// `world-gov self-check` 同一实现，不另起一套。
+    SysCheck {
+        /// 子命令：full（全套自检）。缺省即 full。
+        #[arg(default_value = "full")]
+        mode: String,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
+    /// 【规约适配】管线自动扫描（= scan-library 的 AI 引导包装）
+    ///
+    /// 第 18 批：对齐《项目总规约》的 `pipeline scan-auto --ai-guided`。
+    /// **默认只产探针清单（零外呼）**；`--ai-run` 才显式开闸门走真实语义扫描。
+    Pipeline {
+        #[command(subcommand)]
+        cmd: PipelineCmd,
+    },
     /// 管理持久化任务（状态机 + CAS）
     Task {
         #[command(subcommand)]
@@ -341,6 +361,14 @@ pub enum McpCmd {
         /// JSON 参数对象（默认 {}）
         #[arg(default_value = "{}")]
         args_json: String,
+    },
+    /// 【规约适配】探测全部 MCP 服务及其工具可用性（对齐 `mcp probe-all --json`）
+    ///
+    /// 逐一连接每个已启用服务，报告握手是否成功、工具数、以及（可选）逐个轻量调用探活。
+    ProbeAll {
+        /// 对每个工具做一次轻量调用探活（默认只握手 + 列工具）
+        #[arg(long)]
+        call_test: bool,
     },
 }
 
@@ -899,6 +927,13 @@ pub enum SandboxCmd {
         /// 把派生初始态落库成一条 0 步基线记录（默认只算不写）
         #[arg(long)]
         save: bool,
+        /// 【规约适配】AI 沙箱模式：从快照派生后，用已放行的 LLM 做一次 AI 引导推演
+        /// （对齐 `sandbox spawn --ai-sandbox`）。默认关；开启仍受三重锁约束。
+        #[arg(long)]
+        ai_sandbox: bool,
+        /// ai-sandbox 模式：把 AI 引导后的初始态落库（默认只算不写）
+        #[arg(long)]
+        dry_run: bool,
     },
     /// 逐步轨迹（第 17 批；只读某次推演的 step 序列）
     Trace {
@@ -914,6 +949,49 @@ pub enum SandboxTraceCmd {
     List {
         #[arg(long)]
         run: i64,
+    },
+}
+
+/// 【规约适配】pipeline 子命令（对齐《项目总规约》的 pipeline 命令面）。
+///
+/// 全部为**适配层**：底层复用 world-gov 既有成熟实现，不另起一套。
+#[derive(Subcommand, Debug)]
+pub enum PipelineCmd {
+    /// AI 引导的全库扫描（= scan-library 的包装；默认只产探针清单，--ai-run 才真实语义扫描）
+    ScanAuto {
+        /// 分片 N/M（如 1/4）
+        #[arg(long)]
+        slice: Option<String>,
+        /// 显式请求 AI 引导（对齐规约 `--ai-guided`）；仅标注意图，仍需 --ai-run 才外呼
+        #[arg(long)]
+        ai_guided: bool,
+        /// 真实语义扫描（三重锁之命令行锁；仍需 feature + WOGOV_ALLOW_REAL_LLM=yes）
+        #[arg(long)]
+        ai_run: bool,
+        /// 只算不落盘
+        #[arg(long)]
+        dry_run: bool,
+        /// 关闭层过滤（默认只扫 L2/L3/L4）
+        #[arg(long)]
+        all_layers: bool,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
+    /// 世界观分析（= scan-library --semantic 的别名；只产结构化报告）
+    WorldAnalyze {
+        /// 分片 N/M
+        #[arg(long)]
+        slice: Option<String>,
+        /// 真实语义分析走统一收口（三重锁之命令行锁）
+        #[arg(long)]
+        ai_run: bool,
+        /// 只算不落盘
+        #[arg(long)]
+        dry_run: bool,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
     },
 }
 #[derive(Subcommand, Debug)]
@@ -1009,6 +1087,10 @@ pub enum WebCmd {
         /// 不自动打开浏览器（本环境默认即不打开）
         #[arg(long)]
         no_open: bool,
+        /// 【规约适配】只做一次健康探测后立即退出（对齐 `web serve --health-check-only`）
+        /// 真实起服务 + 发一个请求验证可用，然后关闭；不常驻。
+        #[arg(long)]
+        health_check_only: bool,
     },
 }
 
@@ -1329,4 +1411,85 @@ pub enum LibraryCtlCmd {
     },
     /// 资料库大盘统计（总条目/总字符/分层/碎片/未归类/孤立/重复）
     Stats,
+}
+
+#[cfg(test)]
+mod pipeline_alias_tests {
+    use super::*;
+    use clap::Parser;
+
+    /// 第 18 批：规约适配别名 `sys-check full` 可解析。
+    #[test]
+    fn sys_check_full_parses() {
+        let cli = Cli::try_parse_from(["ne-agent", "sys-check", "full"]).expect("sys-check full 应可解析");
+        assert!(matches!(cli.cmd, Cmd::SysCheck { ref mode, .. } if mode == "full"));
+    }
+
+    /// `sys-check` 缺省 mode 也是 full（规约只要求 full）。
+    #[test]
+    fn sys_check_defaults_full() {
+        let cli = Cli::try_parse_from(["ne-agent", "sys-check"]).unwrap();
+        assert!(matches!(cli.cmd, Cmd::SysCheck { ref mode, .. } if mode == "full"));
+    }
+
+    /// `pipeline scan-auto --ai-guided`（规约原写法）可解析。
+    #[test]
+    fn pipeline_scan_auto_parses() {
+        let cli = Cli::try_parse_from(["ne-agent", "pipeline", "scan-auto", "--ai-guided", "--dry-run"])
+            .expect("pipeline scan-auto 应可解析");
+        match cli.cmd {
+            Cmd::Pipeline { cmd: PipelineCmd::ScanAuto { ai_guided, dry_run, ai_run, .. } } => {
+                assert!(ai_guided && dry_run && !ai_run);
+            }
+            _ => panic!("应解析为 Pipeline::ScanAuto"),
+        }
+    }
+
+    /// `pipeline world-analyze`（规约命令面）可解析。
+    #[test]
+    fn pipeline_world_analyze_parses() {
+        let cli = Cli::try_parse_from(["ne-agent", "pipeline", "world-analyze", "--slice", "1/8"])
+            .expect("pipeline world-analyze 应可解析");
+        assert!(matches!(cli.cmd, Cmd::Pipeline { cmd: PipelineCmd::WorldAnalyze { .. } }));
+    }
+
+    /// `mcp probe-all --json` 的 probe-all 子命令可解析。
+    #[test]
+    fn mcp_probe_all_parses() {
+        let cli = Cli::try_parse_from(["ne-agent", "--json", "mcp", "probe-all"]).unwrap();
+        assert!(matches!(cli.cmd, Cmd::Mcp { cmd: McpCmd::ProbeAll { .. } }));
+        let cli2 = Cli::try_parse_from(["ne-agent", "mcp", "probe-all", "--call-test"]).unwrap();
+        assert!(matches!(cli2.cmd, Cmd::Mcp { cmd: McpCmd::ProbeAll { call_test: true } }));
+    }
+
+    /// `world-gov sandbox spawn --from-snap X --ai-sandbox --dry-run` 可解析（规约 daemon）。
+    #[test]
+    fn sandbox_spawn_ai_flag_parses() {
+        let cli = Cli::try_parse_from([
+            "ne-agent", "world-gov", "sandbox", "spawn",
+            "--from-snap", "abc123", "--ai-sandbox", "--dry-run",
+        ])
+        .expect("sandbox spawn --ai-sandbox 应可解析");
+        match cli.cmd {
+            Cmd::WorldGov { cmd: WorldGovCmd::Sandbox { cmd: SandboxCmd::Spawn { ai_sandbox, dry_run, .. }, .. } } => {
+                assert!(ai_sandbox && dry_run);
+            }
+            _ => panic!("应解析为 Sandbox::Spawn"),
+        }
+    }
+
+    /// `world-gov web serve --health-check-only` 可解析。
+    #[test]
+    fn web_serve_health_check_parses() {
+        let cli = Cli::try_parse_from([
+            "ne-agent", "world-gov", "web", "serve", "--port", "8270", "--health-check-only",
+        ])
+        .expect("web serve --health-check-only 应可解析");
+        match cli.cmd {
+            Cmd::WorldGov { cmd: WorldGovCmd::Web { cmd: WebCmd::Serve { health_check_only, .. }, .. } } => {
+                assert!(health_check_only);
+            }
+            _ => panic!("应解析为 Web::Serve"),
+        }
+    }
 }

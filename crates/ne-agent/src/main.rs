@@ -13,7 +13,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use crate::cli::{Cli, Cmd, LibraryCtlCmd, McpCmd, ModelsCmd, QueueCmd, VaultCmd, WorldGovCmd, AuditExportCmd, CacheCmd, ProbeExportCmd, SelfCheckCmd, TagCmd, NoteCmd, DiffCmd, DiffSnapCmd, WebCmd, ConflictCmd, GraphCmd, SandboxCmd, SandboxTraceCmd, LlmCmd, LlmCacheCmd, LlmConfigCmd};
+use crate::cli::{Cli, Cmd, LibraryCtlCmd, McpCmd, ModelsCmd, QueueCmd, VaultCmd, WorldGovCmd, AuditExportCmd, CacheCmd, ProbeExportCmd, SelfCheckCmd, TagCmd, NoteCmd, DiffCmd, DiffSnapCmd, WebCmd, ConflictCmd, GraphCmd, SandboxCmd, SandboxTraceCmd, LlmCmd, LlmCacheCmd, LlmConfigCmd, PipelineCmd};
 use ne_agent::{RuntimeConfig, Vault};
 use std::path::{Path, PathBuf};
 mod cli;
@@ -153,6 +153,14 @@ fn run() -> Result<()> {
             Ok(())
         }
         Cmd::Mcp { cmd } => run_mcp(&vault, cmd, cli.json),
+        Cmd::SysCheck { mode, lib } => {
+            let lib_root = lib.clone().or_else(|| cli.work_root.clone()).unwrap_or_else(|| vault.workspace());
+            run_sys_check(&lib_root, mode, cli.json)
+        }
+        Cmd::Pipeline { cmd } => {
+            let lib_root = cli.work_root.clone().unwrap_or_else(|| vault.workspace());
+            run_pipeline(&vault, &lib_root, cmd, cli.json, cli.quiet)
+        }
         Cmd::Task { cmd } => cmds::run_task(&vault, cmd, cli.json),
         Cmd::Subagent { file, session, max_tasks } => {
             cmds::run_subagent(&vault, file, session.as_deref(), *max_tasks, cli.json)
@@ -538,6 +546,172 @@ fn run_mcp(vault: &Vault, cmd: &McpCmd, json: bool) -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&serde_json::json!({"result": out}))?);
             } else {
                 println!("{out}");
+            }
+            Ok(())
+        }
+        McpCmd::ProbeAll { call_test } => {
+            let specs: Vec<ne_agent::config::McpServerCfg> = cfg
+                .mcp
+                .servers
+                .iter()
+                .filter(|s| s.enabled)
+                .cloned()
+                .collect();
+            if specs.is_empty() {
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                        "command": "mcp probe-all", "servers": [], "note": "未配置（或全部禁用）MCP 服务",
+                    }))?);
+                } else {
+                    println!("（未配置 MCP 服务；在 runtime.yaml 的 mcp.servers 里添加）");
+                }
+                return Ok(());
+            }
+            let mut reports: Vec<serde_json::Value> = Vec::new();
+            for spec in &specs {
+                // 逐服务独立连接，一个失败不影响其它（可用性探测的语义）
+                let mut reg = ne_agent::mcp::McpRegistry::new(vec![spec.clone()]);
+                let tools = reg.discover_all();
+                let server_tools: Vec<serde_json::Value> = tools
+                    .iter()
+                    .filter(|(srv, _)| srv == &spec.name)
+                    .map(|(_, t)| serde_json::json!({"name": t.name, "description": t.description}))
+                    .collect();
+                let ok = !server_tools.is_empty();
+                let mut calls: Vec<serde_json::Value> = Vec::new();
+                if *call_test && ok {
+                    for (_, t) in tools.iter().filter(|(srv, _)| srv == &spec.name) {
+                        // 轻量探活：用空参数调用；执行期失败也算"可达"（关键在握手/往返通）
+                        match reg.call(&spec.name, &t.name, serde_json::json!({})) {
+                            Ok(_) => calls.push(serde_json::json!({"tool": t.name, "reachable": true})),
+                            Err(e) => calls.push(serde_json::json!({"tool": t.name, "reachable": false, "error": e.to_string()})),
+                        }
+                    }
+                }
+                reports.push(serde_json::json!({
+                    "server": spec.name, "command": spec.command, "args": spec.args,
+                    "ok": ok, "tool_count": server_tools.len(), "tools": server_tools,
+                    "call_test": if *call_test { serde_json::json!(calls) } else { serde_json::Value::Null },
+                }));
+            }
+            let all_ok = reports.iter().all(|r| r["ok"] == true);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "command": "mcp probe-all", "all_ok": all_ok,
+                    "server_count": reports.len(), "servers": reports,
+                }))?);
+            } else {
+                println!("== mcp probe-all（{} 个服务；{}）==", reports.len(),
+                    if all_ok { "全部可达" } else { "存在不可达" });
+                for r in &reports {
+                    println!("  {} {} 工具 {} — {}",
+                        if r["ok"] == true { "✅" } else { "❌" },
+                        r["server"].as_str().unwrap_or(""),
+                        r["tool_count"],
+                        if r["ok"] == true { "握手 + 列工具成功" } else { "连接失败或无工具" });
+                    if *call_test {
+                        if let Some(cs) = r["call_test"].as_array() {
+                            for c in cs {
+                                println!("      {} {} {}", if c["reachable"] == true { "·" } else { "✗" },
+                                    c["tool"].as_str().unwrap_or(""),
+                                    c["error"].as_str().unwrap_or(""));
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+/// 【规约适配】全局系统自检（= `world-gov self-check run` 的别名入口）。
+///
+/// 第 18 批：对齐《项目总规约》的 `sys-check full --json`。**复用**同一实现。
+fn run_sys_check(lib_root: &Path, mode: &str, json: bool) -> Result<()> {
+    match mode {
+        "full" => {}
+        other => anyhow::bail!("sys-check 未知 mode：{other}（当前仅支持 full）"),
+    }
+    let conn = ne_agent::governance::open_gov(lib_root)?;
+    let r = ne_agent::governance::self_check::run(&conn, lib_root, false, 30)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&r)?);
+    } else {
+        println!("== sys-check full（= world-gov self-check；{} 项检查，{} 失败）==",
+            r["checks"], r["failed"]);
+        if let Some(items) = r["items"].as_array() {
+            for it in items {
+                let mark = if it["ok"] == true {
+                    if it["warn"].as_bool().unwrap_or(false) { "⚠" } else { "✅" }
+                } else { "❌" };
+                println!("  {mark} {} : {}", it["name"], it["detail"]);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 【规约适配】pipeline 命令组（scan-auto / world-analyze）。
+///
+/// 第 18 批：对齐《项目总规约》的命令面。全部是**适配层**——底层复用 world-gov 的
+/// `scan_library` 与统一 `semantic_pipeline` 收口，不另起一套。默认零外呼；
+/// `--ai-run` 才显式开命令行锁（仍需 feature + WOGOV_ALLOW_REAL_LLM=yes）。
+fn run_pipeline(vault: &Vault, lib_root: &Path, cmd: &PipelineCmd, json: bool, quiet: bool) -> Result<()> {
+    let _ = vault;
+    match cmd {
+        PipelineCmd::ScanAuto { slice, ai_guided, ai_run, dry_run, all_layers, lib: _ } => {
+            let conn = ne_agent::governance::open_gov(lib_root)?;
+            ne_agent::governance::progress::emit(quiet, "pipeline scan-auto", 0, 1, None);
+            // 复用 world-gov scan-library 同一实现；semantic = --ai-run（显式）
+            let r = ne_agent::world_gov::scan_library(
+                &conn, lib_root, slice.as_deref(), *ai_run, *dry_run, *all_layers, None, None, None,
+            )?;
+            ne_agent::governance::progress::emit(quiet, "pipeline scan-auto", 1, 1, Some(0));
+            if json {
+                let mut out = r.clone();
+                out["command"] = serde_json::json!("pipeline scan-auto");
+                out["ai_guided"] = serde_json::json!(ai_guided);
+                out["ai_run"] = serde_json::json!(ai_run);
+                out["llm_gate"] = ne_agent::governance::llm_gate::lock_status(*ai_run);
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            } else {
+                let s = &r["slice"];
+                println!("== pipeline scan-auto（AI 引导扫描包装）==");
+                println!("分片 {}/{}：本片 {} 条 / 扫描域 {} 条", s["n"], s["m"], s["items"], s["total"]);
+                println!("semantic={} ai_guided={} ai_run={} dry_run={}", r["semantic"], ai_guided, ai_run, dry_run);
+                if !*ai_run {
+                    println!("[默认零外呼] 只产探针清单；加 --ai-run 才走真实语义扫描（仍需三重锁）。");
+                } else {
+                    let st = ne_agent::governance::llm_gate::lock_status(true);
+                    if st["gate_unlocked"] == true {
+                        println!("[三重锁已开] 真实语义扫描通路已启用。");
+                    } else {
+                        println!("[三重锁未全开] {}", st["status"].as_str().unwrap_or(""));
+                    }
+                }
+                if *dry_run { println!("[--dry-run] 未落盘清单文件。"); }
+            }
+            Ok(())
+        }
+        PipelineCmd::WorldAnalyze { slice, ai_run, dry_run, lib: _ } => {
+            let conn = ne_agent::governance::open_gov(lib_root)?;
+            let r = ne_agent::world_gov::scan_library(
+                &conn, lib_root, slice.as_deref(), *ai_run, *dry_run, false, None, None, None,
+            )?;
+            if json {
+                let mut out = r.clone();
+                out["command"] = serde_json::json!("pipeline world-analyze");
+                out["ai_run"] = serde_json::json!(ai_run);
+                out["llm_gate"] = ne_agent::governance::llm_gate::lock_status(*ai_run);
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            } else {
+                println!("== pipeline world-analyze（= scan-library --semantic 别名）==");
+                println!("扫描域 {} 条；semantic={} ai_run={}", r["counts"]["used"], r["semantic"], ai_run);
+                println!("入库通路: {}", r["semantic_channel"]);
+                if !*ai_run {
+                    println!("[默认零外呼] 结构化报告骨架已产；加 --ai-run 走真实语义（仍需三重锁）。");
+                }
             }
             Ok(())
         }
@@ -1504,8 +1678,8 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                     if json { println!("{}", serde_json::json!({"deleted": ok, "run_id": run_id})); }
                     else { println!("{}推演记录 #{}", if ok { "已删除" } else { "未找到" }, run_id); }
                 }
-                SandboxCmd::Spawn { from_snap, save } => {
-                    let r = sb::spawn_from_snapshot(&conn, lib_root, from_snap, *save)?;
+                SandboxCmd::Spawn { from_snap, save, ai_sandbox, dry_run } => {
+                    let r = sb::spawn_from_snapshot(&conn, lib_root, from_snap, *save && !*ai_sandbox)?;
                     if json { println!("{}", serde_json::to_string_pretty(&r)?); }
                     else if r["status"] == "SNAPSHOT_NOT_FOUND" {
                         println!("未找到快照 {from_snap}；先 world-gov diff snap create --label ...");
@@ -1516,6 +1690,57 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                         println!("初始态: {}", serde_json::to_string(&r["scenario"]["world"])?);
                         if r["saved"] == true { println!("已落库为 0 步基线记录 #{}", r["run_id"]); }
                         println!("{}", r["note"].as_str().unwrap_or(""));
+                    }
+                    // 【规约适配】--ai-sandbox：从快照派生后，用已放行的 LLM 做一次 AI 引导推演。
+                    // 默认只算不写；仍受三重锁约束（feature + WOGOV_ALLOW_REAL_LLM=yes + 本次调用）。
+                    if *ai_sandbox {
+                        let snap_ok = r["status"] == "PROBE_FROM_SNAPSHOT" || r["status"].is_null()
+                            || r.get("scenario").is_some();
+                        if r.get("scenario").is_none() {
+                            anyhow::bail!("ai-sandbox 需要可用的快照初始态（快照不存在或不可读）");
+                        }
+                        let _ = snap_ok;
+                        // 复用统一收口：把派生初始态打包成一步 AI 推演请求
+                        use ne_agent::governance::{llm_config as lc, semantic_pipeline as sp};
+                        let cfg = lc::load(lib_root)?;
+                        let probe = serde_json::json!({
+                            "kind": "ai_sandbox_step",
+                            "snap_id": from_snap,
+                            "initial_world": r["scenario"]["world"].clone(),
+                            "meta_fingerprint": r["meta_fingerprint"].clone(),
+                        });
+                        let ph = sp::probe_hash(&probe);
+                        let system = "你是《残响之河》世界观沙盘推演器。基于给定初始态走一步确定性推演，\
+只输出一个 JSON 对象（键：step/state/verdict/note），禁止 markdown/解释文字。".to_string();
+                        let user = format!("初始态：{}", serde_json::to_string(&r["scenario"]["world"])?);
+                        let raw = sp::RawPrompt {
+                            system, user, probe_hash: ph,
+                            schema: serde_json::json!({"type":"object","required":["step","state","verdict"],
+                                "properties":{"step":{"type":"integer"},"state":{"type":"object"},
+                                "verdict":{"type":"string"},"note":{"type":"string"}}}),
+                            ..Default::default()
+                        };
+                        // ai-sandbox 的真实性由命令行 `--ai-sandbox` 充当命令行锁
+                        let outcome = sp::call_raw(&conn, lib_root, &cfg, true, &raw)?;
+                        let oj = outcome.to_json();
+                        if json {
+                            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                                "command": "sandbox spawn --ai-sandbox",
+                                "spawn": r, "llm_gate": ne_agent::governance::llm_gate::lock_status(true),
+                                "pipeline": oj, "dry_run": dry_run,
+                            }))?);
+                        } else {
+                            println!("── AI 沙箱推演（--ai-sandbox）──");
+                            println!("状态: {}", oj["status"].as_str().unwrap_or("-"));
+                            match &outcome {
+                                sp::Outcome::GateLocked(_) => println!("[三重锁拦截] 未解锁；未发出任何请求。"),
+                                sp::Outcome::Success { content, .. } => println!("AI 步骤: {}", serde_json::to_string_pretty(content)?),
+                                sp::Outcome::CacheHit { content, .. } => println!("[缓存命中] AI 步骤: {}", serde_json::to_string_pretty(content)?),
+                                sp::Outcome::Malformed { attempts, .. } => println!("[格式非法] 重试 {attempts} 次仍非合法 JSON。"),
+                                other => println!("{:?}", other),
+                            }
+                            if *dry_run { println!("[--dry-run] AI 引导结果未落库（沙盘与基准库强隔离）。"); }
+                        }
                     }
                 }
                 SandboxCmd::Trace { cmd } => match cmd {
@@ -2810,8 +3035,27 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
         }
         WorldGovCmd::Web { cmd, lib: _ } => {
             match cmd {
-                WebCmd::Serve { port, no_open } => {
+                WebCmd::Serve { port, no_open, health_check_only } => {
                     let url = format!("http://127.0.0.1:{port}");
+                    if *health_check_only {
+                        // 【规约适配】只做一次健康探测后立即退出，不常驻。
+                        // 复用 web_gateway 的路由做**进程内**探测（不起常驻服务、不占端口）。
+                        let conn = ne_agent::governance::open_gov(lib_root)?;
+                        let (code, _body) = ne_agent::governance::web_gateway::route_for_test(&conn, lib_root, "GET", "/");
+                        let ok = code == 200;
+                        if json {
+                            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                                "command": "world-gov web serve --health-check-only",
+                                "url": url, "bind": "127.0.0.1", "health_ok": ok, "http_status": code,
+                                "note": "仅进程内路由探测；未起常驻服务、未占端口。",
+                            }))?);
+                        } else {
+                            println!("== web serve --health-check-only ==");
+                            println!("面板健康: {}（GET / → HTTP {}）", if ok { "✅ 可用" } else { "❌ 异常" }, code);
+                            println!("（仅进程内探测；未起常驻服务、未占端口）");
+                        }
+                        return Ok(());
+                    }
                     if json {
                         println!("{}", serde_json::to_string_pretty(&serde_json::json!({
                             "command": "world-gov web serve",

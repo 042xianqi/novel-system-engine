@@ -9,13 +9,21 @@ description = "残响之河 novel-engine 的 MCP stdio 服务（太墟外挂）"
 [[bin]]
 name = "ne-mcp"
 path = "src/main.rs"
-
+[features]
+# 第 18 批：透传 ne-agent 的真实 LLM 出网能力（**默认关闭**）。
+# 开启后才链接 ne-agent 的 reqwest 分支；仍受三重锁（feature + WOGOV_ALLOW_REAL_LLM=yes + 工具参数 real_semantic）。
+default = []
+llm_integration = ["ne-agent/llm_integration"]
 [dependencies]
 ne-core = { path = "../ne-core" }
 ne-injection = { path = "../ne-injection" }
 ne-qc = { path = "../ne-qc" }
 ne-engine = { path = "../ne-engine" }
 ne-db = { path = "../ne-db" }
+# ── world-gov 治理层复用（第 18 批 · 待办②）──
+# governance/world_gov 均为纯库函数（只依赖 serde_json/anyhow/rusqlite/std + ne_engine::{http,world_physics}），
+# 直接调用同一实现，不 fork shell、不另起一套。默认不引入 reqwest（ne-agent 的 reqwest 是 optional）。
+ne-agent = { path = "../ne-agent", default-features = false }
 # ne-cardgen 故意不依赖：它只为一行 lane_key 就拉入 omp-rs-7k(tokio full + reqwest)，
 # 属于重量级网络依赖，与 MCP stdio 服务无关。ne-mcp 自实现等价的抽卡逻辑。
 serde = { version = "1", features = ["derive"] }

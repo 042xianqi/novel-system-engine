@@ -1,3 +1,5 @@
 === commit stage: v42 ===
 2026-10-14 17:49:15
 CI: RESULT=OK passed=792 failed=0
+commit_rc=0 hash=ecc4db8
+RESULT=COMMITTED hash=ecc4db8 rc=0

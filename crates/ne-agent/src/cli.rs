@@ -181,8 +181,10 @@ pub enum Cmd {
         prompt_only: bool,
         /// 启用记忆子系统（preprocess → 三层系统提示词 → post_update）。
         ///
-        /// 默认 **false = 旧行为逐字节不变**（system prompt 仍是单行 `你是《X》…`）。
-        #[arg(long)]
+        /// 默认 **true**（60 章压测已通过）。三种写法均兼容：
+        /// `--use-memory`、`--use-memory=true`、`--use-memory=false`。
+        /// 省略则用默认值 true。
+        #[arg(long, num_args = 0..=1, default_value_t = true, default_missing_value = "true")]
         use_memory: bool,
     },
     /// 管理外部 MCP 服务

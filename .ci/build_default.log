@@ -1,0 +1,21 @@
+    |
+743 | ...name, cat, fp, stale)) => ok...
+    |               ^^ help: if this is intentional, prefix it with an underscore: `_fp`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `category` is never read
+   --> crates/ne-mcp/src/tools.rs:225:9
+    |
+222 | pub struct CardJob {
+    |            ------- field in this struct
+...
+225 |     pub category: String,
+    |         ^^^^^^^^
+    |
+    = note: `CardJob` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ne-mcp` (bin "ne-mcp") generated 2 warnings (run `cargo fix --bin "ne-mcp" -p ne-mcp` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 12.34s
+BUILD_DONE

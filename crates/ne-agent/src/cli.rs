@@ -720,6 +720,15 @@ pub enum WorldGovCmd {
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,
     },
+    /// 【调试】关系网（build|list|summary|dangling|orphans|neighbors|path|cycles；只读）
+    #[command(hide = true)]
+    Graph {
+        #[command(subcommand)]
+        cmd: GraphCmd,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -754,7 +763,67 @@ pub enum ConflictCmd {
     /// 统计（总数 + 按状态分布）
     Summary,
 }
-
+#[derive(Subcommand, Debug)]
+pub enum GraphCmd {
+    /// 构建关系图（读卡正文抽引用边 → 事务重建隔离表 rel_edge；可 --dry-run）
+    Build {
+        /// 只统计不落库
+        #[arg(long)]
+        dry_run: bool,
+        /// 限流：最多扫描多少张卡
+        #[arg(long)]
+        max_cards: Option<usize>,
+        /// 关联快照 id（写入 meta，便于回溯）
+        #[arg(long)]
+        snap: Option<String>,
+    },
+    /// 列出引用边（可按 src 过滤）
+    List {
+        #[arg(long)]
+        key: Option<String>,
+        #[arg(long, default_value_t = 200)]
+        limit: usize,
+    },
+    /// 统计摘要（节点/边/悬空/孤立/top度）
+    Summary {
+        #[arg(long, default_value_t = 10)]
+        top: usize,
+    },
+    /// 悬空引用（指向不存在的卡）
+    Dangling {
+        #[arg(long, default_value_t = 200)]
+        limit: usize,
+    },
+    /// 孤立卡（无入边）
+    Orphans {
+        #[arg(long, default_value_t = 200)]
+        limit: usize,
+    },
+    /// 某卡的上/下游邻居
+    Neighbors {
+        #[arg(long)]
+        key: String,
+        /// out|in（默认两者都出）
+        #[arg(long)]
+        dir: Option<String>,
+    },
+    /// 最短引用链 from → to
+    Path {
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        to: String,
+        #[arg(long, default_value_t = 6)]
+        max_depth: usize,
+    },
+    /// 循环引用检测
+    Cycles {
+        #[arg(long, default_value_t = 6)]
+        max_len: usize,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
+}
 #[derive(Subcommand, Debug)]
 pub enum WebCmd {
     /// 启动面板（前台阻塞；Ctrl-C 退出）

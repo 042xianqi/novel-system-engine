@@ -13,7 +13,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use crate::cli::{Cli, Cmd, LibraryCtlCmd, McpCmd, ModelsCmd, QueueCmd, VaultCmd, WorldGovCmd, AuditExportCmd, CacheCmd, ProbeExportCmd, SelfCheckCmd, TagCmd, NoteCmd, DiffCmd, DiffSnapCmd, WebCmd, ConflictCmd};
+use crate::cli::{Cli, Cmd, LibraryCtlCmd, McpCmd, ModelsCmd, QueueCmd, VaultCmd, WorldGovCmd, AuditExportCmd, CacheCmd, ProbeExportCmd, SelfCheckCmd, TagCmd, NoteCmd, DiffCmd, DiffSnapCmd, WebCmd, ConflictCmd, GraphCmd};
 use ne_agent::{RuntimeConfig, Vault};
 use std::path::{Path, PathBuf};
 mod cli;
@@ -955,13 +955,14 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool, 
             st["incremental_scan_ready"] = serde_json::json!(true);
             st["batch_inspect_ready"] = serde_json::json!(true);
             // 工具链版本标记（仅标识，无逻辑作用）
-            st["toolchain_epoch"] = serde_json::json!(13);
+            st["toolchain_epoch"] = serde_json::json!(14);
             st["tag_note_ready"] = serde_json::json!(true);
             st["diff_snap_ready"] = serde_json::json!(true);
             st["webpanel_ready"] = serde_json::json!(true);
             // 第 13 批：三重锁状态（缺哪把锁逐条列出；不自动开启）
             st["real_llm_triple_lock"] = ne_agent::governance::llm_gate::lock_status(false);
             st["conflict_store_ready"] = serde_json::json!(true);
+            st["rel_graph_ready"] = serde_json::json!(true);
             st["llm_real_call_enabled"] = serde_json::json!(
                 ne_agent::governance::llm_gate::real_llm_unlocked(false)
             );
@@ -1249,6 +1250,114 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                         if let Some(by) = s["by_review_status"].as_object() {
                             for k in cf::REVIEW_STATUSES {
                                 println!("  {:<12} {}", k, by.get(*k).cloned().unwrap_or(serde_json::json!(0)));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        WorldGovCmd::Graph { cmd, lib: _ } => {
+            use ne_agent::governance::rel_graph as rg;
+            match cmd {
+                GraphCmd::Build { dry_run, max_cards, snap } => {
+                    let r = rg::build(&conn, lib_root, *max_cards, *dry_run, snap.as_deref())?;
+                    if json { println!("{}", serde_json::to_string_pretty(&r)?); }
+                    else {
+                        println!("== 关系图构建{} ==", if *dry_run { "（--dry-run）" } else { "" });
+                        println!("扫描卡数: {}  节点: {}  边: {}  悬空(去重): {}",
+                            r["cards_scanned"], r["nodes"], r["edges"], r["dangling_unique"]);
+                        if r["unreadable"].as_u64().unwrap_or(0) > 0 {
+                            println!("[warn] {} 张卡源文件不可读（已跳过）", r["unreadable"]);
+                        }
+                        println!("{}", r["note"].as_str().unwrap_or(""));
+                    }
+                }
+                GraphCmd::List { key, limit } => {
+                    let r = rg::list(&conn, key.as_deref(), *limit)?;
+                    if json { println!("{}", serde_json::to_string_pretty(&r)?); }
+                    else {
+                        println!("== 引用边（显示 {} 条）==", r["shown"]);
+                        if let Some(es) = r["edges"].as_array() {
+                            for e in es {
+                                println!("  {} → {}", e["src"].as_str().unwrap_or(""), e["dst"].as_str().unwrap_or(""));
+                            }
+                        }
+                    }
+                }
+                GraphCmd::Summary { top } => {
+                    let r = rg::summary(&conn, *top)?;
+                    if json { println!("{}", serde_json::to_string_pretty(&r)?); }
+                    else {
+                        println!("== 关系网摘要 ==");
+                        println!("节点: {}  边: {}  悬空(去重): {}  孤立卡: {}",
+                            r["nodes"], r["edges"], r["dangling_unique"], r["orphans"]);
+                        println!("出度 TOP：");
+                        if let Some(t) = r["top_out_degree"].as_array() {
+                            for x in t { println!("  {}  ({})", x["key"].as_str().unwrap_or(""), x["degree"]); }
+                        }
+                        println!("入度 TOP：");
+                        if let Some(t) = r["top_in_degree"].as_array() {
+                            for x in t { println!("  {}  ({})", x["key"].as_str().unwrap_or(""), x["degree"]); }
+                        }
+                    }
+                }
+                GraphCmd::Dangling { limit } => {
+                    let r = rg::dangling(&conn, *limit)?;
+                    if json { println!("{}", serde_json::to_string_pretty(&r)?); }
+                    else {
+                        println!("== 悬空引用（共 {}，显示 {}）==", r["total"], r["shown"]);
+                        if let Some(it) = r["items"].as_array() {
+                            for x in it {
+                                let srcs = x["referenced_by"].as_array().map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+                                println!("  ✗ {} ← 被引用于: {}", x["missing_key"].as_str().unwrap_or(""), srcs);
+                            }
+                        }
+                    }
+                }
+                GraphCmd::Orphans { limit } => {
+                    let r = rg::orphans(&conn, *limit)?;
+                    if json { println!("{}", serde_json::to_string_pretty(&r)?); }
+                    else {
+                        println!("== 孤立卡（无入边，共 {}，显示 {}）==", r["total"], r["shown"]);
+                        if let Some(it) = r["items"].as_array() {
+                            for x in it { println!("  - {}", x.as_str().unwrap_or("")); }
+                        }
+                    }
+                }
+                GraphCmd::Neighbors { key, dir } => {
+                    let r = rg::neighbors(&conn, key, dir.as_deref().unwrap_or(""))?;
+                    if json { println!("{}", serde_json::to_string_pretty(&r)?); }
+                    else {
+                        println!("== {key} 的邻居 ==");
+                        if let Some(d) = r["downstream_refs"].as_array() {
+                            println!("下游（该卡引用）:");
+                            for x in d { println!("  → {}{}", x["key"].as_str().unwrap_or(""), if x["exists"] == false { "（悬空）" } else { "" }); }
+                        }
+                        if let Some(u) = r["upstream_refs"].as_array() {
+                            println!("上游（引用该卡）:");
+                            for x in u { println!("  ← {}{}", x["key"].as_str().unwrap_or(""), if x["exists"] == false { "（悬空）" } else { "" }); }
+                        }
+                    }
+                }
+                GraphCmd::Path { from, to, max_depth } => {
+                    let r = rg::path(&conn, from, to, *max_depth)?;
+                    if json { println!("{}", serde_json::to_string_pretty(&r)?); }
+                    else if r["found"] == true {
+                        let chain = r["chain"].as_array().map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" → ")).unwrap_or_default();
+                        println!("== 引用链（{} 跳）==\n  {}", r["len"], chain);
+                    } else {
+                        println!("{from} → {to}：在深度 {} 内未找到引用链", r["max_depth"]);
+                    }
+                }
+                GraphCmd::Cycles { max_len, limit } => {
+                    let r = rg::cycles(&conn, *max_len, *limit)?;
+                    if json { println!("{}", serde_json::to_string_pretty(&r)?); }
+                    else {
+                        println!("== 循环引用（共 {}，显示 {}；max_len={}）==", r["total"], r["shown"], r["max_len"]);
+                        if let Some(it) = r["items"].as_array() {
+                            for c in it {
+                                let s = c.as_array().map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" → ")).unwrap_or_default();
+                                println!("  ⟳ {s} → (回到起点)");
                             }
                         }
                     }

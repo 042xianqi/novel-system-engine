@@ -220,6 +220,14 @@ pub fn run(conn: &Connection, lib_root: &Path, fix: bool, older_than_days: u64) 
         "detail": cfs,
     }));
 
+    // ⑫ 关系网（第 14 批）：rel_edge 表结构 + 自环检查（只读）
+    let rgs = super::rel_graph::table_check(conn).unwrap_or(json!({"ok": false, "error": "检查失败"}));
+    items.push(json!({
+        "name": "rel_graph",
+        "ok": rgs["ok"] == true,
+        "detail": rgs,
+    }));
+
     let failed = items.iter().filter(|x| x["ok"] == false).count();
     Ok(json!({
         "command": "world-gov self-check",
@@ -229,7 +237,7 @@ pub fn run(conn: &Connection, lib_root: &Path, fix: bool, older_than_days: u64) 
         "failed": failed,
         "all_ok": failed == 0,
         "items": items,
-        "toolchain_epoch": 13,
+        "toolchain_epoch": 14,
         "note": "自检只读为主；--fix 仅创建缺失目录，绝不 ALTER 表/删任务/改资料库。",
     }))
 }
@@ -268,7 +276,8 @@ pub fn capabilities() -> Value {
         "webpanel_ready": true,
         "conflict_store_ready": true,
         "real_semantic_triple_lock": true,
-        "toolchain_epoch": 13,
+        "rel_graph_ready": true,
+        "toolchain_epoch": 14,
     })
 }
 
@@ -338,12 +347,13 @@ mod tests {
     #[test]
     fn capabilities_marker() {
         let c = capabilities();
-        assert_eq!(c["toolchain_epoch"], 13);
+        assert_eq!(c["toolchain_epoch"], 14);
         assert_eq!(c["selfcheck_ready"], true);
         assert_eq!(c["tag_note_ready"], true);
         assert_eq!(c["diff_snap_ready"], true);
         assert_eq!(c["webpanel_ready"], true);
         assert_eq!(c["conflict_store_ready"], true);
         assert_eq!(c["real_semantic_triple_lock"], true);
+        assert_eq!(c["rel_graph_ready"], true);
     }
 }

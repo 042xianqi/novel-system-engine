@@ -819,13 +819,87 @@ fn run_library_ctl(lib_root: &Path, cmd: &LibraryCtlCmd, json: bool) -> Result<(
 }
 
 /// world-gov —— 世界观法务官（独立外挂；默认零模型只产探针包；--semantic 才调模型）。
+/// `--enqueue` 统一入口：
+/// - 非 --persist：纯内存，同调用内走通 enqueue→simulate→emit（进程退出即消失）。
+/// - --persist：只登记 **Pending** 到 novel.db.task_jobs（不模拟、不入库），
+///   推进交由显式 `world-gov queue step`（一步一推，绝不自动轮询）。
+fn gov_enqueue(
+    conn: &rusqlite::Connection,
+    kind: ne_agent::governance::pipeline::JobKind,
+    slice: Option<(u32, u32)>,
+    volume: Option<String>,
+    probe_path: String,
+    persist: bool,
+    json: bool,
+    label: &str,
+) -> Result<()> {
+    use ne_agent::governance::pipeline as pipe;
+    use ne_agent::governance::pipeline_store as store;
+
+    if persist {
+        store::ensure_task_table(conn)?;
+        let (id, fresh) = pipe::with_queue(|q| q.enqueue(kind, slice, volume.clone()));
+        // 持久层登记 Pending（probe_path 记录；不模拟）
+        let mut job = pipe::with_queue(|q| q.peek(&id).cloned())
+            .ok_or_else(|| anyhow::anyhow!("管线任务丢失：{id}"))?;
+        job.probe_path = probe_path;
+        job.state = ne_agent::governance::pipeline::JobState::Pending;
+        store::job_persist(conn, &job, None)?;
+        if json {
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                "command": format!("world-gov {label} --enqueue"), "mode": "persist(pending)",
+                "job_id": id, "fresh": fresh, "state": "Pending",
+                "note": "已落库，待 `world-gov queue step` 逐步推进（不自动轮询）",
+            }))?);
+        } else {
+            println!("== 持久入队（{label}）==");
+            println!("任务 {} 已登记为 Pending（{}）", id,
+                if fresh { "新建" } else { "同进程已存在，落库幂等" });
+            println!("下一步：world-gov queue step（一步一推；非自动轮询）");
+        }
+        return Ok(());
+    }
+
+    // 非持久：纯内存完整沙盘
+    let (id, fresh, findings) = pipe::enqueue_and_simulate(kind, slice, volume)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let _ = pipe::set_probe_path(&id, &probe_path);
+    let n_risks = if fresh {
+        world_gov_emit(conn, label, &findings)?
+    } else { 0 };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "command": format!("world-gov {label} --enqueue"), "mode": "pipeline_sim",
+            "job_id": id, "fresh": fresh, "persisted": false,
+            "findings_count": findings.len(), "risks_emitted": n_risks,
+        }))?);
+    } else {
+        println!("== 管线沙盘（{label}）==");
+        println!("任务 {} {} → 模拟 findings {} 条 → 入库 {} 条（纯内存，退出即消失）",
+            id, if fresh { "入队(新建)" } else { "重复入队(幂等跳过)" }, findings.len(), n_risks);
+        println!("（沙盘只产 OK/UNCERTAIN 样例，均不入库；真实推理等放行令）");
+    }
+    Ok(())
+}
+
+/// emit 薄封装（统一 source 前缀）。
+fn world_gov_emit(
+    conn: &rusqlite::Connection,
+    label: &str,
+    findings: &[serde_json::Value],
+) -> Result<usize> {
+    ne_agent::world_gov::emit_semantic_findings(conn, &format!("world-gov {label} --enqueue"), findings)
+}
+
 fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool) -> Result<()> {
     use ne_agent::world_gov;
     use ne_agent::governance::{get_semantic_gate, semantic_gate_status};
     let conn = ne_agent::governance::open_gov(lib_root)?;
     match cmd {
         WorldGovCmd::GateCheck { semantic } => {
-            let st = semantic_gate_status(*semantic);
+            let mut st = semantic_gate_status(*semantic);
+            // 能力标识（仅告知持久层可用，不自动开启）
+            st["persist_mode_available"] = serde_json::json!(true);
             if json {
                 println!("{}", serde_json::to_string_pretty(&st)?);
             } else {
@@ -834,6 +908,7 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool) 
                 println!("② 命令行 --semantic:            {}", st["cli_semantic"]);
                 println!("③ NOVEL_SEMANTIC_UNLOCK=yes:    {}（raw: {}）", st["env_unlock"], st["env_raw"]);
                 println!("→ {}", st["status"]);
+                println!("persist_mode_available: {}（能力标识，需 --persist 显式开启）", st["persist_mode_available"]);
             }
             return Ok(());
         }
@@ -866,30 +941,11 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool) 
                 }
             }
         }
-        WorldGovCmd::InspectCard { key, semantic, dry_run, enqueue, lib: _ } => {
-            // --enqueue：提交任务进内存管线（沙盘，同调用内走通 enqueue→simulate→入库）
+        WorldGovCmd::InspectCard { key, semantic, dry_run, enqueue, persist, lib: _ } => {
             if *enqueue {
-                use ne_agent::governance::pipeline as pipe;
-                let (id, fresh, findings) =
-                    pipe::enqueue_and_simulate(pipe::JobKind::InspectCard, None, None)
-                        .map_err(|e| anyhow::anyhow!("{e}"))?;
-                let _ = pipe::set_probe_path(&id, &format!("07_勘误工坊/inspect_{key}.json(占位)"));
-                let n_risks = if fresh {
-                    world_gov::emit_semantic_findings(&conn, "world-gov inspect-card --enqueue", &findings)?
-                } else { 0 };
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                        "command": "world-gov inspect-card --enqueue", "mode": "pipeline_sim",
-                        "key": key, "job_id": id, "fresh": fresh,
-                        "findings_count": findings.len(), "risks_emitted": n_risks,
-                    }))?);
-                } else {
-                    println!("== 管线沙盘（inspect-card key={key}）==");
-                    println!("任务 {} {} → 模拟 findings {} 条 → 入库 {} 条",
-                        id, if fresh { "入队(新建)" } else { "重复入队(幂等跳过)" }, findings.len(), n_risks);
-                    println!("（沙盘只产 OK/UNCERTAIN 样例，均不入库；真实推理等放行令）");
-                }
-                return Ok(());
+                let probe = format!("07_勘误工坊/inspect_{key}.json(占位)");
+                return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
+                    None, None, probe, *persist, json, &format!("inspect-card key={key}"));
             }
             let r = world_gov::inspect_card(&conn, lib_root, key)?;
             if r["status"] == "NOT_FOUND" {
@@ -973,34 +1029,16 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool) 
                 println!("（共 {} 层上层约束；详见 --json）", r["chain_len"]);
             }
         }
-        WorldGovCmd::ScanLibrary { semantic, slice, dry_run, enqueue, lib: _ } => {
-            // --enqueue：入队沙盘（先用严格解析校验 slice，非法即拒）
+        WorldGovCmd::ScanLibrary { semantic, slice, dry_run, enqueue, persist, lib: _ } => {
             if *enqueue {
-                use ne_agent::governance::pipeline as pipe;
                 let (sn, sm) = match slice.as_deref() {
                     Some(s) => world_gov::parse_slice_strict(s).map_err(|e| anyhow::anyhow!("{e}"))?,
                     None => (1, 1),
                 };
-                let (id, fresh, findings) =
-                    pipe::enqueue_and_simulate(pipe::JobKind::ScanLibrary, Some((sn as u32, sm as u32)), None)
-                        .map_err(|e| anyhow::anyhow!("{e}"))?;
-                let _ = pipe::set_probe_path(&id, &format!("07_勘误工坊/scan_probe_{sn}of{sm}.json"));
-                let n_risks = if fresh {
-                    world_gov::emit_semantic_findings(&conn, "world-gov scan-library --enqueue", &findings)?
-                } else { 0 };
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                        "command": "world-gov scan-library --enqueue", "mode": "pipeline_sim",
-                        "slice": format!("{sn}/{sm}"), "job_id": id, "fresh": fresh,
-                        "findings_count": findings.len(), "risks_emitted": n_risks,
-                    }))?);
-                } else {
-                    println!("== 管线沙盘（scan-library slice={sn}/{sm}）==");
-                    println!("任务 {} {} → 模拟 findings {} 条 → 入库 {} 条",
-                        id, if fresh { "入队(新建)" } else { "重复入队(幂等跳过)" }, findings.len(), n_risks);
-                    println!("（沙盘只产 OK/UNCERTAIN 样例，均不入库；真实推理等放行令）");
-                }
-                return Ok(());
+                let probe = format!("07_勘误工坊/scan_probe_{sn}of{sm}.json");
+                return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::ScanLibrary,
+                    Some((sn as u32, sm as u32)), None, probe, *persist, json,
+                    &format!("scan-library slice={sn}/{sm}"));
             }
             let r = world_gov::scan_library(&conn, lib_root, slice.as_deref(), *semantic, *dry_run)?;
             if json {
@@ -1025,32 +1063,14 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool) 
                     lib_root.display(), s["n"], s["m"]); }
             }
         }
-        WorldGovCmd::CheckOutline { volume, semantic, dry_run, enqueue, lib: _ } => {
-            // --enqueue：入队沙盘（先校验卷名，非法即拒）
+        WorldGovCmd::CheckOutline { volume, semantic, dry_run, enqueue, persist, lib: _ } => {
             if *enqueue {
-                use ne_agent::governance::pipeline as pipe;
                 world_gov::validate_volume_name(volume).map_err(|e| anyhow::anyhow!("{e}"))?;
-                let (id, fresh, findings) =
-                    pipe::enqueue_and_simulate(pipe::JobKind::CheckOutline, None, Some(volume.clone()))
-                        .map_err(|e| anyhow::anyhow!("{e}"))?;
-                let _ = pipe::set_probe_path(&id, &format!("07_勘误工坊/outline_probe_{}.json",
-                    volume.replace(|c: char| !c.is_ascii_alphanumeric(), "_")));
-                let n_risks = if fresh {
-                    world_gov::emit_semantic_findings(&conn, "world-gov check-outline --enqueue", &findings)?
-                } else { 0 };
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                        "command": "world-gov check-outline --enqueue", "mode": "pipeline_sim",
-                        "volume": volume, "job_id": id, "fresh": fresh,
-                        "findings_count": findings.len(), "risks_emitted": n_risks,
-                    }))?);
-                } else {
-                    println!("== 管线沙盘（check-outline volume={volume}）==");
-                    println!("任务 {} {} → 模拟 findings {} 条 → 入库 {} 条",
-                        id, if fresh { "入队(新建)" } else { "重复入队(幂等跳过)" }, findings.len(), n_risks);
-                    println!("（沙盘只产 OK/UNCERTAIN 样例，均不入库；真实推理等放行令）");
-                }
-                return Ok(());
+                let probe = format!("07_勘误工坊/outline_probe_{}.json",
+                    volume.replace(|c: char| !c.is_ascii_alphanumeric(), "_"));
+                return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::CheckOutline,
+                    None, Some(volume.clone()), probe, *persist, json,
+                    &format!("check-outline volume={volume}"));
             }
             let r = world_gov::check_outline(&conn, lib_root, volume, *semantic, *dry_run)?;
             if json {
@@ -1074,8 +1094,19 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool) 
         }
         WorldGovCmd::Queue { cmd } => {
             use ne_agent::governance::pipeline as pipe;
+            use ne_agent::governance::pipeline_store as store;
             match cmd {
                 QueueCmd::List => {
+                    // 持久层可用则一并展示（幂等 ensure，不写任务）
+                    let mut persisted = Vec::new();
+                    if store::ensure_task_table(&conn).is_ok() {
+                        persisted = store::job_list(&conn, None).unwrap_or_default()
+                            .iter().map(|j| serde_json::json!({
+                                "id": j.id, "kind": j.kind.as_str(), "state": j.state.as_str(),
+                                "slice": j.slice.map(|(n, m)| format!("{n}/{m}")),
+                                "volume": j.volume, "probe_path": j.probe_path,
+                            })).collect();
+                    }
                     let rows: Vec<serde_json::Value> = pipe::with_queue(|q| {
                         q.list().iter().map(|j| serde_json::json!({
                             "id": j.id, "kind": j.kind.as_str(), "state": j.state.as_str(),
@@ -1085,31 +1116,43 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool) 
                     });
                     if json {
                         println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                            "count": rows.len(), "jobs": rows,
-                            "note": "进程内存队列，退出即清空",
+                            "memory_count": rows.len(), "memory_jobs": rows,
+                            "persisted_count": persisted.len(), "persisted_jobs": persisted,
+                            "note": "memory=进程内存（退出即清空）；persisted=novel.db.task_jobs（--persist 写入）",
                         }))?);
                     } else {
-                        println!("== 内存语义队列（{} 个任务）==", rows.len());
-                        if rows.is_empty() {
-                            println!("（空；队列为进程内存，每次 CLI 调用独立，退出即清空）");
-                        }
+                        println!("== 内存队列（{} 个；进程内存，退出即清空）==", rows.len());
                         for j in &rows {
                             println!("  {} [{}] {} slice={} vol={}",
-                                j["id"], j["state"], j["kind"],
-                                j["slice"], j["volume"].as_str().unwrap_or("-"));
+                                j["id"], j["state"], j["kind"], j["slice"], j["volume"].as_str().unwrap_or("-"));
+                        }
+                        println!("== 持久队列 task_jobs（{} 个）==", persisted.len());
+                        for j in &persisted {
+                            println!("  {} [{}] {} slice={} vol={}",
+                                j["id"], j["state"], j["kind"], j["slice"], j["volume"].as_str().unwrap_or("-"));
                         }
                     }
                 }
                 QueueCmd::Clear => {
                     let n = pipe::with_queue(|q| q.clear());
+                    let cleared_db = if store::ensure_task_table(&conn).is_ok() {
+                        let all = store::job_list(&conn, None).unwrap_or_default();
+                        let mut c = 0;
+                        for j in all { if store::job_delete(&conn, &j.id).unwrap_or(false) { c += 1; } }
+                        c
+                    } else { 0 };
                     if json {
-                        println!("{}", serde_json::to_string_pretty(&serde_json::json!({"cleared": n}))?);
+                        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                            "cleared_memory": n, "cleared_persisted": cleared_db,
+                        }))?);
                     } else {
-                        println!("已清空内存队列：{} 个任务（仅内存，磁盘库未动）", n);
+                        println!("已清空：内存队列 {} 个 + 持久任务 {} 个（仅内存 + task_jobs，磁盘库/正文未动）", n, cleared_db);
                     }
                 }
                 QueueCmd::Peek { id } => {
-                    let job = pipe::with_queue(|q| q.peek(id).cloned());
+                    // 先查持久层（跨进程可见），再查内存
+                    let pj = store::ensure_task_table(&conn).ok().and_then(|_| store::job_load(&conn, id).ok().flatten());
+                    let job = pj.or_else(|| pipe::with_queue(|q| q.peek(id).cloned()));
                     match job {
                         Some(j) => {
                             if json {
@@ -1126,12 +1169,70 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool) 
                             if json {
                                 println!("{}", serde_json::to_string_pretty(&serde_json::json!({
                                     "id": id, "status": "NOT_FOUND",
-                                    "note": "内存队列为进程生命周期，跨 CLI 调用不保留；请在 --enqueue 的同一次调用内查看。",
+                                    "note": "内存队列跨进程不保留；持久任务需 --persist 写入后可见。",
                                 }))?);
                             } else {
-                                println!("未找到任务 {id}（内存队列跨进程不保留；请在同一次 --enqueue 调用内查看）");
+                                println!("未找到任务 {id}（内存队列跨进程不保留；持久任务需 --persist 写入）");
                             }
                         }
+                    }
+                }
+                QueueCmd::Step { limit, persist, prune } => {
+                    // 仅对**持久任务**推进（一步一推；不自动轮询）
+                    store::ensure_task_table(&conn)?;
+                    if *prune {
+                        let removed = store::job_prune(&conn, 7)?;
+                        if json {
+                            println!("{}", serde_json::to_string_pretty(&serde_json::json!({"pruned": removed}))?);
+                        } else {
+                            println!("已清理 {} 个超过 7 天的旧任务（只动 task_jobs）", removed);
+                        }
+                        return Ok(());
+                    }
+                    let _ = persist;
+                    // 取**任一可推进任务**（Pending/Probing/ReadyForInferring），按创建序；
+                    // 每个任务本次**只前进一步**（不一口气跑到终态），limit 限制本次任务数。
+                    let advanceable: Vec<_> = store::job_list(&conn, None)?
+                        .into_iter()
+                        .filter(|j| matches!(
+                            j.state,
+                            ne_agent::governance::pipeline::JobState::Pending
+                                | ne_agent::governance::pipeline::JobState::Probing
+                                | ne_agent::governance::pipeline::JobState::ReadyForInferring
+                        ))
+                        .collect();
+                    if advanceable.is_empty() {
+                        if json {
+                            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                                "stepped": 0, "note": "无可推进任务（全部 Done/Rejected 或队列为空）",
+                            }))?);
+                        } else {
+                            println!("无可推进任务（队列为空或全部终态）");
+                        }
+                        return Ok(());
+                    }
+                    let take = (*limit).max(1);
+                    let mut results = Vec::new();
+                    for j in advanceable.into_iter().take(take) {
+                        let (st, findings) = store::job_step_forward(&conn, &j.id)?;
+                        let n_risk = world_gov::emit_semantic_findings(&conn, "world-gov queue step", &findings)?;
+                        results.push(serde_json::json!({
+                            "job_id": j.id, "from": j.state.as_str(), "to": st.as_str(),
+                            "findings": findings.len(), "risks_emitted": n_risk,
+                        }));
+                    }
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                            "stepped": results.len(), "results": results,
+                            "note": "每个任务本次只前进一步；需多次调用逐级推进 Pending→Probing→Ready→Done",
+                        }))?);
+                    } else {
+                        println!("== queue step（推进 {} 个任务，各一步）==", results.len());
+                        for r in &results {
+                            println!("  {} {} → {}（findings {}，入库 {}）",
+                                r["job_id"], r["from"], r["to"], r["findings"], r["risks_emitted"]);
+                        }
+                        println!("（沙盘模拟；真实推理等放行令；step 不自动轮询、不一口气跑完）");
                     }
                 }
             }

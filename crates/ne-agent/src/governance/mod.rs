@@ -7,7 +7,9 @@
 //! - 新增开关（如 `--check-compliance`）默认关闭。
 //!
 //! 子模块：`pipeline` —— 语义管线（探针→入队→(将来喂LLM)→结果→入库）内存占位。
+//! 子模块：`pipeline_store` —— 可选持久任务层（novel.db.task_jobs；仅 --persist 启用）。
 pub mod pipeline;
+pub mod pipeline_store;
 
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};

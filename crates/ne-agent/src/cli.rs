@@ -465,6 +465,9 @@ pub enum WorldGovCmd {
         /// 提交任务进内存管线队列（沙盘：同调用内走通 enqueue→simulate→入库）
         #[arg(long)]
         enqueue: bool,
+        /// 落库持久化（默认 off = 纯内存队列；开启后才写 novel.db.task_jobs）
+        #[arg(long)]
+        persist: bool,
         /// 资料库根
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,
@@ -500,6 +503,9 @@ pub enum WorldGovCmd {
         /// 提交任务进内存管线队列（沙盘走通 enqueue→simulate→入库）
         #[arg(long)]
         enqueue: bool,
+        /// 落库持久化（默认 off = 纯内存；开启后写 novel.db.task_jobs）
+        #[arg(long)]
+        persist: bool,
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,
     },
@@ -514,6 +520,9 @@ pub enum WorldGovCmd {
         /// 提交任务进内存管线队列
         #[arg(long)]
         enqueue: bool,
+        /// 落库持久化（默认 off = 纯内存；开启后写 novel.db.task_jobs）
+        #[arg(long)]
+        persist: bool,
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,
     },
@@ -534,6 +543,18 @@ pub enum QueueCmd {
     Peek {
         /// 任务 id
         id: String,
+    },
+    /// 向前推进一步（需 --persist 的持久任务；**不自动轮询**，一次一推）
+    Step {
+        /// 最多推进 N 个 ReadyForInferring 任务（默认 1）
+        #[arg(long, default_value_t = 1)]
+        limit: usize,
+        /// 使用持久层（novel.db.task_jobs）；缺省则对内存队列操作
+        #[arg(long)]
+        persist: bool,
+        /// 清理超过 7 天的旧持久任务（安全清理，只动 task_jobs）
+        #[arg(long)]
+        prune: bool,
     },
 }
 

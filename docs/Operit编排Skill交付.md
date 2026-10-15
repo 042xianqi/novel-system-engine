@@ -1,4 +1,8 @@
-# novel-writer-suite 交付记录（2026-10-14）
+# novel-writer-suite 交付记录（2026-10-14，2026-10-15 修订）
+
+> **2026-10-15 修订**：SKILL.md 契约已从「6 个不存在的 novel_* 工具」**对齐为真实的 15 个 ne-novel 工具**
+> （7 引擎 + 8 world-gov）；新增 `references/系统功能总览.md`；README/落地核对同步更新。
+> 详见本目录末尾「2026-10-15 修订」。
 
 ## 交付物
 
@@ -8,6 +12,7 @@
 |---|---|
 | `SKILL.md` | 技能元数据库（name/description）+ 契约 + 硬约束 |
 | `references/VERIFICATION.md` | 运作前提核实（3 处不符） |
+| `references/系统功能总览.md` | **【新】系统完整功能面（30 命令 + 15 工具 + 铁律）** |
 | `scripts/mcp_call.mjs` | ne-mcp stdio JSON-RPC 同步桥（已实测） |
 | `workflows/*.dwf.ts` | 4 个 DWF 脚本（路线 B） |
 | `workflows/novel-native.workflow.json` | 原生可视化工作流（路线 A，已校验 JSON） |
@@ -41,3 +46,29 @@
 ## 待人工决策
 
 两条路线的 escalation 粒度不同（A=整体、B=单分支）。若要细粒度，必须补前置。
+
+---
+
+## 2026-10-15 修订（配合对齐）
+
+**修订动机**：SKILL.md 原契约列的是 6 个**不存在的** `novel_*` 工具，与 ne-novel 实际能力脱节。
+
+**变更**：
+1. `SKILL.md` §执行契约 → 改为真实两路：
+   - **A. ne-novel MCP 15 工具**（7 引擎 + 8 world-gov，逐个列出入参）
+   - **B. ne-agent CLI**（novel 生成 / score 质检 / fix 修复 / audit-* 审计 / sys-check 自检 / ne-engine sync 落库）
+   - **C. 章节生成完整链路**：`ne_inject → 模型 → ne_check → fix → sync → wg_snapshot`
+2. `SKILL.md` §落地核对 → 更新为「路线 A 推荐、路线 B 暂不可用」。
+3. `README.md` 路线 B 说明同步修正。
+4. 新增 `references/系统功能总览.md`（30 命令 + 15 工具 + 铁律，跨会话权威源）。
+
+**未改动**：硬约束四条全部保留（Skill 只编排 / MCP 不调度不 fork / 冲突升级人工 / 不杀进程）。
+**未动 MCP**：15 工具保持只读/质检定位，未新增任何工具（符合「不 fork shell、不做调度」硬约束）。
+
+**配合关系（定稿）**：
+```
+Operit 编排层（工作流 / Skill）
+   ├─ ne-novel MCP（mcp_call.mjs 桥）→ 只读/质检/检视（15 工具）
+   └─ super_admin:terminal → ne-agent CLI → ne-engine（生成/治理/审计/落库）
+职责：Operit 管编排/日志/并发/挂起；ne 引擎管全部小说业务逻辑。
+```

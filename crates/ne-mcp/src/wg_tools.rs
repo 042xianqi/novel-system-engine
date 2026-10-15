@@ -354,10 +354,20 @@ pub fn sandbox(
 
 // ─────────────────────────────────────── 7. LLM 状态与缓存（llm）
 /// LLM 状态：gate | stats | cache | backends | config（**全部只读，不外呼**）。
-pub fn llm_status(cfg: &Cfg, action: &str) -> Result<Value> {
+pub fn llm_status(cfg: &Cfg, action: &str, real_semantic: bool) -> Result<Value> {
     use ne_agent::governance::{inference_cache as ic, llm_adapter as la, llm_config as lc, llm_obs as lo};
     match action {
-        "gate" => Ok(ne_agent::governance::llm_gate::lock_status(false)),
+        // 第 18.7 批（p3）：MCP 场景下三重锁第三要素是 wg_inspect_card/wg_inspect_batch
+        // 的工具参数 real_semantic，而非 CLI --real-semantic。面板按调用方给的参数值预演，
+        // 并标注 mcp_semantics，避免"恒显 LOCKED"的提示误报。
+        "gate" => {
+            let mut v = ne_agent::governance::llm_gate::lock_status(real_semantic);
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("mcp_semantics".into(), json!(
+                    "第三锁=wg_inspect_card/wg_inspect_batch 的工具参数 real_semantic（非 CLI --real-semantic）"));
+            }
+            Ok(v)
+        }
         "stats" => {
             let conn = gov(cfg)?;
             Ok(lo::stats(&conn)?)

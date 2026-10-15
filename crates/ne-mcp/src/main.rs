@@ -137,9 +137,10 @@ fn tool_specs() -> serde_json::Value {
         },
         {
             "name": "wg_llm_status",
-            "description": "world-gov LLM 状态与缓存（world-gov llm 的 MCP 封装）。全部只读、不外呼：三重锁状态/调用统计/推理缓存/后端清单/配置安全快照。",
+            "description": "world-gov LLM 状态与缓存（world-gov llm 的 MCP 封装）。全部只读、不外呼：三重锁状态/调用统计/推理缓存/后端清单/配置安全快照。action=gate 时可用 real_semantic 预演锁状态（MCP 场景下三重锁第三要素是本工具集的 real_semantic 参数，而非 CLI --real-semantic）。",
             "inputSchema": {"type":"object","properties":{
-                "action": {"type":"string","description":"gate | stats | cache | backends | config"}},
+                "action": {"type":"string","description":"gate | stats | cache | backends | config"},
+                "real_semantic": {"type":"boolean","description":"action=gate 时可选：按此工具参数值预演锁状态（缺省=false）"}},
                 "required":["action"]}
         },
         {
@@ -318,7 +319,7 @@ fn tool_call(cfg: &Cfg, name: &str, args: &serde_json::Value) -> serde_json::Val
             args.get("run_id").and_then(|v| v.as_i64()),
             args.get("from_snap").and_then(|v| v.as_str()),
         ),
-        "wg_llm_status" => wg_tools::llm_status(cfg, &s("action")),
+        "wg_llm_status" => wg_tools::llm_status(cfg, &s("action"), b("real_semantic")),
         "wg_self_check" => wg_tools::self_check(cfg, b("fix")),
         other => return text_content(format!("未知工具：{other}")),
     };

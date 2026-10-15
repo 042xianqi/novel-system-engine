@@ -94,11 +94,12 @@ fn tool_specs() -> serde_json::Value {
         },
         {
             "name": "wg_inspect_batch",
-            "description": "world-gov 批量检视（world-gov inspect-batch 的 MCP 封装）。keys 显式列表（空=全库 L2/L3/L4），slice 分片 N/M。默认只预览；real_semantic=true 才逐卡真实推理（仍需三重锁）。",
+            "description": "world-gov 批量检视（world-gov inspect-batch 的 MCP 封装）。keys 显式列表（空=全库 L2/L3/L4），slice 分片 N/M。默认只预览；real_semantic=true 才逐卡真实推理（仍需三重锁）。max_batch 为单轮上限，服务端硬顶 40（护栏：超出截断留待下一轮）。",
             "inputSchema": {"type":"object","properties":{
                 "keys": {"type":"array","items":{"type":"string"},"description":"要检视的 key 列表；空或缺省=全库"},
                 "slice": {"type":"string","description":"分片 N/M（如 1/4）"},
                 "all_layers": {"type":"boolean","description":"关闭层过滤（默认 false）"},
+                "max_batch": {"type":"integer","description":"单轮上限（硬顶 40，超出截断）"},
                 "real_semantic": {"type":"boolean","description":"真实逐卡推理（三重锁之命令行锁；默认 false）"}},
                 "required":[]}
         },
@@ -294,6 +295,7 @@ fn tool_call(cfg: &Cfg, name: &str, args: &serde_json::Value) -> serde_json::Val
                 cfg, keys.as_deref(),
                 args.get("slice").and_then(|v| v.as_str()),
                 b("all_layers"), b("real_semantic"),
+                args.get("max_batch").and_then(|v| v.as_u64()).map(|x| x as usize),
             )
         }
         "wg_snapshot" => wg_tools::snapshot(

@@ -174,12 +174,16 @@ fn infer_one(
 
 // ─────────────────────────────────────── 3. 批量检视（inspect-batch）
 /// 批量检视：`keys` 显式列表（空=全库），`slice` 分片 `N/M`；`real_semantic=true` 才逐卡推理。
+/// 第 18.6 批：单轮硬上限（平台自主循环护栏）。调用方传多大都封顶 40。
+pub const HARD_MAX_PER_RUN: usize = 40;
+
 pub fn inspect_batch(
     cfg: &Cfg,
     keys: Option<&[String]>,
     slice: Option<&str>,
     all_layers: bool,
     real_semantic: bool,
+    max_batch: Option<usize>,
 ) -> Result<Value> {
     use ne_agent::governance::inspect_batch as ib;
     let conn = gov(cfg)?;
@@ -189,17 +193,24 @@ pub fn inspect_batch(
         _ => ib::resolve_keys(&conn, &cfg.root, &ib::BatchSource::All, all_layers)?.0,
     };
     // 分片（在候选全集上切）
-    let selected = match slice {
+    let selected_all = match slice {
         Some(s) => {
             let (n, m) = ne_agent::world_gov::parse_slice_strict(s).map_err(|e| anyhow::anyhow!("{e}"))?;
             ib::slice_keys(all_keys, n, m)
         }
         None => all_keys,
     };
+    // 服务端硬上限：超出部分截断（护栏要求 ≤40 张/轮）
+    let total = selected_all.len();
+    let cap = max_batch.unwrap_or(HARD_MAX_PER_RUN).min(HARD_MAX_PER_RUN);
+    let truncated = total > cap;
+    let selected: Vec<String> = selected_all.into_iter().take(cap).collect();
     if !real_semantic {
         return Ok(json!({
             "command": "wg_inspect_batch", "count": selected.len(),
-            "slice": slice, "keys": selected, "note": "仅预览；real_semantic=true 才逐卡真实推理",
+            "total_candidates": total, "cap": cap, "truncated": truncated,
+            "slice": slice, "keys": selected,
+            "note": "仅预览；real_semantic=true 才逐卡真实推理",
         }));
     }
     let mut results: Vec<Value> = Vec::new();
@@ -222,7 +233,9 @@ pub fn inspect_batch(
     }
     Ok(json!({
         "command": "wg_inspect_batch", "count": results.len(),
+        "total_candidates": total, "cap": cap, "truncated": truncated,
         "slice": slice, "inference": results,
+        "note": if truncated { format!("已达单轮硬上限 {cap}；剩余 {} 张留待下一轮", total - cap) } else { String::new() },
     }))
 }
 

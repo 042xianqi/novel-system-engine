@@ -226,11 +226,40 @@ fn parse_query(q: &str) -> Vec<(String, String)> {
         .filter(|s| !s.is_empty())
         .filter_map(|kv| {
             let mut it = kv.splitn(2, '=');
-            let k = it.next()?.to_string();
-            let v = it.next().unwrap_or("").to_string();
+            let k = pct_decode(it.next()?);
+            let v = pct_decode(it.next().unwrap_or(""));
             Some((k, v))
         })
         .collect()
+}
+
+/// 百分号解码（`%E5%8F%99` → 中文）+ `+` → 空格。
+/// 之前不解码，导致带中文的 path 参数白名单比对失败。
+fn pct_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'%' if i + 2 < b.len() => {
+                let h = |c: u8| -> Option<u8> {
+                    match c {
+                        b'0'..=b'9' => Some(c - b'0'),
+                        b'a'..=b'f' => Some(c - b'a' + 10),
+                        b'A'..=b'F' => Some(c - b'A' + 10),
+                        _ => None,
+                    }
+                };
+                match (h(b[i + 1]), h(b[i + 2])) {
+                    (Some(x), Some(y)) => { out.push(x * 16 + y); i += 3; }
+                    _ => { out.push(b[i]); i += 1; }
+                }
+            }
+            b'+' => { out.push(b' '); i += 1; }
+            c => { out.push(c); i += 1; }
+        }
+    }
+    String::from_utf8_lossy(&out).to_string()
 }
 
 /// 路由：把 (method, path, query) 映射到内部函数。**不绕过任何门控**。
@@ -372,6 +401,82 @@ fn route_dyn(
             "GET" => super::layer_store::graph(conn, segs[2], segs[4]),
             _ => return Some(Resp::bad("layers/{layer}/graph/{key}: GET")),
         },
+
+        // ══════ P7：管线视图（6 层漏斗，只读）
+        // ── 文件读写（页面②③④）
+        ("pipeline", 3) if segs[2] == "file" && method == "GET" => {
+            let path = qget("path").unwrap_or_default();
+            super::pipeline_file::read_file(lib_root, &path)
+        }
+        ("pipeline", 3) if segs[2] == "file" && method == "PUT" => {
+            let path = qget("path").unwrap_or_default();
+            super::pipeline_file::write_file(conn, lib_root, &path, body)
+        }
+        // ── L3 章级（页面⑤）
+        ("pipeline", 6) if segs[2] == "layer" && segs[4] == "chapters" && method == "GET" => {
+            super::pipeline_file::list_chapters(lib_root, segs[3])
+        }
+        ("pipeline", 7) if segs[2] == "layer" && segs[4] == "chapter" => {
+            // /api/pipeline/layer/L3/chapter/{卷号}/{章号}
+            let vol = segs[5];
+            let no: u32 = segs[6].parse().unwrap_or(0);
+            if no == 0 { return Some(Resp::bad("章号非法（需第 7 段为数字）")); }
+            match method {
+                "GET" => super::pipeline_file::read_chapter(lib_root, vol, no),
+                "PUT" => super::pipeline_file::write_chapter(conn, lib_root, vol, no, body),
+                _ => return Some(Resp::bad("chapter: GET / PUT")),
+            }
+        }
+        ("pipeline", 5) if segs[2] == "layer" && segs[4] == "chapter" => {
+            let vol = qget("volume").unwrap_or_else(|| "卷01".to_string());
+            let no = qget("no").and_then(|x| x.parse::<u32>().ok()).unwrap_or(0);
+            if no == 0 { return Some(Resp::bad(concat!("缺 no=参数"))); }
+            match method {
+                "GET" => super::pipeline_file::read_chapter(lib_root, &vol, no),
+                "PUT" => super::pipeline_file::write_chapter(conn, lib_root, &vol, no, body),
+                _ => return Some(Resp::bad("chapter: GET / PUT")),
+            }
+        }
+        ("pipeline", 5) if segs[2] == "layer" && segs[4] == "chapters" && method == "GET" => {
+            let vol = qget("volume").unwrap_or_else(|| "卷01".to_string());
+            super::pipeline_file::list_chapters(lib_root, &vol)
+        }
+("pipeline", 4) if segs[2] == "layer" && method == "GET" => {
+            super::pipeline_file::list_layer(lib_root, segs[3])
+        }
+        // ── 注入包 + 门禁（页面⑦）
+        ("pipeline", 3) if segs[2] == "inject" && method == "GET" => {
+            let vol = qget("volume").unwrap_or_else(|| "卷01".to_string());
+            let ch = qget("chapter").and_then(|x| x.parse::<u32>().ok()).unwrap_or(1);
+            super::pipeline_engine::inject_view(lib_root, &vol, ch)
+        }
+        ("pipeline", 3) if segs[2] == "check" && method == "POST" => {
+            let v: Value = serde_json::from_str(body.trim()).unwrap_or(json!({}));
+            let vol = v["volume"].as_str().unwrap_or("卷01").to_string();
+            let ch = v["chapter"].as_u64().unwrap_or(1) as u32;
+            match v["text"].as_str() {
+                Some(t) => super::pipeline_engine::check_view(lib_root, t, ch, &vol),
+                None => super::pipeline_engine::check_chapter_file(lib_root, &vol, ch),
+            }
+        }
+        ("pipeline", 3) if segs[2] == "overview" && method == "GET" => {
+            let vol = qget("volume").unwrap_or_else(|| "卷01".to_string());
+            super::pipeline_view::overview_view(conn, lib_root, &vol)
+        }
+        ("pipeline", 3) if segs[2] == "funnel" && method == "GET" => {
+            super::pipeline_view::funnel_view(lib_root)
+        }
+        ("pipeline", 3) if segs[2] == "materials" && method == "GET" => {
+            super::pipeline_view::materials_view(lib_root)
+        }
+        ("pipeline", 3) if segs[2] == "cardgen" && method == "GET" => {
+            let vol = qget("volume").unwrap_or_else(|| "卷01".to_string());
+            super::pipeline_view::cardgen_view(lib_root, &vol)
+        }
+        ("pipeline", 3) if segs[2] == "chapters" && method == "GET" => {
+            let vol = qget("volume").unwrap_or_else(|| "卷01".to_string());
+            super::pipeline_view::chapters_view(conn, lib_root, &vol)
+        }
 
         // ══════ P3：系统自检（非高危，UI 可直接调用）
         ("system", 3) if segs[2] == "self-check" && method == "POST" => {

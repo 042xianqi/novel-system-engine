@@ -22,6 +22,9 @@
 pub mod note_tag_store;
 pub mod digest;
 pub mod diff_snapshot;
+pub mod category_store;
+pub mod task_store;
+pub mod layer_store;
 pub mod web_gateway;
 pub mod llm_gate;
 pub mod llm_client;
@@ -30,6 +33,7 @@ pub mod rel_graph;
 pub mod sandbox;
 pub mod overview;
 pub mod llm_config;
+pub mod llm_config_write;
 pub mod llm_obs;
 pub mod inference_cache;
 pub mod prompt_lib;

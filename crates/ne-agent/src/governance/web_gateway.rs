@@ -350,7 +350,9 @@ fn route_dyn(
     query: &str,
     body: &str,
 ) -> Option<Resp> {
-    let segs: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+    // 路径先做 %XX 解码，否则中文路径参数（如「卷01」）会以 %E5%8D%B7 形式参与匹配
+    let decoded = pct_decode(path);
+    let segs: Vec<&str> = decoded.trim_start_matches('/').split('/').collect();
     if segs.len() < 2 || segs[0] != "api" {
         return None;
     }

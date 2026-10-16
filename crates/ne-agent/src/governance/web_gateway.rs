@@ -426,6 +426,10 @@ fn route_dyn(
         ("tasks", 3) if segs[2] == "list" && method == "GET" => {
             super::task_store::list(conn, limit_of())
         }
+        // 任务书 #6：失败归档列表
+        ("tasks", 3) if segs[2] == "failures" && method == "GET" => {
+            super::task_store::failures(conn, limit_of())
+        }
         ("tasks", 3) => {
             let tid = segs[2];
             match method {

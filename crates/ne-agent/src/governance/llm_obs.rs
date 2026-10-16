@@ -39,6 +39,14 @@ CREATE TABLE IF NOT EXISTS llm_runtime (
 "#;
 
 pub fn ensure_table(conn: &Connection) -> Result<()> {
+    // 任务书 #5：幂等补列（旧库升级友好）
+    let _ = conn.execute_batch(
+        "ALTER TABLE llm_call_log ADD COLUMN source TEXT DEFAULT '';
+         ALTER TABLE llm_call_log ADD COLUMN actor TEXT DEFAULT '';
+         ALTER TABLE llm_call_log ADD COLUMN lock_state TEXT DEFAULT '';
+         ALTER TABLE llm_call_log ADD COLUMN req_digest TEXT DEFAULT '';
+         ALTER TABLE llm_call_log ADD COLUMN resp_digest TEXT DEFAULT '';",
+    );
     conn.execute_batch(SCHEMA)?;
     Ok(())
 }
@@ -61,6 +69,34 @@ pub struct CallRecord {
     pub cache_hit: bool,
     pub ok: bool,
     pub note: String,
+    // ── 任务书 #5：审计补全字段（additive，默认空/0，兼容既有构造点）
+    /// 调用来源：webui / mcp / cli / internal
+    pub source: String,
+    /// 触发者：human（手动） / ai（自动流水线）
+    pub actor: String,
+    /// 锁状态摘要（如 "locked"/"open"）
+    pub lock_state: String,
+    /// 入参摘要（截断 200 字）
+    pub req_digest: String,
+    /// 返回摘要（截断 200 字）
+    pub resp_digest: String,
+}
+
+impl Default for CallRecord {
+    fn default() -> Self {
+        CallRecord {
+            backend: String::new(), model: String::new(), token_in: 0, token_out: 0,
+            elapsed_ms: 0, cache_hit: false, ok: false, note: String::new(),
+            source: String::new(), actor: String::new(), lock_state: String::new(),
+            req_digest: String::new(), resp_digest: String::new(),
+        }
+    }
+}
+
+/// 摘要工具：压空白 + 截断 N 字（审计不给全文，只给摘要）。
+pub fn digest_of(s: &str, n: usize) -> String {
+    let t: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if t.chars().count() <= n { t } else { t.chars().take(n).collect::<String>() + "…" }
 }
 
 /// 记一条调用；同时更新累计与熔断计数。返回 (累计调用数, 累计失败数, 是否刚触发熔断)。
@@ -68,9 +104,11 @@ pub fn record(conn: &Connection, r: &CallRecord, breaker_threshold: u32, cooldow
     ensure_table(conn)?;
     let ts = now_secs();
     conn.execute(
-        "INSERT INTO llm_call_log(ts,backend,model,token_in,token_out,elapsed_ms,cache_hit,ok,note)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-        params![ts, r.backend, r.model, r.token_in, r.token_out, r.elapsed_ms, r.cache_hit as i64, r.ok as i64, r.note],
+        "INSERT INTO llm_call_log(ts,backend,model,token_in,token_out,elapsed_ms,cache_hit,ok,note,         source,actor,lock_state,req_digest,resp_digest)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+        params![ts, r.backend, r.model, r.token_in, r.token_out, r.elapsed_ms,
+                r.cache_hit as i64, r.ok as i64, r.note,
+                r.source, r.actor, r.lock_state, r.req_digest, r.resp_digest],
     )?;
     // 确保 runtime 行存在
     conn.execute("INSERT OR IGNORE INTO llm_runtime(id) VALUES(1)", [])?;
@@ -173,7 +211,7 @@ mod tests {
         c
     }
     fn rec(ok: bool) -> CallRecord {
-        CallRecord { backend: "mock".into(), model: "m".into(), token_in: 10, token_out: 5, elapsed_ms: 3, cache_hit: false, ok, note: String::new() }
+        CallRecord { backend: "mock".into(), model: "m".into(), token_in: 10, token_out: 5, elapsed_ms: 3, cache_hit: false, ok, note: String::new(), ..Default::default() }
     }
 
     #[test]

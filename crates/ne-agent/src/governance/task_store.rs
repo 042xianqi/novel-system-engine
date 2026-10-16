@@ -30,6 +30,17 @@ CREATE TABLE IF NOT EXISTS webui_task (
     result      TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_webui_task_ts ON webui_task(created_ts DESC);
+-- 任务书 #6：失败归档（多次重试/修复回合失败后落此）
+CREATE TABLE IF NOT EXISTS webui_task_fail (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id     TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    reason      TEXT NOT NULL DEFAULT '',
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    last_raw    TEXT NOT NULL DEFAULT '',
+    created_ts  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_webui_task_fail_ts ON webui_task_fail(created_ts DESC);
 "#,
     )?;
     Ok(())
@@ -157,6 +168,54 @@ pub fn result(conn: &Connection, id: &str) -> Result<Value> {
         "result": result,
         "note": "result 由执行方（MCP/CLI）回写；WebUI 只读展示。",
     }))
+}
+
+/// 任务失败归档（任务书 #6）：多次重试/修复回合失败后落档，
+/// 并把原任务置为 failed，供 WebUI 队列面板展示终止原因。
+pub fn archive_failure(
+    conn: &Connection,
+    task_id: &str,
+    kind: &str,
+    reason: &str,
+    attempts: u32,
+    last_raw: &str,
+) -> Result<Value> {
+    ensure_tables(conn)?;
+    let raw_digest = super::llm_obs::digest_of(last_raw, 500);
+    conn.execute(
+        "INSERT INTO webui_task_fail(task_id,kind,reason,attempts,last_raw) VALUES(?1,?2,?3,?4,?5)",
+        params![task_id, kind, reason, attempts as i64, raw_digest],
+    )?;
+    let _ = conn.execute(
+        "UPDATE webui_task SET state='failed', updated_ts=?1, result=?2 WHERE id=?3",
+        params![now(), format!("FAILED: {reason} (attempts={attempts})"), task_id],
+    );
+    category_store::log_op(conn, "task.failed", task_id,
+        &format!("kind={kind} attempts={attempts} reason={reason}"), "")?;
+    Ok(json!({
+        "ok": true, "task_id": task_id, "kind": kind,
+        "reason": reason, "attempts": attempts,
+        "note": "失败已归档；WebUI 任务队列可查看终止原因。",
+    }))
+}
+
+/// 失败归档列表（供面板展示）。
+pub fn failures(conn: &Connection, limit: usize) -> Result<Value> {
+    ensure_tables(conn)?;
+    let lim = limit.clamp(1, 200) as i64;
+    let mut st = conn.prepare(
+        "SELECT id,task_id,kind,reason,attempts,last_raw,created_ts FROM webui_task_fail ORDER BY id DESC LIMIT ?1",
+    )?;
+    let rows: Vec<Value> = st.query_map(params![lim], |r| Ok(json!({
+        "id": r.get::<_, i64>(0)?,
+        "task_id": r.get::<_, String>(1)?,
+        "kind": r.get::<_, String>(2)?,
+        "reason": r.get::<_, String>(3)?,
+        "attempts": r.get::<_, i64>(4)?,
+        "last_raw": r.get::<_, String>(5)?,
+        "created_ts": r.get::<_, i64>(6)?,
+    })))?.filter_map(|x| x.ok()).collect();
+    Ok(json!({"command": "webui tasks failures", "count": rows.len(), "failures": rows}))
 }
 
 /// 终止未运行任务（pending → canceled）。

@@ -115,6 +115,10 @@ pub fn preview(work_root: &Path, cfg: &llm_config::LlmConfig, req: &PipelineRequ
 /// 护栏/记账/修复回合**，避免维护两套 LLM 调用链路（第 17.3 批迁移）。
 #[derive(Debug, Clone)]
 pub struct RawPrompt {
+    /// 调用来源（审计）：webui / mcp / cli / internal
+    pub source: String,
+    /// 触发者（审计）：human / ai
+    pub actor: String,
     pub system: String,
     pub user: String,
     /// 缓存 key 的稳定锚（通常为探针指纹）。
@@ -142,6 +146,8 @@ impl Default for RawPrompt {
             max_tokens: 0,
             bypass_cache: false,
             use_mock: false,
+            source: "internal".to_string(),
+            actor: "ai".to_string(),
         }
     }
 }
@@ -161,8 +167,7 @@ pub fn call(conn: &rusqlite::Connection, work_root: &Path, cfg: &llm_config::Llm
         temperature: req.temperature,
         max_tokens: req.max_tokens,
         bypass_cache: req.bypass_cache,
-        use_mock: req.use_mock,
-    };
+        use_mock: req.use_mock, ..Default::default() };
     call_raw(conn, work_root, cfg, cli_real_semantic, &raw)
 }
 
@@ -179,6 +184,7 @@ pub fn call_raw(
         return Ok(Outcome::GateLocked(llm_gate::lock_status(cli_real_semantic)));
     }
     // ② 熔断（仅真实后端）
+    let lock_str = if llm_gate::real_llm_unlocked(cli_real_semantic) { "open".to_string() } else { "locked".to_string() };
     if !raw.use_mock && llm_obs::breaker_tripped(conn).unwrap_or(false) {
         return Ok(Outcome::BreakerOpen);
     }
@@ -194,8 +200,7 @@ pub fn call_raw(
             let content = prompt_lib::extract_json(&hit.output).unwrap_or(json!({}));
             let _ = llm_obs::record(conn, &llm_obs::CallRecord {
                 backend: backend_name, model, token_in: hit.token_in, token_out: hit.token_out,
-                elapsed_ms: 0, cache_hit: true, ok: true, note: "cache_hit".into(),
-            }, cfg.breaker_threshold, 60);
+                elapsed_ms: 0, cache_hit: true, ok: true, note: "cache_hit".into(), ..Default::default() }, cfg.breaker_threshold, 60);
             return Ok(Outcome::CacheHit { content, key });
         }
     }
@@ -230,12 +235,12 @@ pub fn call_raw(
 
     let out = match res {
         Err(llm_adapter::BackendError::Unavailable(m)) => {
-            let _ = llm_obs::record(conn, &llm_obs::CallRecord { backend: backend_name, model, token_in: 0, token_out: 0, elapsed_ms: elapsed, cache_hit: false, ok: false, note: "unavailable".into() }, cfg.breaker_threshold, 60);
+            let _ = llm_obs::record(conn, &llm_obs::CallRecord { backend: backend_name, model, token_in: 0, token_out: 0, elapsed_ms: elapsed, cache_hit: false, ok: false, note: "unavailable".into(), ..Default::default() }, cfg.breaker_threshold, 60);
             return Ok(Outcome::Unavailable(m));
         }
         Err(e) => {
             let kind = match e { llm_adapter::BackendError::NotConfigured(_) => "not_configured", llm_adapter::BackendError::Protocol(_) => "protocol", llm_adapter::BackendError::Transport(_) => "transport", _ => "other" };
-            let _ = llm_obs::record(conn, &llm_obs::CallRecord { backend: backend_name, model, token_in: 0, token_out: 0, elapsed_ms: elapsed, cache_hit: false, ok: false, note: kind.into() }, cfg.breaker_threshold, 60);
+            let _ = llm_obs::record(conn, &llm_obs::CallRecord { backend: backend_name, model, token_in: 0, token_out: 0, elapsed_ms: elapsed, cache_hit: false, ok: false, note: kind.into(), ..Default::default() }, cfg.breaker_threshold, 60);
             return Ok(Outcome::BackendError { kind: kind.into(), message: e.to_string() });
         }
         Ok(o) => o,
@@ -246,8 +251,7 @@ pub fn call_raw(
         let head: String = out.raw.chars().take(200).collect();
         let _ = llm_obs::record(conn, &llm_obs::CallRecord {
             backend: backend_name, model, token_in: out.token_in, token_out: out.token_out,
-            elapsed_ms: elapsed, cache_hit: false, ok: false, note: "malformed".into(),
-        }, cfg.breaker_threshold, 60);
+            elapsed_ms: elapsed, cache_hit: false, ok: false, note: "malformed".into(), ..Default::default() }, cfg.breaker_threshold, 60);
         return Ok(Outcome::Malformed { attempts, last_raw_head: head });
     }
 
@@ -258,7 +262,7 @@ pub fn call_raw(
         guards["schema_ok"] = json!(errs.is_empty());
         guards["schema_errors"] = json!(errs);
         if !errs.is_empty() {
-            let _ = llm_obs::record(conn, &llm_obs::CallRecord { backend: backend_name, model, token_in: out.token_in, token_out: out.token_out, elapsed_ms: elapsed, cache_hit: false, ok: false, note: "schema_reject".into() }, cfg.breaker_threshold, 60);
+            let _ = llm_obs::record(conn, &llm_obs::CallRecord { backend: backend_name, model, token_in: out.token_in, token_out: out.token_out, elapsed_ms: elapsed, cache_hit: false, ok: false, note: "schema_reject".into(), ..Default::default() }, cfg.breaker_threshold, 60);
             return Ok(Outcome::GuardRejected { reason: "schema".into(), guards });
         }
     }
@@ -272,8 +276,7 @@ pub fn call_raw(
     // ⑥ 记账 + 写缓存（mock 不写缓存）
     let (_tc, _tf, tripped) = llm_obs::record(conn, &llm_obs::CallRecord {
         backend: backend_name.clone(), model: model.clone(), token_in: out.token_in, token_out: out.token_out,
-        elapsed_ms: elapsed, cache_hit: false, ok: true, note: String::new(),
-    }, cfg.breaker_threshold, 60)?;
+        elapsed_ms: elapsed, cache_hit: false, ok: true, note: String::new(), ..Default::default() }, cfg.breaker_threshold, 60)?;
     if tripped {
         guards["breaker_tripped"] = json!(true);
     }
@@ -353,7 +356,7 @@ mod tests {
         let cfg = llm_config::LlmConfig::default();
         // 人为触发熔断
         for _ in 0..cfg.breaker_threshold { llm_obs::record(&conn, &llm_obs::CallRecord {
-            backend: "x".into(), model: "m".into(), token_in: 0, token_out: 0, elapsed_ms: 0, cache_hit: false, ok: false, note: "".into() }, cfg.breaker_threshold, 60).unwrap(); }
+            backend: "x".into(), model: "m".into(), token_in: 0, token_out: 0, elapsed_ms: 0, cache_hit: false, ok: false, note: "".into(), ..Default::default() }, cfg.breaker_threshold, 60).unwrap(); }
         let req = PipelineRequest { template: "check_world".into(), probe_hash: "ph".into(), ..Default::default() };
         // 默认构建：feature 未开 → 闸门优先拦截（即使已熔断，也比"出网"更安全）
         let o = call(&conn, &dir, &cfg, true, &req).unwrap();
@@ -367,7 +370,7 @@ mod tests {
         let (conn, dir) = setup();
         let cfg = llm_config::LlmConfig::default();
         for _ in 0..cfg.breaker_threshold {
-            llm_obs::record(&conn, &llm_obs::CallRecord { backend: "x".into(), model: "m".into(), token_in: 0, token_out: 0, elapsed_ms: 0, cache_hit: false, ok: false, note: "".into() }, cfg.breaker_threshold, 60).unwrap();
+            llm_obs::record(&conn, &llm_obs::CallRecord { backend: "x".into(), model: "m".into(), token_in: 0, token_out: 0, elapsed_ms: 0, cache_hit: false, ok: false, note: "".into(), ..Default::default() }, cfg.breaker_threshold, 60).unwrap();
         }
         assert!(llm_obs::breaker_tripped(&conn).unwrap(), "熔断已生效");
         assert!(llm_gate::real_llm_unlocked(true) == false, "默认构建闸门仍锁");

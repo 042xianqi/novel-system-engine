@@ -48,6 +48,19 @@ pub fn scan_library(
     all_layers: bool,
     since: Option<&str>,
 ) -> Result<Value> {
+    scan_library_snap(cfg, slice, semantic, dry_run, all_layers, since, None)
+}
+
+/// 任务书 #3：`since_snap`=快照 id 时走快照对比增量（优先于 since 时间戳）。
+pub fn scan_library_snap(
+    cfg: &Cfg,
+    slice: Option<&str>,
+    semantic: bool,
+    dry_run: bool,
+    all_layers: bool,
+    since: Option<&str>,
+    since_snap: Option<&str>,
+) -> Result<Value> {
     let conn = gov(cfg)?;
     let (since_ts, since_note) = match since {
         Some(v) => {

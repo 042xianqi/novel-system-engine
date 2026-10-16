@@ -298,7 +298,27 @@ pub fn delete_item(conn: &Connection, lib_root: &Path, layer: &str, key: &str) -
                 if let Some(d) = dst.parent() {
                     std::fs::create_dir_all(d)?;
                 }
+                let src_bytes = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
                 std::fs::rename(&p, &dst).or_else(|_| std::fs::copy(&p, &dst).map(|_| ()))?;
+                // ── 任务书 #6：冷备份完整性校验（失败则阻断，防素材丢失）
+                if !dst.is_file() {
+                    let _ = category_store::log_op(conn, "item.delete.VERIFY_FAIL",
+                        &format!("{layer}/{key}"), "冷备份文件未生成", &snap);
+                    bail!("删除已中止：冷备份未生成（{dst_rel}），素材未丢失可重试");
+                }
+                let dst_bytes = std::fs::metadata(&dst).map(|m| m.len()).unwrap_or(0);
+                if src_bytes != dst_bytes {
+                    let _ = category_store::log_op(conn, "item.delete.VERIFY_FAIL",
+                        &format!("{layer}/{key}"),
+                        &format!("字节数不一致 src={src_bytes} dst={dst_bytes}"), &snap);
+                    bail!("删除已中止：冷备份字节数不一致（src={src_bytes} dst={dst_bytes}）");
+                }
+                // 校验通过：源文件必须已不在原位
+                if p.exists() {
+                    let _ = category_store::log_op(conn, "item.delete.VERIFY_FAIL",
+                        &format!("{layer}/{key}"), "源文件仍存在（移动未生效）", &snap);
+                    bail!("删除已中止：源文件仍存在，移动未生效");
+                }
                 moved = dst_rel;
             }
         }
@@ -411,7 +431,7 @@ mod tests {
     fn mk_conn() -> Connection {
         let c = Connection::open_in_memory().unwrap();
         c.execute_batch(
-            "CREATE TABLE library_index(layer TEXT,key TEXT,title TEXT,chars INTEGER,source TEXT,src_mtime INTEGER NOT NULL DEFAULT 0,tags TEXT DEFAULT '[]',dirty INTEGER DEFAULT 0,UNIQUE(layer,key));",
+            "CREATE TABLE library_index(id INTEGER PRIMARY KEY AUTOINCREMENT,layer TEXT,key TEXT,title TEXT,chars INTEGER,source TEXT,src_mtime INTEGER NOT NULL DEFAULT 0,tags TEXT DEFAULT '[]',dirty INTEGER DEFAULT 0,UNIQUE(layer,key));",
         ).unwrap();
         super::super::note_tag_store::ensure_tables(&c).unwrap();
         category_store::ensure_tables(&c).unwrap();

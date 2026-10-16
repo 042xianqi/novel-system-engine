@@ -27,7 +27,7 @@ use ne_engine::llm::{self, LlmParams, Message};
 pub const BEAT_SIZE: usize = 5;
 
 // 设计层词探测集与禁令行标记统一取自 SSOT（之前本地副本用「分支」而 health 用「分支演算」，已收敛）。
-use ne_core::lexicon::{DESIGN_LEAK_WORDS as DESIGN_WORDS, NEG_MARKS};
+use ne_core::lexicon::{design_leak_hits, NEG_MARKS};
 /// 机械套话（「变化」字段）。
 const BOILER: &[&str] = &["阻力压进具体场景", "走到临界", "过节点", "本拍目标完成"];
 
@@ -201,7 +201,8 @@ fn validate(chs: &[Chunk], first_no: u32) -> (bool, Vec<String>) {
             if NEG_MARKS.iter().any(|n| line.contains(n)) {
                 continue;
             }
-            if let Some(w) = DESIGN_WORDS.iter().find(|w| line.contains(**w)) {
+            let hit = design_leak_hits(line);
+            if let Some((w, _)) = hit.first() {
                 err.push(format!("第{no}章出现工程词「{w}」"));
                 break;
             }
@@ -349,7 +350,7 @@ fn design_hit_line(l: &str) -> bool {
     if NEG_MARKS.iter().any(|n| l.contains(n)) {
         return false;
     }
-    DESIGN_WORDS.iter().any(|w| l.contains(*w))
+    !design_leak_hits(l).is_empty()
 }
 
 fn chapter_has_design(body: &str) -> bool {

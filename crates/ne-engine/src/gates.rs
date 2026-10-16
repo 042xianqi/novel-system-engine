@@ -585,7 +585,8 @@ pub fn g16_leak_words(text: &str) -> GateResult {
 /// 卷01-03 = 「严禁输出该文字」阶段（见全局铁则 & STYLE_CONSTRAINTS §0），
 /// 故命中即 **P0 打回**；卷04 起降级为 P1（此时认知曲线可逐步显性）。
 pub fn g17_design_leak(text: &str, volume: &str) -> GateResult {
-    let h = hits(text, G17_DESIGN_LEAK_WORDS);
+    // 2026-10-16：改用 lexicon::design_leak_hits（扣除正典专名豁免，避免误伤推演院/未来推演）。
+    let h = lex::design_leak_hits(text);
     let mut out = GateResult::ok(format!("设计层词命中={}", fmt_hits(&h)));
     if h.is_empty() {
         return out;

@@ -454,7 +454,7 @@ fn boot_find_hits(text: &str) -> Vec<(&'static str, usize)> {
         .filter(|l| !BOOT_NEG_MARKS.iter().any(|n| l.contains(n)))
         .collect::<Vec<_>>()
         .join("\n");
-    let mut remaining = kept;
+    let mut remaining = kept.clone();
     let mut out = Vec::new();
     let mut ws: Vec<&'static str> = BOOT_DESIGN_WORDS.to_vec();
     ws.sort_by_key(|w| std::cmp::Reverse(w.chars().count()));
@@ -465,6 +465,9 @@ fn boot_find_hits(text: &str) -> Vec<(&'static str, usize)> {
             remaining = remaining.replace(w, &"\u{0}".repeat(w.len()));
         }
     }
+    // 2026-10-16：原「扣正典专名」已删——`推演` 是主角专属金手指（ITEM-99-005），
+    // 无世界观职业/机构需豁免；原豁免表把词凭空造出（全库 0 命中），
+    // 会把真实泄漏错减为 0，属严重误判，故整条删除。
     out
 }
 

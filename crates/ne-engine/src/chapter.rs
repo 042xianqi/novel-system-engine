@@ -73,7 +73,9 @@ pub fn sanitize_injection(md: &str) -> String {
         for (a, b) in DESIGN_LAYER_NEUTRAL {
             s = s.replace(a, b);
         }
-        // 兜底：残留的「推演」（不在上表组合里的）一律换成中性词
+        // 兜底：残留的「推演」（不在上表组合里的）一律换成中性词。
+        // 2026-10-16：「推演」= 主角专属金手指（ITEM-99-005），全库无正典专名需保护，
+        // 原 CANON_EXEMPT 占位符保护逻辑已删除（该表系误造）。
         s = s.replace("推演", "琢磨");
         out.push(s);
     }
@@ -237,6 +239,14 @@ pub fn deterministic_check_with(text: &str, _chapter_no: u32, banned_words: &[&s
             "B.段落",
             format!("段数 {para_count} >{MAX_PARA}（超出按 2500-4000 字与每段 40-80 字推出的上限）"),
             format!("相邻短段合并回 {MIN_PARA}-{MAX_PARA} 段，别拆太碎（句长目标25-40）"),
+        ));
+    } else if para_count < MIN_PARA {
+        // 2026-10-16 补齐下行：原仅查 >MAX_PARA，不查 <MIN_PARA（段落门禁不对称）。
+        // 判定口径：段数过少 → 单段偏长/叙述堆砌，读者阅读节奏差。
+        p1.push(f(
+            "B.段落",
+            format!("段数 {para_count} <{MIN_PARA}（少于此数多为长段堆砌，阅读节奏差）"),
+            format!("按动作/对话/转折切分长段，目标 {MIN_PARA}-{MAX_PARA} 段（单段 40-80 字）"),
         ));
     }
 
@@ -615,6 +625,18 @@ mod tests {
         let s = sanitize_injection("他的推演进化面板启动了，面板开始推演未来推演路径。");
         assert!(!s.contains("推演"), "不得残留推演：{s}");
         assert!(!s.contains("面板"), "不得残留面板：{s}");
+    }
+
+    #[test]
+    fn sanitize_injection_neutralizes_tuiyan_everywhere() {
+        // 2026-10-16：`推演` 是主角专属金手指（ITEM-99-005），库内**不存在**需豁免的
+        // 世界观职业/机构；任何位置的「推演」都应被中性化。
+        let s2 = sanitize_injection("他的推演进化面板启动了，推演单一事物的进化路径。");
+        assert!(!s2.contains("推演"), "金手指「推演」未被中性化：{s2}");
+        assert!(!s2.contains("面板"), "金手指「面板」未被中性化：{s2}");
+        // 带「推演」的句子整体应被中性化（不留下任何一处）
+        let s3 = sanitize_injection("他以推演改写命运。");
+        assert!(!s3.contains("推演"), "「推演」未中性化：{s3}");
     }
 
     #[test]

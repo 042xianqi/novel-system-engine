@@ -465,6 +465,46 @@ fn build_system_prompt(
     }
 }
 
+/// 清洗模型输出的正文文本（2026-10-15）。
+///
+/// 背景：模型常在正文末尾追加「元评论块」——如 `---` 分隔线 +「**写完自查**：…」
+/// 或「【技法计划】…」。模板已明令禁止，但模型仍偶发。此处做**保守的尾部裁剪**：
+/// 只在明确命中元评论标记时，从该标记处截断（连同其前的分隔线一并去掉）；
+/// 不命中则原样返回，不误伤正常正文。
+pub fn sanitize_story_text(raw: &str) -> String {
+    // 1) 剥离 [[CANON_TEXT_START]]/[[CANON_TEXT_END]] 标记行，保留内部定版文本。
+    //    标记只属于指令层约定，不该落进正文文件（第2/3章均无标记，此处兜底）。
+    let mut raw = raw
+        .lines()
+        .filter(|l| {
+            let t = l.trim();
+            t != "[[CANON_TEXT_START]]" && t != "[[CANON_TEXT_END]]"
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    // 若标记与其包裹文本同行（如「……。[[CANON_TEXT_START]]滑倒了……」），兜底做字符级剥离
+    for m in ["[[CANON_TEXT_START]]", "[[CANON_TEXT_END]]"] {
+        raw = raw.replace(m, "");
+    }
+    // 2) 截断模型尾部元评论（既有行为）
+    const MARKERS: [&str; 5] = ["**写完自查**", "写完自查", "【技法计划】", "【自查】", "【自检】"];
+    let mut cut_at: Option<usize> = None;
+    for m in MARKERS {
+        if let Some(i) = raw.find(m) {
+            cut_at = Some(match cut_at {
+                Some(c) => c.min(i),
+                None => i,
+            });
+        }
+    }
+    let body = match cut_at {
+        Some(i) => raw[..i]
+            .trim_end_matches(|c: char| c == '-' || c == '*' || c == '—' || c.is_whitespace()),
+        None => raw.trim_end_matches(char::is_whitespace),
+    };
+    format!("{}\n", body.trim_end())
+}
+
 /// 旧签名兼容入口（`use_memory = false`，行为与历史逐字节一致）。
 #[allow(clippy::too_many_arguments)]
 pub fn novel_chapter(
@@ -547,7 +587,7 @@ pub fn novel_chapter_with_memory(
     }
     let out = ne_engine::llm::call(llm, &msgs)
         .map_err(|e| anyhow::anyhow!("模型调用失败：{e}"))?;
-    let text = out.content.trim().to_string();
+    let text = sanitize_story_text(out.content.trim());
     if text.is_empty() {
         anyhow::bail!("模型返回空正文");
     }
@@ -832,5 +872,43 @@ fn build_sub_ctx<'a>(parent: &HarnessCtx<'a>, session: &str) -> HarnessCtx<'a> {
         system_override: parent.system_override.clone(),
         vault_root: parent.vault_root.clone(),
         asker: None, // 子任务无交互 → ask_user 会明确报错并交回主智能体
+    }
+}
+
+#[cfg(test)]
+mod sanitize_tests {
+    use super::sanitize_story_text;
+
+    #[test]
+    fn strips_trailing_selfcheck_block() {
+        let raw = "他喝完了粥。\n\n---\n\n**写完自查**：全文约 2900 字，无「锚点已建立」。";
+        assert_eq!(sanitize_story_text(raw), "他喝完了粥。\n");
+    }
+
+    #[test]
+    fn strips_technique_plan_block() {
+        let raw = "正文结束。\n\n【技法计划】用 R4 节奏。";
+        assert_eq!(sanitize_story_text(raw), "正文结束。\n");
+    }
+
+    #[test]
+    fn keeps_clean_text_intact() {
+        let raw = "他喝完了粥，想着明天还得进山。\n";
+        assert_eq!(sanitize_story_text(raw), raw);
+    }
+
+    #[test]
+    fn trims_trailing_whitespace_only() {
+        assert_eq!(sanitize_story_text("正文。   \n\n"), "正文。\n");
+    }
+
+    #[test]
+    fn strips_canon_text_markers_keeps_inner_text() {
+        // 标记独占行：剥离标记、保留定版文本
+        let raw = "他喉头动了动，说滑倒了，摔了一跤。[[CANON_TEXT_START]]\n滑倒了，摔了一跤。\n[[CANON_TEXT_END]]\n\n话出口他就觉得欠妥。";
+        let out = sanitize_story_text(raw);
+        assert!(!out.contains("CANON_TEXT"), "{out}");
+        assert!(out.contains("滑倒了，摔了一跤。"), "{out}");
+        assert!(out.contains("话出口他就觉得欠妥。"), "{out}");
     }
 }

@@ -198,6 +198,10 @@ pub enum Cmd {
         /// 落盘后可选合规复核（默认关闭；开启只记录 refs/待评，不改生成内容）
         #[arg(long)]
         check_compliance: bool,
+        /// 生成前跑注入就绪闸门（细纲/资料卡/角色卡/伏笔/事件/前文/记忆/钩子）。
+        /// 发现 Fatal 项即中止生成，不调模型。默认关闭。
+        #[arg(long)]
+        preflight: bool,
     },
     /// L0~锚点层级健康巡检（独立外挂；--semantic 默认关闭）
     AuditLayerHealth {
@@ -264,6 +268,16 @@ pub enum Cmd {
         /// 资料库根
         #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
         lib: Option<PathBuf>,
+    },
+    /// 系统健康自检：加载时模块自检 + 生成前注入就绪闸门（只读、零外呼）
+    Health {
+        #[command(subcommand)]
+        cmd: HealthCmd,
+    },
+    /// 细纲工具：把「1 拍 5 章概要复制」重建为「5 个递进子拍」（调 LLM）
+    Outline {
+        #[command(subcommand)]
+        cmd: OutlineCmd,
     },
     /// 世界观认知治理层（独立外挂；语义默认关，只产证据与建议）
     WorldGov {
@@ -500,6 +514,88 @@ pub enum ModelsCmd {
     List,
     /// 校验配置能否组装出可用的 LlmParams（不发请求）
     Check,
+}
+
+/// 系统健康自检子命令。
+#[derive(Subcommand, Debug)]
+pub enum HealthCmd {
+    /// 加载时模块自检：库根结构 / novel.db 业务表 / 配置自洽 / 细纲 / 模板 / 角色卡。
+    Modules {
+        /// 卷号
+        #[arg(long, default_value = "卷01")]
+        volume: String,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
+    /// 生成前注入就绪闸门：检查指定章所有待注入项（细纲/资料卡/角色卡/伏笔/事件/前文/记忆/钩子）。
+    Preflight {
+        /// 章号
+        #[arg(long, default_value_t = 1)]
+        chapter: u32,
+        /// 卷号
+        #[arg(long, default_value = "卷01")]
+        volume: String,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
+    /// 启动自检：设计层词污染全量扫描（注入文件/注入表/资料卡/已生成正文/细纲雷同）。
+    Boot {
+        /// 卷号
+        #[arg(long, default_value = "卷01")]
+        volume: String,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
+}
+
+/// 细纲工具子命令。
+#[derive(Subcommand, Debug)]
+pub enum OutlineCmd {
+    /// 把「1 拍 5 章概要复制」重建为「5 个递进子拍」（调 LLM；原文件备份 .bak_rebuild）。
+    Rebuild {
+        /// 卷号
+        #[arg(long, default_value = "卷01")]
+        volume: String,
+        /// 只重建第 N 拍（1 起）；不传 = 全卷
+        #[arg(long)]
+        beat: Option<usize>,
+        /// 只生成不落盘（打印预览）
+        #[arg(long)]
+        dry_run: bool,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
+    /// 设计层词清洗：把细纲章文本的工程词改写为叙事层表达（调 LLM；备份 .bak_sanitize）。
+    Sanitize {
+        /// 卷号
+        #[arg(long, default_value = "卷01")]
+        volume: String,
+        /// 只清洗第 N 章（1 起）；不传 = 全卷
+        #[arg(long)]
+        chapter: Option<u32>,
+        /// 只生成不落盘（打印预览）
+        #[arg(long)]
+        dry_run: bool,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
+    /// 细纲出厂门禁：查本卷细纲章文本的设计层词与章概要雷同（只读，不调模型）。
+    Check {
+        /// 卷号
+        #[arg(long, default_value = "卷01")]
+        volume: String,
+        /// JSON 输出
+        #[arg(long)]
+        json: bool,
+        /// 资料库根
+        #[arg(long, env = "NE_AGENT_LIB", value_name = "DIR")]
+        lib: Option<PathBuf>,
+    },
 }
 
 

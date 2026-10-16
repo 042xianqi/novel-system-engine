@@ -14,6 +14,8 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
+// 词表统一引用 SSOT；pub use 保持既有路径可用。
+pub use ne_core::lexicon::{LEAK_WORDS, MYTH_BANNED};
 
 // ───────────────────────── 常量（逐字照抄 gate14.py）
 
@@ -31,13 +33,6 @@ pub const COST_KEYWORDS: [&str; 17] = [
     "代价", "失去", "模糊", "遗忘", "消散", "消失", "消失的", "变淡", "淡去", "疼", "痛", "灼",
     "烧", "裂痕", "碎裂", "代价", "忘",
 ];
-/// G14 来源神话 6 词硬闸。
-pub const MYTH_BANNED: [&str; 6] = [
-    "存在之基", "存在之核", "高维观测者文明", "高维观测者", "阿莱夫·零", "金色立方体",
-];
-/// G16 指令泄漏词（阻断级）。
-pub const LEAK_WORDS: [&str; 8] =
-    ["不解释", "不展开", "不说明", "不交代", "不给出", "不复述", "不得杜撰", "不硬凑"];
 /// G15 家庭 canon 称谓映射。
 pub const FAMILY_CANON: [(&str, &str); 3] =
     [("父亲", "陈大山"), ("母亲", "林氏"), ("弟弟", "陈默")];

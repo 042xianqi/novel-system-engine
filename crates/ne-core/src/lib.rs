@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod lexicon;
 pub mod templates;
 use std::path::PathBuf;
 

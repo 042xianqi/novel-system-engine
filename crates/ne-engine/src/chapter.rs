@@ -14,14 +14,23 @@ use regex::Regex;
 use serde_json::{json, Map, Value};
 use std::path::Path;
 
-/// AI 痕迹词（照抄 AI_TRACE_WORDS）。
-pub const AI_TRACE_WORDS: [&str; 8] =
-    ["不禁", "竟然", "不可思议", "值得一提", "事实上", "众所周知", "缓缓", "微微"];
-/// 正典禁词（照抄 BANNED_WORDS）。
-pub const BANNED_WORDS: [&str; 3] = ["归墟", "熵兽", "热寂前夜"];
+/// 词表统一引用 `ne_core::lexicon`（SSOT）。
+/// `pub use` 保持既有路径 `ne_engine::chapter::BANNED_WORDS` 等可用，避免破坏下游。
+pub use ne_core::lexicon::{
+    is_prohibition_line, AI_TRACE_WORDS, BANNED_WORDS, DESIGN_LAYER_NEUTRAL, MYTH_NEUTRAL,
+};
 /// 字数区间（照抄 MIN_WORDS / MAX_WORDS）。
 pub const MIN_WORDS: usize = 2500;
 pub const MAX_WORDS: usize = 4000;
+/// 全章自然段数区间。
+///
+/// 与字数/段长自洽：按每段 40-80 字（模板 §1.2），
+/// 2500 字 ÷ 80 = 31 段，4000 字 ÷ 40 = 100 段；模板又自述「段数 ≈ 字数÷55」，
+/// 取两者交集并留裕度 → 30-80 段。
+/// ⚠ 旧值 18-25 与 2500-4000 字互斥（18-25 段 × 40-80 字 = 720-2000 字，
+/// 永远到不了 2500），是致正文普遍偏短的根因，2026-10-15 修正。
+pub const MIN_PARA: usize = 30;
+pub const MAX_PARA: usize = 80;
 
 /// 场景 → 手法库路由（照抄 scene_dims）。
 pub fn scene_dims(scene: &str) -> &'static str {
@@ -38,16 +47,6 @@ pub fn scene_dims(scene: &str) -> &'static str {
     }
 }
 
-/// 来源神话 6 词 → 中性词（照抄 MYTH_NEUTRAL）。
-pub const MYTH_NEUTRAL: [(&str, &str); 6] = [
-    ("存在之基", "锚点已建立"),
-    ("存在之核", "锚点已建立"),
-    ("高维观测者文明", "未知来源"),
-    ("高维观测者", "未知来源"),
-    ("阿莱夫·零", "未知来源"),
-    ("金色立方体", "未知来源"),
-];
-
 /// 中性化正文注入文本（照抄 _neutralize_myth）。
 pub fn neutralize_myth(md: &str) -> String {
     let mut s = md.to_string();
@@ -55,6 +54,30 @@ pub fn neutralize_myth(md: &str) -> String {
         s = s.replace(a, b);
     }
     s
+}
+
+
+
+/// 注入前预处理：先 `neutralize_myth`（神话词中性化），再 `neutralize_design_layer`
+/// （设计层词中性化）。所有资料卡 / 事件卡 / 记忆 / 细纲 / 前文尾巴注入文本都应走这一条路径。
+///
+/// 逐行处理：显式禁令行原样保留（保规则语义），其余行做中性化。
+pub fn sanitize_injection(md: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for line in md.lines() {
+        if is_prohibition_line(line) {
+            out.push(line.to_string());
+            continue;
+        }
+        let mut s = neutralize_myth(line);
+        for (a, b) in DESIGN_LAYER_NEUTRAL {
+            s = s.replace(a, b);
+        }
+        // 兜底：残留的「推演」（不在上表组合里的）一律换成中性词
+        s = s.replace("推演", "琢磨");
+        out.push(s);
+    }
+    out.join("\n")
 }
 
 /// 剥离叙事体（照抄 _strip_narrative）：剔除「## 一、二、」叙事章 + 连续 >300 字叙事段。
@@ -146,7 +169,7 @@ pub struct Finding {
     pub action: String,
 }
 
-fn f(dim: &str, issue: String, action: &str) -> Finding {
+fn f(dim: &str, issue: String, action: impl Into<String>) -> Finding {
     Finding { dim: dim.into(), issue, action: action.into() }
 }
 
@@ -207,13 +230,13 @@ pub fn deterministic_check_with(text: &str, _chapter_no: u32, banned_words: &[&s
         p0.push(f(
             "B.段落",
             format!("最长段 {max_para} 字 >200（单段硬上限）"),
-            "长段按动作/转折/情绪拆成 2-4 段（§1 单段≤200字·全章18-25段）",
+            format!("长段按动作/转折/情绪拆成 2-4 段（§1 单段≤200字·全章{MIN_PARA}-{MAX_PARA}段）"),
         ));
-    } else if para_count > 25 {
+    } else if para_count > MAX_PARA {
         p1.push(f(
             "B.段落",
-            format!("段数 {para_count} >25（拆过碎，全章目标18-25段）"),
-            "相邻短段合并回 18-25 段，别拆太碎（句长目标25-40）",
+            format!("段数 {para_count} >{MAX_PARA}（超出按 2500-4000 字与每段 40-80 字推出的上限）"),
+            format!("相邻短段合并回 {MIN_PARA}-{MAX_PARA} 段，别拆太碎（句长目标25-40）"),
         ));
     }
 
@@ -344,7 +367,7 @@ pub fn build_knowledge_injection<C: ChapterCtx>(
             let name = m.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let code = m.get("code").and_then(|v| v.as_str()).unwrap_or("");
             let content = m.get("content").and_then(|v| v.as_str()).unwrap_or("");
-            let cleaned = neutralize_myth(&strip_narrative(content));
+            let cleaned = sanitize_injection(&strip_narrative(content));
             mat_lines.push(format!("### {name}（{code}）\n{cleaned}"));
             n += 1;
         }
@@ -361,14 +384,24 @@ pub fn build_knowledge_injection<C: ChapterCtx>(
         for c in chars {
             let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let code = c.get("code").and_then(|v| v.as_str()).unwrap_or("");
-            let style = c.get("speech_style").and_then(|v| v.as_str()).unwrap_or("");
-            let catch = c.get("catchphrase").and_then(|v| v.as_str()).unwrap_or("");
+            // 注入面封闭：style/catch 也可能含设计层词，过 sanitize（非禁令行则中性化）。
+            let style_raw = c.get("speech_style").and_then(|v| v.as_str()).unwrap_or("");
+            let catch_raw = c.get("catchphrase").and_then(|v| v.as_str()).unwrap_or("");
+            let style = sanitize_injection(style_raw);
+            let catch = sanitize_injection(catch_raw);
             // 空值兜底：绝不把空字符串直接送进 prompt（会放任 LLM 自由发挥）
-            let style_disp = if style.trim().is_empty() { "未标定（以角色卡整体为准）" } else { style };
-            let catch_disp = if catch.trim().is_empty() { "无" } else { catch };
+            let style_disp = if style.trim().is_empty() { "未标定（以角色卡整体为准）" } else { style.as_str() };
+            let catch_disp = if catch.trim().is_empty() { "无" } else { catch.as_str() };
             lines.push(format!("  【{code} {name}】语言风格：{style_disp}；口头禅：{catch_disp}"));
             if let Some(cl) = c.get("canon_lines").and_then(|v| v.as_array()) {
                 for s in cl.iter().filter_map(|x| x.as_str()) {
+                    // 定版台词若本身含设计层词/禁词（如「锚点已建立。」），不得注入——
+                    // 否则等于命令模型把禁词写进正文。直接丢弃并留待人工清理资料卡。
+                    let dirty = s.contains("锚点已建立")
+                        || DESIGN_LAYER_NEUTRAL.iter().any(|(k, _)| s.contains(k));
+                    if dirty {
+                        continue;
+                    }
                     if !s.trim().is_empty() && !canon_lines.iter().any(|x| x == s) {
                         canon_lines.push(s.to_string());
                     }
@@ -389,7 +422,7 @@ pub fn build_knowledge_injection<C: ChapterCtx>(
             parts.push(format!(
                 "【定版原文（不可修改）】\n{}\n{}\n{}\n\
                  > 上述被 [[CANON_TEXT_START]]/[[CANON_TEXT_END]] 包裹的文本为**不可修改定版原文**：\n\
-                 > 只能原封不动输出，禁止拆分、扩写、追加解释、新增字段（如「两个字」「推演次数」等）。",
+                 > 只能原封不动输出，禁止拆分、扩写、追加解释、新增字段。",
                 "[[CANON_TEXT_START]]",
                 body.join("\n"),
                 "[[CANON_TEXT_END]]",
@@ -404,10 +437,14 @@ pub fn build_knowledge_injection<C: ChapterCtx>(
                 let lines: Vec<String> = due
                     .iter()
                     .map(|d| {
+                        // 注入面封闭：伏笔 content 过 sanitize，防设计层词原样注入。
+                        let content = sanitize_injection(
+                            d.get("content").and_then(|v| v.as_str()).unwrap_or(""),
+                        );
                         format!(
                             "  【{}】{}",
                             d.get("id").and_then(|v| v.as_str()).unwrap_or(""),
-                            d.get("content").and_then(|v| v.as_str()).unwrap_or("")
+                            content
                         )
                     })
                     .collect();
@@ -417,10 +454,10 @@ pub fn build_knowledge_injection<C: ChapterCtx>(
         }
     }
 
-    // 前文尾巴
+    // 前文尾巴注入前统一净化（防上一章正文残留设计层词回流，形成自我强化循环）。
     if let Some(prev) = inj.get("prev_tail").and_then(|v| v.as_str()) {
         if !prev.is_empty() {
-            parts.push(format!("【上一章末尾（衔接用）】\n{prev}"));
+            parts.push(format!("【上一章末尾（衔接用）】\n{}", sanitize_injection(prev)));
         }
     }
 
@@ -430,7 +467,8 @@ pub fn build_knowledge_injection<C: ChapterCtx>(
     for r in &rules {
         let code = r.get("code").and_then(|v| v.as_str()).unwrap_or("");
         let name = r.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        let rt = r.get("rule_text").and_then(|v| v.as_str()).unwrap_or("");
+        // 注入面封闭：rule_text 过 sanitize。
+        let rt = sanitize_injection(r.get("rule_text").and_then(|v| v.as_str()).unwrap_or(""));
         rule_lines.push(format!("  【{code} {name}】{rt}"));
     }
     counts.insert("规则n".into(), json!(rule_lines.len()));
@@ -446,6 +484,19 @@ pub fn build_knowledge_injection<C: ChapterCtx>(
 /// 纯 prompt 层，不含任何代码门禁逻辑。
 pub const STYLE_CONSTRAINTS: &str = "\
 # 叙事与人物风格约束（贴合原著文风）
+
+0. 【最高优先级·绝对禁令】正文**严禁出现**以下任何内容（命中即整章作废重写）：
+   - 「锚点已建立」四个字（含引号、无声念白、任何变体）；正文永远不解释、不命名金手指来源。
+   - 面板 UI、弹窗、系统提示、人声提示、任何游戏化界面文字。
+   - **设计层/工程层词汇泄漏**：正文严禁出现「推演」「算账」「算路径」「算因果」「漏斗」「分支」「因果流」「影子层」「面板」等词（含作比喻）。此类词只属于设计者，不属于角色。命中即整章作废。
+   - 金手指在第1~3卷只能表现为**后脑伤口附近的颅内一阵模糊异样体感**——流、噪、沙沙、细碎、时隐时现、隔着一层膜、口子一开就炸、抓不住、一闪即散；**不给名称、不解释、不类比、不猜其本质**。
+   - 前世背景故事、穿越过程细节（一概不介绍）；正文**严禁出现「穿越」「金手指」「系统」「穿越者」等元叙事词**（命中 G07 canon 基准即 P1 打回）。**连主角脑内自嘲也不许用这些词**——想说「新来乍到、白捡一具身子」就用「换个活法」「白捡一身本事」「三无产品」这类说法绕开，不许出现「别人穿越…」「穿越者…」句式。
+
+0.1 【认知曲线铁则·防上帝视角下渗】主角对那股体感的认知必须**单向、缓慢**推进，严禁倒置：
+   - 第1~3卷只允许：莫名体感 → 疑惑 → 不安。**不许命名，不许类比成「算/推演/计算」**。
+   - 「它会不会在算东西？」这类假说，只能由角色在**多次巧合 + 事后反复复盘 + 试错**之后自己归纳出来，且必须在正文写出「他据此想到」的推导过程；**绝不允许开局直觉、天生认知、上帝视角预设**。
+   - 禁止把通道不稳定（时漏时闭、时隐时现）写成「某个东西会动/会缩/会躲/有意志」。
+
 1. 主角内心活动不要全部写成事后完整复盘总结。模拟人脑真实思考：允许碎片化、跳跃式念头、一闪而过的自嘲脑洞，部分想法不必得出结论，想法可以中途搁置。避免通篇规整、逻辑顺滑的大段心理独白。
 2. 配角不能只有功能性喜怒哀乐。给配角增加微小具体小怪癖、无意识小动作；允许配角说出不直接推动主线的细碎言行。
 3. 不必追求本章所有线索全部闭环。可以抛出疑问、异象碎片谜团，不在本章解答，留给后续章节。
@@ -453,13 +504,16 @@ pub const STYLE_CONSTRAINTS: &str = "\
 5. 文笔不要过度打磨华丽顺滑；适度保留思考的“毛刺感”；少用成套网文比喻；心理优先靠动作细节表现，但保留少量直白脑内碎念。
 6. 硬性：主角仅内心允许自嘲玩笑；客观叙事、受伤死亡悲剧场景禁止戏谑；念头吐槽完毕必须回归残酷现实，不消解苦难。
 
+7. **幽默自嘲硬性密度（本作命根子，不达标即返工）**：底色黑暗压抑 × 主角内心贫嘴。每章陈寂内心吐槽/自嘲/脑洞 **≥ 4 处**、碎片化散落全章（非集中一段），每处 1~3 句；至少 1 处「对外一本正经、脑内疯狂吐槽」的反差。吐槽要土、贴农家小子身份，禁网络梗/抖机灵。每处笑过之后立刻拉回疼/穷/怕/饿，绝不让玩笑消解苦难（笑一下马上更揪心）。陈寂嘴上不许插科打诨（寡言务实）。
+
 硬性保留旧规则：段落40-80汉字；[[CANON_TEXT_START]]定版文本原样输出；禁止系统面板游戏UI；允许碎片化念头、配角微小习惯、可留存未解谜团。
 
 # 输出强制要求
 1. 严格遵守全局铁则 + 本章细纲，禁止自行新增剧情、新增人物、修改既定伏笔时序。
-2. 文风：整体黑暗压抑；陈寂只允许内心进行自嘲脑洞，客观叙事不能搞笑；可碎片化念头，不要通篇规整复盘心理。
+2. 文风：整体黑暗压抑；陈寂**必须**在内心持续自嘲贫嘴（≥4 处/章），客观叙事不能搞笑；可碎片化念头，不要通篇规整复盘心理。
 3. **只输出纯粹小说正文**：禁止前置分析、禁止结尾总结、禁止输出溯源 ID、**禁止输出数据库 SQL 脚本 / 代码围栏 / 任何非正文的技术内容**。
-4. 生成完成自行自查一遍：是否触犯本章专属禁令。";
+4. **章末必备钩子**：末 200 字内必须落地细纲给出的『钩子』项（至少 1 个未闭合疑点/悬念，可用疑问句或「到底/会不会/难道/如果/可是/却/但是」等悬念词承载）；章末不写总结、不写抒情、不写「从此以后」式收束。
+5. 生成完成自行自查一遍：是否触犯本章专属禁令；内心吐槽是否 ≥ 4 处、是否每处都拉回了残酷现实；章末钩子是否落地。";
 
 /// 构建完整正文 prompt（照抄 build_prompt 的骨架；模板来自 prompts/l5_正文.md）。
 pub fn build_prompt<C: ChapterCtx>(ctx: &C, chapter: u32, volume: &str) -> Result<String> {
@@ -472,15 +526,34 @@ pub fn build_prompt<C: ChapterCtx>(ctx: &C, chapter: u32, volume: &str) -> Resul
     // 在模板末尾追加「叙事与人物风格约束」（原有模板内容一字不动，仅追加）。
     let base = format!("{base}\n\n{}", STYLE_CONSTRAINTS);
 
-    let outline = ch.get("outline").and_then(|v| v.as_str()).unwrap_or("");
+    let outline_raw = ch.get("outline").and_then(|v| v.as_str()).unwrap_or("");
     let title = ch.get("title").and_then(|v| v.as_str()).unwrap_or("");
     let anchors = ch.get("anchors").cloned().unwrap_or_else(|| json!({}));
     let wire_block = build_wire_injection(ctx, &inj, volume, chapter, scene);
 
+    // 细纲整体注入前统一净化（细纲本身用工程词描述章内行为，裸注入=教模型写禁词）。
+    // 显式禁令行在 sanitize_injection 内原样保留，故本章约束语义不受损。
+    let outline = sanitize_injection(outline_raw);
+
+    // 从**净化后**的细纲抽取『钩子』行，注入 prompt 顶部为醒目硬要求（G02 章末钩密度）。
+    let hook_line = regex::Regex::new(r"- \s*\*\*钩子\*\*[：:](.+)")
+        .ok()
+        .and_then(|re| re.captures(&outline))
+        .and_then(|c| c.get(1).map(|m| m.as_str().trim().to_string()))
+        .unwrap_or_default();
+    let hook_block = if hook_line.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "【本章章末钩子·必须落地】细纲钩子：『{hook_line}』——本章末 200 字内必须以此疑点收束（未闭合），G02 门禁按章末 300 字含悬念标记硬检。\n"
+        )
+    };
+
     let prompt = format!(
         "── 第{chapter}章 {title} ──\n\
          【场景】{scene}  手法路由：{dim}\n\
-         【字数】{MIN_WORDS}-{MAX_WORDS} 字；单段≤200；全章18-25段\n\
+         【字数】{MIN_WORDS}-{MAX_WORDS} 字（硬指标，不足即返工）；单段≤200；全章{MIN_PARA}-{MAX_PARA}段\n\
+         {hook_block}\
          【锚点】{}\n\
          【细纲】\n{outline}\n\n\
          {base}\n\n{kb_block}\n\n{wire_block}\n",
@@ -530,9 +603,29 @@ mod tests {
     #[test]
     fn myth_neutralized() {
         let s = neutralize_myth("这里提到存在之基与高维观测者文明");
-        assert!(s.contains("锚点已建立"));
+        assert!(s.contains("某样东西"));
         assert!(s.contains("未知来源"));
         assert!(!s.contains("存在之基"));
+        // 关键：中性词本身不能是正文禁词（旧版误用「锚点已建立」→ 禁词对撞）
+        assert!(!s.contains("锚点已建立"), "中性词不得引入正文禁词：{s}");
+    }
+
+    #[test]
+    fn sanitize_injection_neutralizes_design_words() {
+        let s = sanitize_injection("他的推演进化面板启动了，面板开始推演未来推演路径。");
+        assert!(!s.contains("推演"), "不得残留推演：{s}");
+        assert!(!s.contains("面板"), "不得残留面板：{s}");
+    }
+
+    #[test]
+    fn sanitize_injection_keeps_prohibition_lines_intact() {
+        // 显式禁令行必须原样保留（否则「严禁出现『面板』」会被改写成别的词，规则语义被破坏）
+        let s = sanitize_injection("严禁出现「面板」，金手指不推演。\n他借面板推演未来。");
+        assert!(s.contains("严禁出现「面板」"), "禁令行应原样保留：{s}");
+        assert!(s.contains("不推演") || s.contains("禁"), "禁令行不得被中性化：{s}");
+        // 非禁令行应被中性化
+        assert!(!s.contains("他借面板"), "非禁令行应中性化：{s}");
+        assert!(!s.contains("推演未来"), "非禁令行应中性化：{s}");
     }
 
     #[test]
@@ -578,5 +671,46 @@ mod tests {
     fn scene_dims_default_is_fallback() {
         assert_eq!(scene_dims("未知场景"), "A(中)+B+C(1层)");
         assert_eq!(scene_dims("战斗"), "E+A(中)+C(1层)");
+    }
+
+    /// 回归：注入面每个字段都必须过 sanitize——尤其钩子行。
+    /// 历史缺陷：hook 从 outline_raw 抽取（不中性化），使「面板弹出一行…」原样入 prompt→正文系统行。
+    #[test]
+    fn injection_hook_line_is_neutralized() {
+        // 模拟细纲原文（含设计层词钩子），先整体净化再抽钩子。
+        let outline_raw = "### 第5章 X\n- **目标**：甲\n- **钩子**：三息验完，面板弹出一行：「预兆真。」";
+        let outline = sanitize_injection(outline_raw);
+                let hook = regex::Regex::new(r"- \s*\*\*钩子\*\*[：:](.+)")
+            .ok()
+            .and_then(|re| re.captures(&outline))
+            .and_then(|c| c.get(1).map(|m| m.as_str().trim().to_string()))
+            .unwrap_or_default();
+        assert!(!hook.is_empty(), "钩子应抽到");
+        assert!(!hook.contains("面板"), "钩子行不得残留设计层词：{hook}");
+        assert!(!hook.contains("推演"), "钩子行不得残留推演：{hook}");
+    }
+
+    /// 回归：伏笔 content / 规则 rule_text / 角色口头禅 均须过 sanitize。
+    #[test]
+    fn injection_aux_fields_are_neutralized() {
+        for raw in [
+            "伏笔：主角借面板推演未来",
+            "规则：多用推演面板处理信息",
+            "口头禅：我推演一下",
+            "语言风格：冷静，常提面板",
+        ] {
+            let cleaned = sanitize_injection(raw);
+            assert!(!cleaned.contains("推演") && !cleaned.contains("面板"), "未中性化：{raw} -> {cleaned}");
+        }
+    }
+
+    /// SSOT 一致性：中性化表键集合与探测集无反向缺口（探测到的词必能中性化，例外：组合词根）。
+    #[test]
+    fn design_probe_and_neutralizer_align() {
+        // 「面板」在替换表与探测集都存在（保证探测到的必可擦）。
+        assert!(DESIGN_LAYER_NEUTRAL.iter().any(|(k, _)| *k == "面板"));
+        // 兜底：sanitize 后「推演」「面板」必不残留（无论何种组合）。
+        let s = sanitize_injection("推演进化面板 万象推演面板 未来推演 面板");
+        assert!(!s.contains("推演") && !s.contains("面板"), "{s}");
     }
 }

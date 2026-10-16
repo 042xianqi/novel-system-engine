@@ -52,6 +52,26 @@ fn parses_new_style() {
     assert_eq!(g.keys.len(), 1);
 }
 
+// 2026-10-15：免鉴权端点（workbuddy）用空 key，`- ""` 必须保留为空 key 条目。
+const EMPTY_KEY_STYLE: &str = r#"
+providers:
+  workbuddy:
+    baseUrl: http://127.0.0.1:8788/v1
+    task:
+      keyPool:
+        - ""
+    models:
+      - id: glm-5.3-flash
+"#;
+
+#[test]
+fn parses_empty_key() {
+    let p = providers::parse_models_yml(EMPTY_KEY_STYLE);
+    let a = p.map.get("workbuddy").expect("workbuddy 缺失");
+    assert_eq!(a.keys.len(), 1, "空 key 应保留 1 条，实际 {:?}", a.keys);
+    assert_eq!(a.keys[0], "", "空 key 应为空串");
+}
+
 #[test]
 #[ignore]
 fn parses_real_models_yml() {

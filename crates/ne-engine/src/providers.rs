@@ -113,14 +113,13 @@ fn unquote(s: &str) -> String {
 }
 
 /// 判断一行是否是 key 列表项（`- xxx`），返回剥引号后的值。
+///
+/// 2026-10-15：**允许空 key**。workbuddy 本地代理为免鉴权模式（带非空无效 key
+/// 返回 401，空/无 Authorization 才通），故 `- ""` 是合法的「空 key」条目；
+/// 若在此处丢弃空串，key 池会变空导致调用报「key 池为空」。
 fn key_item(t: &str) -> Option<String> {
     let v = t.strip_prefix("- ")?;
-    let v = unquote(v);
-    if v.is_empty() {
-        None
-    } else {
-        Some(v)
-    }
+    Some(unquote(v))
 }
 
 /// 解析 models.yml —— 兼容 `apiKeys:` 与 `task.keyPool:` 两种结构。

@@ -13,7 +13,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use crate::cli::{Cli, Cmd, LibraryCtlCmd, McpCmd, ModelsCmd, QueueCmd, VaultCmd, WorldGovCmd, AuditExportCmd, CacheCmd, ProbeExportCmd, SelfCheckCmd, TagCmd, NoteCmd, DiffCmd, DiffSnapCmd, WebCmd, ConflictCmd, GraphCmd, SandboxCmd, SandboxTraceCmd, LlmCmd, LlmCacheCmd, LlmConfigCmd, PipelineCmd};
+use crate::cli::{Cli, Cmd, LibraryCtlCmd, McpCmd, ModelsCmd, QueueCmd, VaultCmd, WorldGovCmd, AuditExportCmd, CacheCmd, ProbeExportCmd, SelfCheckCmd, TagCmd, NoteCmd, DiffCmd, DiffSnapCmd, WebCmd, ConflictCmd, GraphCmd, SandboxCmd, SandboxTraceCmd, LlmCmd, LlmCacheCmd, LlmConfigCmd, PipelineCmd, HealthCmd, OutlineCmd};
 use ne_agent::{RuntimeConfig, Vault};
 use std::path::{Path, PathBuf};
 mod cli;
@@ -92,7 +92,19 @@ fn run() -> Result<()> {
         Cmd::Fix { chap_id, volume, lib, findings, dry_run } => {
             run_fix(&vault, *chap_id, volume, lib.as_deref(), findings.as_deref(), *dry_run)
         }
-        Cmd::Novel { chap_id, volume, lib, dry_run, prompt_only, use_memory, check_compliance } => {
+        Cmd::Novel { chap_id, volume, lib, dry_run, prompt_only, use_memory, check_compliance, preflight } => {
+            let lib_root_for_pf = lib.clone().or_else(|| cli.work_root.clone()).unwrap_or_else(|| vault.workspace());
+            if *preflight {
+                let rep = ne_agent::health::preflight(&lib_root_for_pf, volume, *chap_id)?;
+                if cli.json {
+                    eprintln!("{}", serde_json::to_string(&rep)?);
+                } else {
+                    ne_agent::health::print_report(&rep);
+                }
+                if !rep.ready {
+                    anyhow::bail!("生成前闸门未通过（Fatal {} 项）：已中止，未调模型", rep.fatal);
+                }
+            }
             let r = run_novel(&vault, *chap_id, volume, lib.as_deref(), *dry_run, *prompt_only, *use_memory, cli.json);
             // 可选：落盘后独立做一次治理登记（默认关；只记录 refs/待评，不改正文）
             if *check_compliance && r.is_ok() {
@@ -151,6 +163,26 @@ fn run() -> Result<()> {
                 }
             }
             Ok(())
+        }
+        Cmd::Health { cmd } => {
+            let lib_root = match cmd {
+                HealthCmd::Modules { lib, .. }
+                | HealthCmd::Preflight { lib, .. }
+                | HealthCmd::Boot { lib, .. } => {
+                    lib.clone().or_else(|| cli.work_root.clone()).unwrap_or_else(|| vault.workspace())
+                }
+            };
+            run_health(&lib_root, cmd, cli.json)
+        }
+        Cmd::Outline { cmd } => {
+            let lib_root = match cmd {
+                OutlineCmd::Rebuild { lib, .. }
+                | OutlineCmd::Sanitize { lib, .. }
+                | OutlineCmd::Check { lib, .. } => {
+                    lib.clone().or_else(|| cli.work_root.clone()).unwrap_or_else(|| vault.workspace())
+                }
+            };
+            run_outline(&vault, &lib_root, cmd)
         }
         Cmd::Mcp { cmd } => run_mcp(&vault, cmd, cli.json),
         Cmd::SysCheck { mode, lib } => {
@@ -644,6 +676,105 @@ fn run_mcp(vault: &Vault, cmd: &McpCmd, json: bool) -> Result<()> {
 /// 【规约适配】全局系统自检（= `world-gov self-check run` 的别名入口）。
 ///
 /// 第 18 批：对齐《项目总规约》的 `sys-check full --json`。**复用**同一实现。
+/// 系统健康自检（两层）。
+///
+/// - `health modules`：加载时模块自检。
+/// - `health preflight --chapter N`：生成前注入就绪闸门。
+///   **Fatal 项 → 退出码非 0**（便于脚本在生成前卡住）。
+fn run_health(lib_root: &Path, cmd: &HealthCmd, json: bool) -> Result<()> {
+    let rep = match cmd {
+        HealthCmd::Modules { volume, .. } => ne_agent::health::check_modules(lib_root, volume)?,
+        HealthCmd::Preflight { chapter, volume, .. } => {
+            ne_agent::health::preflight(lib_root, volume, *chapter)?
+        }
+        HealthCmd::Boot { volume, .. } => ne_agent::health::boot(lib_root, volume)?,
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&rep)?);
+    } else {
+        ne_agent::health::print_report(&rep);
+    }
+    if !rep.ready {
+        std::process::exit(2);
+    }
+    Ok(())
+}
+
+/// 细纲工具（`outline rebuild`）：调 LLM 把「1 拍 5 章概要复制」重建为 5 个递进子拍。
+fn run_outline(vault: &Vault, lib_root: &Path, cmd: &OutlineCmd) -> Result<()> {
+    vault.init()?;
+    match cmd {
+        OutlineCmd::Rebuild { volume, beat, dry_run, .. } => {
+            if !lib_root.exists() {
+                anyhow::bail!("库根不存在：{}", lib_root.display());
+            }
+            let cfg = RuntimeConfig::load(vault.root())?;
+            let llm = cfg.llm_params(&vault.llm_dir())?;
+            let opts = ne_agent::outline_rebuild::RebuildOpts {
+                volume: volume.clone(),
+                only_beat: *beat,
+                dry_run: *dry_run,
+            };
+            println!("== 细纲重建 {}（{}）==", volume, if *dry_run { "dry-run" } else { "落盘" });
+            let (ok, keep) = ne_agent::outline_rebuild::rebuild(lib_root, &llm, &opts)?;
+            if keep > 0 && ok == 0 {
+                anyhow::bail!("全部 {keep} 拍均未通过校验、已保留原样");
+            }
+            Ok(())
+        }
+        OutlineCmd::Sanitize { volume, chapter, dry_run, .. } => {
+            if !lib_root.exists() {
+                anyhow::bail!("库根不存在：{}", lib_root.display());
+            }
+            let cfg = RuntimeConfig::load(vault.root())?;
+            let llm = cfg.llm_params(&vault.llm_dir())?;
+            let opts = ne_agent::outline_rebuild::SanitizeOpts {
+                volume: volume.clone(),
+                only_chapter: *chapter,
+                dry_run: *dry_run,
+            };
+            println!("== 细纲设计层词清洗 {}（{}）==", volume, if *dry_run { "dry-run" } else { "落盘" });
+            let (ok, keep) = ne_agent::outline_rebuild::sanitize(lib_root, &llm, &opts)?;
+            if ok == 0 && keep > 0 {
+                println!("⚠ 无章被清洗（可能本卷已干净，或全部保留原样）");
+            }
+            Ok(())
+        }
+        OutlineCmd::Check { volume, json, .. } => {
+            if !lib_root.exists() {
+                anyhow::bail!("库根不存在：{}", lib_root.display());
+            }
+            let rep = ne_agent::health::boot(lib_root, volume)?;
+            // 只暴露与「细纲出厂」相关的两项（设计层词/雷同），其余（注入面卡）另属 boot 范畴。
+            let relevant: Vec<_> = rep
+                .checks
+                .iter()
+                .filter(|c| c.name.contains("细纲"))
+                .collect();
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&relevant)?);
+            } else {
+                println!("== 细纲出厂门禁 {volume} ==");
+                for c in &relevant {
+                    let mark = match c.level {
+                        ne_agent::health::Level::Fatal => "❌",
+                        ne_agent::health::Level::Warn => "⚠",
+                        ne_agent::health::Level::Info => "✅",
+                    };
+                    println!("  {mark} {} : {}", c.name, c.detail);
+                }
+            }
+            let fatal = relevant
+                .iter()
+                .any(|c| matches!(c.level, ne_agent::health::Level::Fatal));
+            if fatal {
+                anyhow::bail!("细纲出厂门禁未过（含 Fatal）");
+            }
+            Ok(())
+        }
+    }
+}
+
 fn run_sys_check(lib_root: &Path, mode: &str, json: bool) -> Result<()> {
     match mode {
         "full" => {}

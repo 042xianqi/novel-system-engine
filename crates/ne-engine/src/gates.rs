@@ -12,6 +12,10 @@
 use crate::config::Config;
 use serde::Serialize;
 use serde_json::Value;
+// 词表统一取自 SSOT（ne_core::lexicon）；此处以**切片视图**导出，保持下游 `&[&str]` 类型不变。
+use ne_core::lexicon as lex;
+pub const MYTH_BANNED: &[&str] = &lex::MYTH_BANNED;
+pub const LEAK_WORDS: &[&str] = &lex::LEAK_WORDS;
 
 // ───────────────────────────── 关键词表（照抄 gate14.py，勿改）
 /// 恐怖章诡异要素词（gate14.py HORROR_KEYWORDS）
@@ -41,22 +45,20 @@ pub const HORROR_TECHNIQUES: &[&str] = &[
 ];
 /// 卷九反转词（g11）
 pub const VOL9_REVERSAL: &[&str] = &["反转", "逆转", "揭露", "真相大白", "身份揭露"];
-/// 来源神话 6 词硬闸（g14）
-pub const MYTH_BANNED: &[&str] = &[
-    "存在之基", "存在之核", "高维观测者文明", "高维观测者", "阿莱夫·零", "金色立方体",
-];
-/// 指令泄漏词（g16）
-pub const LEAK_WORDS: &[&str] = &[
-    "不解释", "不展开", "不说明", "不交代", "不给出", "不复述", "不得杜撰", "不硬凑",
-];
-/// G13 确定性 4 维的禁词（det_dims「禁词」）
-pub const G13_STOP_WORDS: &[&str] = &["归墟", "熵兽", "热寂前夜"];
-/// G13 AI 词（det_dims「AI词」）
-pub const G13_AI_WORDS: &[&str] = &[
-    "不禁", "竟然", "不可思议", "值得一提", "事实上", "众所周知", "缓缓", "微微",
-];
-/// 开篇断言 B：金手指（g01）
-pub const G01_B: &[&str] = &["推演", "锚点", "刻痕", "面板"];
+/// G13 确定性 4 维的禁词（＝ SSOT 正典禁词）。
+pub const G13_STOP_WORDS: &[&str] = &lex::BANNED_WORDS;
+
+/// G17 设计层/工程层词泄漏（＝ SSOT 探测集；卷01-03 生效）。
+/// 仅作**字面**检测；语义层（如"算的哪门子账"）无法被覆盖。
+pub const G17_DESIGN_LEAK_WORDS: &[&str] = &lex::DESIGN_LEAK_WORDS;
+/// G13 AI 词（＝ SSOT AI 痕词）。
+pub const G13_AI_WORDS: &[&str] = &lex::AI_TRACE_WORDS;
+/// 开篇断言 B：金手指亮相（g01）。
+///
+/// ⚠ 只允许用**体感词**作判据——「金手指亮相」= 那股说不清的异样体感出现。
+/// 严禁再用「推演/面板/锚点/刻痕」等设计层工程词：那等于命令首章把工程词写进正文
+/// （与 STYLE_CONSTRAINTS §0 禁词表正面冲突）。2026-10-15 修正。
+pub const G01_B: &[&str] = &["体感", "一下", "劲儿", "说不清", "抓不住", "异样", "脑子"];
 /// 开篇断言 C：核心矛盾（g01）
 pub const G01_C: &[&str] = &["残响", "熵", "代价", "遗忘", "债", "欠", "还不上"];
 /// 开篇断言 D：身份交代（g01，2026-10-02 身份归一口径）
@@ -577,6 +579,46 @@ pub fn g16_leak_words(text: &str) -> GateResult {
     out
 }
 
+// ───────────────────────────── G17
+/// G17 设计层/工程层词泄漏：卷01-03 正文严禁出现漏斗工程代号。
+///
+/// 卷01-03 = 「严禁输出该文字」阶段（见全局铁则 & STYLE_CONSTRAINTS §0），
+/// 故命中即 **P0 打回**；卷04 起降级为 P1（此时认知曲线可逐步显性）。
+pub fn g17_design_leak(text: &str, volume: &str) -> GateResult {
+    let h = hits(text, G17_DESIGN_LEAK_WORDS);
+    let mut out = GateResult::ok(format!("设计层词命中={}", fmt_hits(&h)));
+    if h.is_empty() {
+        return out;
+    }
+    // 卷号解析：卷01-03 → P0
+    let vnum: u32 = volume
+        .chars()
+        .filter(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .unwrap_or(0);
+    let early = vnum >= 1 && vnum <= 3;
+    for (w, n) in h {
+        let (sev_issue, action) = if early {
+            (
+                format!("设计层词「{w}」×{n} 泄漏进正文（卷01-03 严禁：上帝视角下渗）"),
+                "删除；改写成纯体感（流/噪/沙沙/时隐时现/隔一层膜/抓不住），角色此刻不许命名或类比其本质",
+            )
+        } else {
+            (
+                format!("设计层词「{w}」×{n} 出现在正文（卷04+ 允许渐显，请确认符合认知曲线）"),
+                "复核：该词是否为角色经推导后的自主归纳，而非上帝视角预设",
+            )
+        };
+        if early {
+            out.p0("G17_design_leak", sev_issue, action);
+        } else {
+            out.p1("G17_design_leak", sev_issue, action);
+        }
+    }
+    out
+}
+
 // ───────────────────────────── G07 / G08（需 DB 输入）
 /// G07 OOC：简化口径——角色已死/境界倒退/情绪矛盾/压抑越界（4 判据）。
 /// 无角色状态数据 → skip_no_input（不阻断），与 Python 同口径。
@@ -715,6 +757,7 @@ pub const GATE_COUNT_ORDER: &[&str] = &[
     "G14_world_consistency",
     "G15_family_consistency",
     "G16_leak_words",
+    "G17_design_leak",
     "P1_PARAGRAPH",
 ];
 
@@ -804,6 +847,7 @@ pub fn run_all(text: &str, chapter: u32, volume: &str, cfg: &Config, ctx: &dyn G
     run!("G14_world_consistency", g14_world_consistency(text, cfg, ctx));
     run!("G15_family_consistency", g15_family_consistency(text, cfg));
     run!("G16_leak_words", g16_leak_words(text));
+    run!("G17_design_leak", g17_design_leak(text, volume));
 
     // P1-PARAGRAPH：段落格式修复型门禁（只产 P1，永不 P0）
     let (para_res, fixed_text) = p1_paragraph(text);
@@ -931,5 +975,40 @@ mod tests_g09_semantics {
         let r = g14_world_consistency("提到星神本源这个词。", &nbc, &Bare);
         let blob = format!("{:?}", r.p1);
         assert!(blob.contains("星神本源"), "本书禁词应命中: {blob}");
+    }
+
+    /// G17：卷01-03 设计层词命中 → P0（上帝视角下渗防线的字面闸门）。
+    #[test]
+    fn g17_design_leak_p0_in_early_volumes() {
+        let r = g17_design_leak("那股味儿有点像推演算账时候的模糊感觉。", "卷01");
+        assert!(!r.pass, "卷01 出现工程词必须打回");
+        assert!(!r.p0.is_empty(), "应有 P0");
+        assert!(format!("{:?}", r.p0).contains("推演"));
+    }
+
+    /// G17：干净体感文本不误伤。
+    #[test]
+    fn g17_clean_sensory_passes() {
+        let r = g17_design_leak("颅内一阵说不清的体感，像细碎的东西在淌，抓不住，一闪就散了。", "卷01");
+        assert!(r.pass, "纯体感应过 G17: {:?}", r.p0);
+    }
+
+    /// G17：卷04+ 降级为 P1（认知曲线允许渐显）。
+    #[test]
+    fn g17_downgraded_after_volume3() {
+        let r = g17_design_leak("他终于确信，这东西在推演。", "卷04");
+        assert!(r.pass, "卷04 不再 P0");
+        assert_eq!(r.p1.len(), 1);
+    }
+
+    /// G01_B 不得再用工程词（否则首章会被门禁"鼓励"写入禁词）。
+    #[test]
+    fn g01_b_has_no_design_words() {
+        for w in G01_B {
+            assert!(
+                !G17_DESIGN_LEAK_WORDS.contains(w),
+                "G01_B 含设计层词「{w}」，与 STYLE_CONSTRAINTS §0 冲突"
+            );
+        }
     }
 }

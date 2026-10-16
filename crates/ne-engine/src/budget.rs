@@ -314,11 +314,22 @@ fn extract_canon_lines(content: &str) -> Vec<String> {
         }
         if in_seg {
             if let Some(s) = t.strip_prefix("- ").or_else(|| t.strip_prefix("* ")) {
+                // 显式禁令行（如「（无定版台词。正文严禁出现"…"）」）不是台词，跳过。
+                const NEG: [&str; 10] = [
+                    "严禁", "禁止", "不许", "禁出现", "绝不", "永不", "不能出现", "不得出现",
+                    "一概不", "不要",
+                ];
+                if NEG.iter().any(|n| t.contains(n)) {
+                    continue;
+                }
                 // 形如「锚点已建立。」（面板定版台词）
                 for (open, close) in [('「', '」'), ('“', '”'), ('"', '"')] {
                     if let Some(a) = s.find(open) {
-                        if let Some(b) = s[a..].find(close) {
-                            let inner: String = s[a + open.len_utf8()..a + b].trim().to_string();
+                        // 闭合引号必须从开引号**之后**开始找，否则对称引号（"…"）
+                        // 会匹配到开引号自身（b=0 → a+1..a 反向区间 panic）。
+                        let from = a + open.len_utf8();
+                        if let Some(b) = s[from..].find(close) {
+                            let inner: String = s[from..from + b].trim().to_string();
                             if !inner.is_empty() && inner.chars().count() <= 40 {
                                 out.push(inner);
                             }
@@ -428,6 +439,15 @@ mod tests {
     fn extract_person_strips_paren_and_prefix() {
         assert_eq!(extract_person("主角-陈寂（CHAR-99-001）"), "陈寂");
         assert_eq!(extract_person("陈寂"), "陈寂");
+    }
+
+    #[test]
+    fn extract_canon_lines_handles_ascii_quotes_without_panic() {
+        // 回归：ASCII 自配对引号曾致 a+1..a 反向区间 panic（CHAR-99-001 第69行触发）
+        let md = "### 标志性台词\n- （无定版台词。正文严禁出现\"锚点已建立\"等体系术语。）\n- 「滑倒了，摔了一跤。」（对祖父口径）\n";
+        let out = extract_canon_lines(md);
+        assert!(!out.iter().any(|s| s.contains("锚点已建立")), "禁令行不得当台词：{out:?}");
+        assert!(out.iter().any(|s| s.contains("滑倒了")), "正常台词应提取：{out:?}");
     }
 
     #[test]

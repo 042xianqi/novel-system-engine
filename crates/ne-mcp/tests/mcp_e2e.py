@@ -118,10 +118,18 @@ def main():
         r = c.send("tools/list")
         tools = r.get("result", {}).get("tools", [])
         names = [t["name"] for t in tools]
-        check("工具数为 6", len(tools) == 6, f"实际 {len(tools)}")
-        expect = {"funnel", "ne_cardgen", "ne_inject", "ne_check", "ne_db", "ne_db_query"}
-        check("6 个工具名齐全", set(names) == expect,
-              f"缺 {expect - set(names)}，多 {set(names) - expect}")
+        # 【2026-10-18 修】原断言写死 6 个工具且要求集合完全相等。
+        # 实测 tools/list 返回 **15 个**（核心 7 个 + wg_* 治理系列 8 个），
+        # 旧断言必然失败。改为「必需子集」断言：
+        #   · 核心工具必须全部存在
+        #   · 允许后续新增工具而不破坏测试
+        REQUIRED = {"funnel", "ne_cardgen", "ne_inject", "ne_check",
+                    "ne_db", "ne_db_query"}
+        check(f"工具数 >= {len(REQUIRED)}", len(tools) >= len(REQUIRED),
+              f"实际 {len(tools)}")
+        missing = REQUIRED - set(names)
+        check("核心工具名齐全", not missing, f"缺 {missing}")
+        print(f"     （当前共 {len(tools)} 个工具）")
         for t in tools:
             check(f"  {t['name']} 有 inputSchema", "inputSchema" in t and
                   t["inputSchema"].get("type") == "object")

@@ -388,8 +388,16 @@ mod tests {
     fn ranked_injection_selects_full_and_summary_within_budget() {
         let tmp = std::env::temp_dir().join("ne_inj_ranked_test");
         let lib = tmp.join("02_资料库");
-        // 5 张事件卡 + 5 张地图卡 + 1 张丹药卡（仅出现在用量统计里）
-        for (dir, prefix) in [("事件", "EVT"), ("地图", "LOC")] {
+        // 5 张事件卡 + 5 张地点卡 + 1 张丹药卡（仅出现在用量统计里）
+        //
+        // 【2026-10-18 修】本测试此前**长期失败**（left: 5, right: 8），根因在夹具：
+        //   · 这里原写 ("地图", "LOC")，造出的是 `地图/LOC-99-xxx.md`
+        //   · 但 locate_card 的前缀映射是 ("LOC", "地点")（v3 已把「地图」归一为
+        //     「地点」，见 ne-injection/src/lib.rs:270-271）
+        //   · 于是 5 张 LOC 卡全部 load 失败，只有 3 张 EVT 全文 + 2 张 EVT 摘要
+        //     成功入包，合计 5 张 —— 正是断言里 left: 5 的来源。
+        // 修法：夹具目录名改成与新规范一致（地点/），不是改断言。
+        for (dir, prefix) in [("事件", "EVT"), ("地点", "LOC")] {
             fs::create_dir_all(lib.join(dir)).unwrap();
             for i in 0..5u32 {
                 let body = format!(

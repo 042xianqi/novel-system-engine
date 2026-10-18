@@ -1,14 +1,27 @@
 #!/usr/bin/env bash
 # 技能：后台 CI —— 编译 + 测试，结果写日志（供前台轮询读取）
 # 用法: tools/skill_ci.sh [stage_name]
-# 输出: /root/novel-system/.ci/<stage>.log ，末行固定为 RESULT=...
+# 输出: <repo>/.ci/<stage>.log ，末行固定为 RESULT=...
 set -uo pipefail
-cd /root/novel-system
+
+# 【2026-10-18 修】原来写死 `cd /root/novel-system`，换机器/换目录就废。
+# 改为从脚本自身位置向上找到仓库根（含 Cargo.toml 的目录），
+# 并允许用 NOVEL_REPO_ROOT 环境变量显式覆盖。
+if [ -n "${NOVEL_REPO_ROOT:-}" ] && [ -f "${NOVEL_REPO_ROOT}/Cargo.toml" ]; then
+  REPO="$NOVEL_REPO_ROOT"
+else
+  REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+fi
+if [ ! -f "$REPO/Cargo.toml" ]; then
+  echo "RESULT=FAIL(找不到仓库根：$REPO 下无 Cargo.toml)" >&2
+  exit 1
+fi
+cd "$REPO"
+
 STAGE="${1:-latest}"
-CI=/root/novel-system/.ci
+CI="$REPO/.ci"
 mkdir -p "$CI"
 LOG="$CI/$STAGE.log"
-
 {
   echo "=== stage: $STAGE ==="
   date '+%F %T'

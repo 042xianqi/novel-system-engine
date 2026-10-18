@@ -112,8 +112,30 @@ pub fn submit(conn: &Connection, body: &str) -> Result<Value> {
     let payload = v.get("payload").cloned().unwrap_or(json!({}));
     let (l1, l2) = gate_state();
     let file_gated = is_file_gated(&kind);
-    // chapter_gen：文件锁在执行时（ne-mcp）判定，提交即 pending；其余仍走语义双重门控。
+    // chapter_gen / cardgen：文件锁在**执行时**（ne-mcp / cardgen.py）判定，
+    // 提交即 pending；其余仍走语义双重门控。
     let unlocked = if file_gated { true } else { l1 && l2 };
+
+    // 【2026-10-18 修】门禁字段必须**如实记录**，不能因为 file_gated 就伪造成"已过"。
+    //
+    // 旧实现在 file_gated 分支把 state 直接写成 pending，而 gate_l1/gate_l2
+    // 照抄语义门控的真实值（常常是 0/0 = 都没过）。面板读这两个字段渲染，
+    // 于是显示「已过门禁」——**与事实相反**。
+    //
+    // 新口径：
+    //   · gate_l1 / gate_l2  → 语义双重门控的**真实**状态（永远如实）
+    //   · gate_mode          → 用哪个门：'semantic'（走 l1&&l2）或 'file'（走文件锁）
+    //   · gate_reason        → 人类可读，说明为什么 state 是 pending
+    //   · file_lock_path     → file 模式下真正要查的文件
+    let gate_mode = if file_gated { "file" } else { "semantic" };
+    let gate_reason = if file_gated {
+        "提交即 pending：真实外呼由执行时检查 /sdcard/wogov_real_llm.allow 文件锁"
+    } else if unlocked {
+        "双重门控已满足"
+    } else {
+        "双重门控未同时满足，任务已登记但不会被执行"
+    };
+
     let id = new_id();
     conn.execute(
         "INSERT INTO webui_task(id,kind,payload,state,gate_l1,gate_l2) VALUES(?1,?2,?3,?4,?5,?6)",
@@ -125,13 +147,15 @@ pub fn submit(conn: &Connection, body: &str) -> Result<Value> {
     )?;
     category_store::log_op(
         conn, "task.submit", &id,
-        &format!("kind={kind} gate_l1={l1} gate_l2={l2} file_gated={file_gated}"), "",
+        &format!("kind={kind} gate_l1={l1} gate_l2={l2} file_gated={file_gated} mode={gate_mode}"), "",
     )?;
     if !unlocked {
         return Ok(json!({
             "ok": false, "id": id, "kind": kind,
             "state": "blocked",
             "gate_l1": l1, "gate_l2": l2,
+            "gate_mode": gate_mode,
+            "gate_reason": gate_reason,
             "error": "双重门控未同时满足，任务已登记但不会被执行（UI 应置灰按钮）",
             "hint": "① 第一道闸需 SEMANTIC_ENABLE_GATE(编译期) && --semantic && NOVEL_SEMANTIC_UNLOCK=yes；\
                      ② 外呼锁需 feature(real-semantic|llm_integration) && WOGOV_ALLOW_REAL_LLM=yes && --real-semantic",
@@ -141,6 +165,11 @@ pub fn submit(conn: &Connection, body: &str) -> Result<Value> {
         "ok": true, "id": id, "kind": kind, "state": "pending",
         "gate_l1": l1, "gate_l2": l2,
         "file_gated": file_gated,
+        "gate_mode": gate_mode,
+        "gate_reason": gate_reason,
+        // 明确告知调用方：l1/l2 为 false 不是错误，是 file 模式的正常状态
+        "semantic_gate_bypassed": file_gated,
+        "file_lock_path": if file_gated { Some("/sdcard/wogov_real_llm.allow") } else { None },
         "note": if file_gated {
             if kind == "cardgen" {
                 "cardgen：已登记为待执行指令，不受语义门控；真实外呼由执行器拉起 cardgen.py 时检查 /sdcard/wogov_real_llm.allow 文件锁（real=false 时空跑不落盘）。"

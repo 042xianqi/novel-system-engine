@@ -1299,7 +1299,10 @@ fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool, 
             // 能力标识（仅告知，不自动开启）
             st["persist_mode_available"] = serde_json::json!(true);
             st["llm_runtime_defined"] = serde_json::json!(true);
-            st["llm_real_call_enabled"] = serde_json::json!(false);
+            // 【2026-10-18 修】原先此处硬编码 false，随后在函数末尾被
+            // real_llm_unlocked(false) 覆盖（死赋值，输出恒为真实值）。
+            // 直接删掉这一行，避免误导读代码的人以为永远是 false。
+            // st["llm_real_call_enabled"] = serde_json::json!(false);
             // 审计报告导出：纯读拼接，不依赖门控，恒可用
             st["report_export_ready"] = serde_json::json!(true);
             st["prompt_preview_ready"] = serde_json::json!(true);

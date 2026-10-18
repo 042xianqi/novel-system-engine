@@ -318,12 +318,31 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("audit_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("事件")).unwrap();
-        // 缺 胶囊/因果链/关联标注
+
+        // 【2026-10-18 修】本测试此前长期失败，根因是**模板已升级、测试没跟上**：
+        //
+        //   · 统一模板规范 v1.0（2026-10-17）把结构改为四区块：
+        //       ① 基础要素 / ② 核心关联实体 / ③ 扩展描述 / ④ 溯源与版本
+        //   · 「胶囊」变为**强制**字段（H1 下第一行引用块）
+        //   · 「核心关联实体」强制，且吸收 关联/关联标注/关联实体 为别名
+        //   · 原散文式字段（含「因果链」「时间」「事件名」）一律**降级为可选**
+        //
+        // 所以现在只缺「胶囊」和「核心关联实体」两个，旧断言里的
+        // 「因果链」「关联标注」「涉及文明」都不再是必填项。
         std::fs::write(dir.join("事件/EVT-1.md"), "# EVT-1｜甲\n## 事件名\nx\n## 时间\nx\n").unwrap();
         let a = audit_card(&dir.join("事件/EVT-1.md"), &dir, "事件").unwrap();
-        assert!(a.missing.contains(&"因果链".to_string()), "{:?}", a.missing);
-        assert!(a.missing.contains(&"关联标注".to_string()), "{:?}", a.missing);
-        assert!(!a.missing.contains(&"事件名".to_string()), "事件名 已提供");
+
+        // 两个强制字段缺失，必须报出
+        assert!(a.missing.contains(&"胶囊".to_string()),
+                "应报缺「胶囊」（H1 下第一行引用块），实际 {:?}", a.missing);
+        assert!(a.missing.contains(&"核心关联实体".to_string()),
+                "应报缺「核心关联实体」（四区块第二块），实际 {:?}", a.missing);
+
+        // 已提供的散文式字段不得被误报（它们现在是可选）
+        for k in ["事件名", "时间"] {
+            assert!(!a.missing.contains(&k.to_string()), "{} 已提供却被报缺：{:?}", k, a.missing);
+        }
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

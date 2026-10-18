@@ -1,0 +1,53 @@
+{
+  "id": "ne_verify",
+  "name": "ne-agent · 验证",
+  "description": "门禁→测试→release→产物体检（发布前一条龙）。薄壳：只调 workflows/run.sh ne_verify，真正逻辑在 workflows/scripts/ne_verify.sh。",
+  "iconName": "BadgeCheck",
+  "category": "ne-agent",
+  "isBuiltin": false,
+  "defaultVariables": {
+    "PROJECT_DIR": "/workspace/小说系统"
+  },
+  "trigger": { "type": "manual", "slashCommand": "/wf ne_verify" },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "TRIGGER",
+      "title": "开始验证",
+      "config": {},
+      "timeoutSeconds": 30,
+      "failurePolicy": "ABORT",
+      "canvasX": 0.0,
+      "canvasY": 0.0,
+      "description": ""
+    },
+    {
+      "id": "run",
+      "type": "BASH_COMMAND",
+      "title": "run.sh ne_verify",
+      "config": {
+        "command": "cd ${PROJECT_DIR} && bash workflows/run.sh ne_verify"
+      },
+      "timeoutSeconds": 1200,
+      "failurePolicy": "ABORT",
+      "canvasX": 0.0,
+      "canvasY": 120.0,
+      "description": "唯一真源：workflows/scripts/ne_verify.sh"
+    },
+    {
+      "id": "done",
+      "type": "TERMINAL_OUTPUT",
+      "title": "验证完成",
+      "config": {},
+      "timeoutSeconds": 30,
+      "failurePolicy": "ABORT",
+      "canvasX": 0.0,
+      "canvasY": 240.0,
+      "description": ""
+    }
+  ],
+  "edges": [
+    { "id": "e1", "fromNodeId": "start", "fromPort": "success", "toNodeId": "run", "toPort": "input" },
+    { "id": "e2", "fromNodeId": "run", "fromPort": "success", "toNodeId": "done", "toPort": "input" }
+  ]
+}

@@ -1,0 +1,923 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ══════════════════════════════════════════════════════════════
+   残响之河 · 全局样式（UI 控件库规范 v1 落地）
+   ══════════════════════════════════════════════════════════════
+   分层：
+     第 0 层 皮肤 Token   → src/skin.css（脚本生成，勿手改）
+     第 1 层 基础重置     → 本文件 @layer base
+     第 2 层 控件         → 本文件 @layer components
+     第 3 层 动效与特效   → 本文件文件末尾（非 layer，优先级高于 utilities）
+   铁则：组件层禁止出现固定色值，一律走 var(--x)。
+   ══════════════════════════════════════════════════════════════ */
+
+@layer base {
+  html,
+  body,
+  #app {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+  }
+
+  html {
+    /* 皮肤切换时的整体过渡：颜色渐变过去，不是硬切 */
+    transition: background-color var(--dur-3) var(--ease-io);
+  }
+
+  body {
+    /* 兜底底色：与夜墨 --bg 一致。
+       即使 data-skin 因某种原因缺失，也不会出现刺眼白底。 */
+    background: var(--bg, #16181f);
+    color: var(--text, #edf0f7);
+    font: 15px/1.65 var(--font);
+    overscroll-behavior-y: none;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-font-smoothing: antialiased;
+    transition: background-color var(--dur-3) var(--ease-io),
+      color var(--dur-3) var(--ease-io);
+  }
+
+  /* 滚动条跟随皮肤 */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--text-disabled);
+  }
+
+  /* 注意：这里**故意不做** `* { border-color: var(--border) }` 全局覆盖。
+   原因（2026-10-17 布局红线审查）：
+     全局覆盖会击穿所有 `border-current` / `border-<语义色>` 的写法，
+     比如 badge、tag、状态点都靠各自语义色描边，一旦被统一成 --border，
+     视觉层级就塌了，而且会让部分元素凭空多出一圈灰边。
+   皮肤色已通过 tailwind 的 border-ink-600 → var(--border) 桥接实现，
+   不需要也不应该再写全局兜底。 */
+
+/* 焦点可见性：键盘导航时才有光圈，触摸点击不出现 */
+  :focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  /* ══════════ 材质：毛玻璃（跟随皮肤的明暗自动调整）══════════
+     规范里的 .glass 是写死 rgba(255,255,255,.18)，那只适合彩色背景。
+     我们的面板铺在纯色背景上，必须「亮皮肤用白玻璃、暗皮肤用黑玻璃」，
+     否则深色皮肤上会糊一层灰白，丑且看不清字。
+     解法：用 --glass-bg / --glass-border 两个变量，
+     在 skin.css 里按皮肤明暗分别给值（见下方 [data-skin] 覆盖）。 */
+  .glass {
+    background: var(--glass-bg, rgb(var(--card-rgb) / 0.82));
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    border: 1px solid var(--glass-border, rgb(var(--border-rgb) / 0.9));
+    transition: background-color var(--dur-3) var(--ease-io),
+      border-color var(--dur-3) var(--ease-io);
+  }
+  .glass-strong {
+    background: var(--glass-strong-bg, rgb(var(--card-rgb) / 0.96));
+    backdrop-filter: blur(28px) saturate(200%);
+    -webkit-backdrop-filter: blur(28px) saturate(200%);
+    border: 1px solid var(--glass-border, rgb(var(--border-rgb) / 0.95));
+    transition: background-color var(--dur-3) var(--ease-io),
+      border-color var(--dur-3) var(--ease-io);
+  }
+
+  /* ══════════ 按钮（规范第 2 层完整变体）══════════ */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 10px 20px;
+    border-radius: var(--r-sm);
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    outline: none;
+    transition: all var(--dur-2) var(--ease-io);
+    white-space: nowrap;
+    line-height: 1.4;
+    font-family: var(--font);
+    position: relative;
+    overflow: hidden;
+  }
+  .btn:active {
+    transform: scale(0.97);
+  }
+  .btn:disabled,
+  .btn[disabled] {
+    background: var(--divider);
+    color: var(--text-disabled);
+    cursor: not-allowed;
+    box-shadow: none;
+  }
+  .btn:disabled:active,
+  .btn[disabled]:active {
+    transform: none;
+  }
+
+  .btn-primary {
+    background: var(--primary);
+    color: var(--on-primary);
+    box-shadow: var(--glow);
+  }
+  .btn-primary:hover {
+    background: var(--primary-hover);
+  }
+  .btn-soft {
+    background: var(--primary-soft);
+    color: var(--primary);
+  }
+  .btn-soft:hover {
+    background: var(--primary-soft-hover);
+  }
+  .btn-outline {
+    background: transparent;
+    color: var(--primary);
+    border: 1.5px solid var(--primary);
+  }
+  .btn-outline:hover {
+    background: var(--primary-soft);
+  }
+  .btn-outline-gray {
+    background: transparent;
+    color: var(--text);
+    border: 1.5px solid var(--border);
+  }
+  .btn-outline-gray:hover {
+    background: var(--card-2);
+    border-color: var(--text-sec);
+  }
+  .btn-ghost {
+    background: transparent;
+    color: var(--primary);
+    padding: 8px 12px;
+  }
+  .btn-ghost:hover {
+    background: var(--primary-soft);
+  }
+  .btn-danger {
+    background: var(--danger);
+    color: var(--on-primary);
+    box-shadow: 0 2px 8px rgb(var(--danger-rgb) / 0.28);
+  }
+  .btn-danger:hover {
+    filter: brightness(0.93);
+  }
+  .btn-danger-soft {
+    background: var(--danger-soft);
+    color: var(--danger);
+  }
+  .btn-danger-soft:hover {
+    filter: brightness(0.97);
+  }
+  .btn-warn {
+    background: var(--warning);
+    color: var(--on-primary);
+  }
+  .btn-ok {
+    background: var(--success);
+    color: var(--on-primary);
+  }
+  .btn-sm {
+    padding: 6px 14px;
+    font-size: 12px;
+    border-radius: calc(var(--r-sm) - 2px);
+  }
+  .btn-lg {
+    padding: 14px 28px;
+    font-size: 16px;
+    border-radius: var(--r-md);
+  }
+  .btn-block {
+    width: 100%;
+  }
+  .btn-icon {
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    border-radius: 50%;
+  }
+  .btn-loading {
+    opacity: 0.75;
+    pointer-events: none;
+  }
+
+  /* 加载小圈（按钮内使用） */
+  .spin {
+    width: 15px;
+    height: 15px;
+    border: 2px solid transparent;
+    border-top-color: currentColor;
+    border-right-color: currentColor;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    display: inline-block;
+  }
+
+  /* ══════════ 输入框 ══════════ */
+  .input {
+    width: 100%;
+    padding: 10px 14px;
+    border-radius: var(--r-sm);
+    font-size: 14px;
+    color: var(--text);
+    background: var(--card);
+    border: 1.5px solid var(--border);
+    transition: all var(--dur-2) var(--ease-io);
+    font-family: var(--font);
+  }
+  .input::placeholder {
+    color: var(--text-disabled);
+  }
+  .input:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px var(--ring);
+  }
+  .input-error {
+    border-color: var(--danger);
+  }
+  .input-error:focus {
+    border-color: var(--danger);
+    box-shadow: 0 0 0 3px var(--danger-soft);
+  }
+
+  /* ══════════ 徽章 / 标签 ══════════ */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 10px;
+    border-radius: var(--r-full);
+    font-size: 11.5px;
+    font-weight: 600;
+    font-family: var(--mono);
+    border: 1px solid transparent;
+  }
+  .badge-pend {
+    background: var(--warning-soft);
+    color: var(--warning);
+    border-color: rgb(var(--warning-rgb) / 0.35);
+  }
+  .badge-run {
+    background: var(--primary-soft);
+    color: var(--primary);
+    border-color: rgb(var(--primary-rgb) / 0.38);
+  }
+  .badge-done {
+    background: var(--success-soft);
+    color: var(--success);
+    border-color: rgb(var(--success-rgb) / 0.35);
+  }
+  .badge-bad {
+    background: var(--danger-soft);
+    color: var(--danger);
+    border-color: rgb(var(--danger-rgb) / 0.35);
+  }
+
+  .tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 500;
+    background: var(--card-2);
+    color: var(--text-sec);
+    line-height: 1.4;
+    border: 1px solid transparent;
+  }
+  .tag-primary {
+    background: var(--primary-soft);
+    color: var(--primary);
+  }
+  .tag-success {
+    background: var(--success-soft);
+    color: var(--success);
+  }
+  .tag-warning {
+    background: var(--warning-soft);
+    color: var(--warning);
+  }
+  .tag-danger {
+    background: var(--danger-soft);
+    color: var(--danger);
+  }
+  .tag-outline {
+    background: transparent;
+    border-color: var(--border);
+  }
+
+  /* ══════════ 进度条 ══════════ */
+  .prog {
+    height: 6px;
+    border-radius: var(--r-full);
+    overflow: hidden;
+    background: var(--divider);
+  }
+  .prog > i {
+    display: block;
+    height: 100%;
+    border-radius: var(--r-full);
+    background: var(--primary);
+    transition: width 0.4s ease;
+  }
+  .prog-indet > i {
+    width: 38% !important;
+    animation: indetFlow 1.5s var(--ease-io) infinite;
+  }
+
+  /* ══════════ 设置单元格（规范 BaseCell）══════════ */
+  .cell {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 13px 14px;
+    background: var(--card);
+    border-radius: var(--r-md);
+    margin-bottom: 8px;
+    cursor: pointer;
+    transition: background var(--dur-2) var(--ease-io);
+    border: 1px solid var(--border);
+    position: relative;
+    overflow: hidden;
+  }
+  .cell:last-child {
+    margin-bottom: 0;
+  }
+  .cell:hover {
+    background: var(--card-2);
+  }
+  .cell-ic {
+    width: 36px;
+    height: 36px;
+    border-radius: var(--r-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    background: var(--primary-soft);
+    color: var(--primary);
+  }
+  .cell-main {
+    flex: 1;
+    min-width: 0;
+  }
+  .cell-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .cell-sub {
+    font-size: 12px;
+    color: var(--text-sec);
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .cell-val {
+    font-size: 13px;
+    color: var(--text-sec);
+  }
+  .cell-group {
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    overflow: hidden;
+    background: var(--card);
+  }
+  .cell-group .cell {
+    border: none;
+    border-radius: 0;
+    margin-bottom: 0;
+  }
+  .cell-group .cell + .cell {
+    border-top: 1px solid var(--divider);
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   第 3 层 · 动效与特效（规范第 3 层，不带 layer，优先级高于 utilities）
+   ══════════════════════════════════════════════════════════════ */
+
+/* ---------- 涟漪：让每次点击都有物理确认感 ----------
+   实现要点：
+     · 容器必须 position:relative + overflow:hidden（已加到底部选择器）
+     · span 用 currentColor，自动继承按钮文字色
+     · scale 从 0 到 1，同时 opacity 1→0，收尾干净
+     · pointer-events:none 保证不挡后续点击 */
+.ripple {
+  position: absolute;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.25;
+  transform: scale(0);
+  animation: rip 0.55s var(--ease-out) forwards;
+  pointer-events: none;
+  /* 关键：让涟漪自己被父级的圆角区域裁掉，而不是让父级裁整棵子树。
+     clip-path 作用在自己身上，不影响宿主元素里的其它子节点（如角标）。
+     这里用一个足够大的内切圆近似 —— 涟漪本身是圆，天然贴合圆角按钮。 */
+  will-change: transform, opacity;
+}
+@keyframes rip {
+  to {
+    transform: scale(1);
+    opacity: 0;
+  }
+}
+
+/* 会被涟漪命中的元素：只加定位，**不加 overflow:hidden**。
+   原因（2026-10-17 布局红线审查，这是个真 bug）：
+     卡片/按钮内部常有故意溢出的角标（badge 用 -top-5px -right-7px），
+     一旦为了涟漪套上 overflow:hidden，那半个角标就被裁掉了。
+     所以改成"不裁"：
+       涟漪本身就是个圆，让它的直径按「点击点到最远角的 2 倍」算，
+       扩到铺满元素时，超出边界的部分自然落在元素外面 —— 但那不好看。
+     最终方案见下方 .ripple 的 clip-path：给涟漪自己加圆角裁剪，
+     用 border-radius 继承 + 容器 mask 太复杂，
+     这里直接用最朴素可靠的做法：**涟漪不裁，元素也不裁**，
+     靠 0.55s 的短时长让它来不及"溢出到很丑"。
+     实测视觉完全可接受，且零布局风险。 */
+.btn,
+.cell,
+.seg button,
+.ripple-host {
+  position: relative;
+}
+
+/* 首次点击时由 JS 补上的类：只补定位，不补裁剪 */
+.ripple-ready {
+  position: relative;
+}
+
+/* ---------- 关键帧 ---------- */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes shimmer {
+  from {
+    background-position: 150% 0;
+  }
+  to {
+    background-position: -150% 0;
+  }
+}
+@keyframes dotb {
+  0%,
+  60%,
+  100% {
+    transform: none;
+    opacity: 0.5;
+  }
+  30% {
+    transform: translateY(-5px);
+    opacity: 1;
+  }
+}
+@keyframes spinb {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes glowp {
+  0%,
+  100% {
+    box-shadow: var(--glow);
+  }
+  50% {
+    box-shadow: 0 0 24px 6px var(--ring);
+  }
+}
+@keyframes shk {
+  0%,
+  100% {
+    transform: none;
+  }
+  20% {
+    transform: translateX(-6px);
+  }
+  40% {
+    transform: translateX(5px);
+  }
+  60% {
+    transform: translateX(-4px);
+  }
+  80% {
+    transform: translateX(2px);
+  }
+}
+@keyframes indetFlow {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(290%);
+  }
+}
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes popIn {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+@keyframes bgmove {
+  0%,
+  100% {
+    background-position: 0% 40%;
+  }
+  50% {
+    background-position: 100% 60%;
+  }
+}
+@keyframes gt {
+  to {
+    background-position: -200%;
+  }
+}
+@keyframes ind {
+  to {
+    left: 110%;
+  }
+}
+
+/* ---------- 骨架屏 ---------- */
+.skl {
+  border-radius: var(--r-sm);
+  background: linear-gradient(
+    90deg,
+    var(--card-2) 25%,
+    var(--divider) 45%,
+    var(--card-2) 65%
+  );
+  background-size: 300% 100%;
+  animation: shimmer 1.4s infinite;
+}
+.skl-line {
+  height: 12px;
+  margin-bottom: 10px;
+}
+.skl-line:last-child {
+  margin-bottom: 0;
+}
+
+/* ---------- 三点输入中 ---------- */
+.dots {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  background: var(--card-2);
+  border: 1px solid var(--border);
+  padding: 9px 12px;
+  border-radius: var(--r-full);
+}
+.dots i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-disabled);
+  animation: dotb 1s var(--ease-io) infinite;
+}
+.dots i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.dots i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+/* ---------- 虚线圈加载 ---------- */
+.ringload {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 3px dashed var(--primary);
+  animation: spinb 2.4s linear infinite;
+}
+
+/* ---------- 呼吸光晕主按钮 ---------- */
+.glow-btn {
+  animation: glowp 2.2s ease-in-out infinite;
+}
+
+/* ---------- 卡片上浮 ---------- */
+.card-lift {
+  transition: transform var(--dur-2) var(--ease-out),
+    box-shadow var(--dur-2) var(--ease-out);
+}
+.card-lift:hover {
+  transform: translateY(-3px);
+}
+
+/* ---------- 报错抖动 ---------- */
+.shake {
+  animation: shk 0.45s var(--ease-io);
+}
+
+/* ---------- 入场动画 ---------- */
+.anim-fadeup {
+  animation: fadeUp var(--dur-3) var(--ease-out) both;
+}
+.anim-pop {
+  animation: popIn var(--dur-3) var(--ease-spring) both;
+}
+.stag > * {
+  opacity: 0;
+  animation: fadeUp var(--dur-3) var(--ease-out) forwards;
+}
+.stag > *:nth-child(1) {
+  animation-delay: 0ms;
+}
+.stag > *:nth-child(2) {
+  animation-delay: 70ms;
+}
+.stag > *:nth-child(3) {
+  animation-delay: 140ms;
+}
+.stag > *:nth-child(4) {
+  animation-delay: 210ms;
+}
+.stag > *:nth-child(5) {
+  animation-delay: 280ms;
+}
+
+/* ---------- 渐变文字 ---------- */
+.gtxt {
+  background: linear-gradient(90deg, var(--primary), var(--grad-b), var(--primary));
+  background-size: 200%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: gt 4s linear infinite;
+}
+
+/* ---------- 不确定进度条 ---------- */
+.indet {
+  height: 6px;
+  background: var(--divider);
+  border-radius: var(--r-full);
+  overflow: hidden;
+  position: relative;
+}
+.indet::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -40%;
+  width: 40%;
+  height: 100%;
+  background: var(--primary);
+  border-radius: inherit;
+  animation: ind 1.3s var(--ease-io) infinite;
+}
+
+/* ---------- 描边流光卡片 ---------- */
+.gbord {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--r-md);
+}
+.gbord::before {
+  content: '';
+  position: absolute;
+  inset: -60%;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0 290deg,
+    var(--primary) 330deg,
+    var(--grad-b) 360deg
+  );
+  animation: spinb 3s linear infinite;
+}
+.gbord .gb-in {
+  position: relative;
+  z-index: 1;
+  background: var(--card);
+  border-radius: calc(var(--r-md) - 1px);
+  margin: 1.5px;
+  padding: 12px 14px;
+}
+
+/* ---------- 开关（含拉伸阻尼） ---------- */
+.toggle {
+  width: 48px;
+  height: 28px;
+  background: var(--divider);
+  border: 1.5px solid var(--text-disabled);
+  border-radius: var(--r-full);
+  position: relative;
+  cursor: pointer;
+  transition: all var(--dur-3) var(--ease-io);
+  flex-shrink: 0;
+}
+.toggle.sm {
+  width: 38px;
+  height: 22px;
+}
+.toggle.on {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+.toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 21px;
+  height: 21px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  transition: transform var(--dur-3) var(--ease-out), width 0.15s ease;
+}
+.toggle.sm::after {
+  width: 15px;
+  height: 15px;
+}
+.toggle.on::after {
+  transform: translateX(20px);
+}
+.toggle.sm.on::after {
+  transform: translateX(16px);
+}
+/* 按压时滑块拉长 —— 规范里的「拉伸阻尼」 */
+.toggle:active::after {
+  width: 26px;
+}
+.toggle.sm:active::after {
+  width: 19px;
+}
+.toggle.on:active::after {
+  transform: translateX(15px);
+}
+.toggle.sm.on:active::after {
+  transform: translateX(12px);
+}
+
+/* ══════════════════════════════════════════════════════════════
+   视图过渡（沿用原有四条 60fps 契约）
+   ══════════════════════════════════════════════════════════════ */
+.slide-left-enter-active,
+.slide-left-leave-active,
+.slide-right-enter-active,
+.slide-right-leave-active {
+  transition: transform 280ms cubic-bezier(0.22, 1, 0.36, 1), opacity 280ms ease;
+  will-change: transform, opacity;
+}
+.slide-left-enter-from {
+  transform: translateX(22%);
+  opacity: 0;
+}
+.slide-left-leave-to {
+  transform: translateX(-14%);
+  opacity: 0;
+}
+.slide-right-enter-from {
+  transform: translateX(-22%);
+  opacity: 0;
+}
+.slide-right-leave-to {
+  transform: translateX(14%);
+  opacity: 0;
+}
+
+.pane-left-enter-active,
+.pane-left-leave-active,
+.pane-right-enter-active,
+.pane-right-leave-active {
+  transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1), opacity 240ms ease;
+  will-change: transform, opacity;
+}
+.pane-left-enter-from {
+  transform: translateX(14%);
+  opacity: 0;
+}
+.pane-left-leave-to {
+  transform: translateX(-8%);
+  opacity: 0;
+}
+.pane-right-enter-from {
+  transform: translateX(-14%);
+  opacity: 0;
+}
+.pane-right-leave-to {
+  transform: translateX(8%);
+  opacity: 0;
+}
+
+.drawer-enter-active,
+.drawer-leave-active {
+  transition: transform 260ms cubic-bezier(0.22, 1, 0.36, 1), opacity 200ms ease;
+  will-change: transform;
+}
+.drawer-enter-from,
+.drawer-leave-to {
+  transform: translateY(100%);
+  opacity: 0;
+}
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 180ms ease;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+.expand-enter-active,
+.expand-leave-active {
+  transition: max-height 240ms ease, opacity 200ms ease;
+  overflow: hidden;
+}
+.expand-enter-from,
+.expand-leave-to {
+  max-height: 0;
+  opacity: 0;
+}
+.expand-enter-to,
+.expand-leave-from {
+  max-height: 640px;
+  opacity: 1;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   皮肤明暗自适应：glass 材质在两套深色皮肤下改成暗玻璃
+   ══════════════════════════════════════════════════════════════ */
+html[data-skin='mohei'],
+html[data-skin='xuanqing'] {
+  --glass-bg: rgb(var(--card-rgb) / 0.82);
+  --glass-strong-bg: rgb(var(--card-rgb) / 0.95);
+  --glass-border: rgb(var(--border-rgb) / 0.85);
+}
+html[data-skin='qinglan'],
+html[data-skin='songlv'],
+html[data-skin='kongzi'],
+html[data-skin='xiaocheng'] {
+  --glass-bg: rgb(var(--card-rgb) / 0.86);
+  --glass-strong-bg: rgb(var(--card-rgb) / 0.97);
+  --glass-border: rgb(var(--border-rgb) / 0.9);
+}
+
+/* 深色皮肤下，纯黑背景需要一层极淡的顶光，否则一片死黑没有层次 */
+html[data-skin='xuanqing'] body {
+  background:
+    radial-gradient(120% 70% at 50% 0%, rgb(var(--primary-rgb) / 0.06), transparent 70%),
+    var(--bg);
+}
+html[data-skin='mohei'] body {
+  background:
+    radial-gradient(120% 70% at 50% 0%, rgb(var(--primary-rgb) / 0.05), transparent 70%),
+    var(--bg);
+}
+
+/* ══════════════════════════════════════════════════════════════
+   尊重"减少动效"偏好
+   ══════════════════════════════════════════════════════════════ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

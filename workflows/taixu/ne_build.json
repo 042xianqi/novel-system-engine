@@ -1,0 +1,55 @@
+{
+  "id": "ne_build",
+  "name": "ne-agent · 编译",
+  "description": "编译 ne-agent。薄壳：只调 workflows/run.sh ne_build，真正逻辑在 workflows/scripts/ne_build.sh。可用变量 TARGET（包名）/PROFILE（debug|release）。",
+  "iconName": "Hammer",
+  "category": "ne-agent",
+  "isBuiltin": false,
+  "defaultVariables": {
+    "PROJECT_DIR": "/workspace/小说系统",
+    "TARGET": "ne-agent",
+    "PROFILE": "debug"
+  },
+  "trigger": { "type": "manual", "slashCommand": "/wf ne_build" },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "TRIGGER",
+      "title": "开始编译",
+      "config": {},
+      "timeoutSeconds": 30,
+      "failurePolicy": "ABORT",
+      "canvasX": 0.0,
+      "canvasY": 0.0,
+      "description": ""
+    },
+    {
+      "id": "run",
+      "type": "BASH_COMMAND",
+      "title": "run.sh ne_build",
+      "config": {
+        "command": "cd ${PROJECT_DIR} && TARGET=${TARGET} PROFILE=${PROFILE} bash workflows/run.sh ne_build"
+      },
+      "timeoutSeconds": 900,
+      "failurePolicy": "ABORT",
+      "canvasX": 0.0,
+      "canvasY": 120.0,
+      "description": "唯一真源：workflows/scripts/ne_build.sh"
+    },
+    {
+      "id": "done",
+      "type": "TERMINAL_OUTPUT",
+      "title": "编译完成",
+      "config": {},
+      "timeoutSeconds": 30,
+      "failurePolicy": "ABORT",
+      "canvasX": 0.0,
+      "canvasY": 240.0,
+      "description": ""
+    }
+  ],
+  "edges": [
+    { "id": "e1", "fromNodeId": "start", "fromPort": "success", "toNodeId": "run", "toPort": "input" },
+    { "id": "e2", "fromNodeId": "run", "fromPort": "success", "toNodeId": "done", "toPort": "input" }
+  ]
+}

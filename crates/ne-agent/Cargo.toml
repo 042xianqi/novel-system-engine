@@ -1,0 +1,46 @@
+[package]
+name = "ne-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "《残响之河》Agent Runtime —— 单二进制智能体（会话/记忆/工具/任务），小说流水线的统一入口"
+
+[[bin]]
+name = "ne-agent"
+path = "src/main.rs"
+
+[features]
+# 第 13 批：真实 LLM 出网能力（**默认关闭**）。
+# 开启后才编译 reqwest 出网分支；三重锁之一。见 governance/llm_gate.rs。
+default = []
+real-semantic = ["dep:reqwest"]
+# 第 17 批：完整 LLM 适配层（多后端/缓存/护栏/管线）。比 real-semantic 更全；
+# 默认关闭 → 出网代码为死分支。仍需三重闸门（见 governance/llm_gate.rs）。
+# 注：本 feature 复用仓库既有的零依赖阻塞 HTTP（ne-engine::http），**不引入 reqwest/tokio**。
+llm_integration = []
+
+[dependencies]
+ne-core = { path = "../ne-core" }
+ne-engine = { path = "../ne-engine" }
+ne-funnel = { path = "../ne-funnel" }
+ne-db = { path = "../ne-db" }
+ne-qc = { path = "../ne-qc" }
+ne-injection = { path = "../ne-injection" }
+
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+anyhow = "1"
+regex = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+# ── web_fetch/web_search 用：与 ne-engine 同版本，零 tokio/零 reqwest ──
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
+rustls-pki-types = "1"
+# 中文搜索页常是 GBK；用成熟库解码，不手搓字符表
+encoding_rs = "0.8"
+# ── 第 13 批：真实 LLM 出网（**可选**；仅 feature=real-semantic 时链接）──
+# 默认构建**不引入** reqwest；出网代码仅在 feature 下编译。
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"], optional = true }

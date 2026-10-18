@@ -1,0 +1,54 @@
+{
+  "id": "ne_commit",
+  "name": "ne-agent · 提交",
+  "description": "门禁→测试→本地提交。薄壳：只调 workflows/run.sh ne_commit，真正逻辑在 workflows/scripts/ne_commit.sh。后台可跑：审批以“必须提供 COMMIT_MESSAGE”替代 UI 点按。",
+  "iconName": "GitCommit",
+  "category": "ne-agent",
+  "isBuiltin": false,
+  "defaultVariables": {
+    "PROJECT_DIR": "/workspace/小说系统",
+    "COMMIT_MESSAGE": ""
+  },
+  "trigger": { "type": "manual", "slashCommand": "/wf ne_commit" },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "TRIGGER",
+      "title": "开始提交",
+      "config": {},
+      "timeoutSeconds": 30,
+      "failurePolicy": "ABORT",
+      "canvasX": 0.0,
+      "canvasY": 0.0,
+      "description": ""
+    },
+    {
+      "id": "run",
+      "type": "BASH_COMMAND",
+      "title": "run.sh ne_commit",
+      "config": {
+        "command": "cd ${PROJECT_DIR} && COMMIT_MESSAGE=${COMMIT_MESSAGE} bash workflows/run.sh ne_commit"
+      },
+      "timeoutSeconds": 900,
+      "failurePolicy": "ABORT",
+      "canvasX": 0.0,
+      "canvasY": 120.0,
+      "description": "唯一真源：workflows/scripts/ne_commit.sh；未给 COMMIT_MESSAGE 会被拒绝"
+    },
+    {
+      "id": "done",
+      "type": "TERMINAL_OUTPUT",
+      "title": "提交完成",
+      "config": {},
+      "timeoutSeconds": 30,
+      "failurePolicy": "ABORT",
+      "canvasX": 0.0,
+      "canvasY": 240.0,
+      "description": ""
+    }
+  ],
+  "edges": [
+    { "id": "e1", "fromNodeId": "start", "fromPort": "success", "toNodeId": "run", "toPort": "input" },
+    { "id": "e2", "fromNodeId": "run", "fromPort": "success", "toNodeId": "done", "toPort": "input" }
+  ]
+}

@@ -1,0 +1,13 @@
+# 小说系统 LLM 配置模板 —— 复制为 <库根>/05_管线框架/data/models.yml 并填 key
+providers:
+  workbuddy:
+    baseUrl: http://127.0.0.1:8788/v1
+    api: openai-completions
+    task:
+      keyPool:
+        - "sk-你的key"
+    models:
+      - id: glm-5.3-flash
+        name: glm-5.3-flash
+        contextWindow: 128000
+        maxTokens: 32000

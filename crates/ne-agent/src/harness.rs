@@ -38,6 +38,7 @@
 //! 这正是太墟 `sanitizeApiTranscript` 的思路。
 
 use crate::config::RuntimeConfig;
+use crate::governance::governed_call::ne_agent_gov_call;
 use crate::prompt::{self, TurnPrefix};
 use crate::protocol::{resolve, sanitize_for_provider, Reply};
 use crate::session::{MsgRow, SessionStore};
@@ -116,6 +117,52 @@ pub struct HarnessCtx<'a> {
     pub vault_root: std::path::PathBuf,
     /// ask_user 的交互回调（`None` = 非交互 → ask_user 明确报错）。
     pub asker: Option<crate::tool::AskerFn>,
+    /// **LLM 传输层覆盖（测试专用 · 2026-10-18）**。
+    ///
+    /// # 为什么需要它
+    ///
+    /// `harness::run` 是**生产对话主循环**，必须受三重锁约束
+    /// （`real-semantic` feature + `WOGOV_ALLOW_REAL_LLM=yes` + `--real-semantic`）。
+    /// 但 `tests/approval_e2e.rs` 验证的是**审批流本身**（工具该不该被执行），
+    /// 用 `127.0.0.1` 起假 LLM，根本不涉及真实模型。
+    ///
+    /// 把 `llm::call` 全换成 `governed_call` 之后，这些测试被误拦。
+    /// 不能因为"要测审批"就放开锁——**用户的 ofm 网关也在 127.0.0.1**，
+    /// 按 host 白名单放行等于让整把锁失效。
+    ///
+    /// # 设计
+    ///
+    /// `None`（**所有生产路径**）= 走 `governed_call`，正常受锁。
+    /// `Some(f)`（**只能由测试显式注入**）= 走 `f`，不经过锁。
+    ///
+    /// 这比环境变量后门安全：它是**编译期类型**，无法通过网络/配置文件打开，
+    /// 生产代码里没有任何一处构造 `Some(...)`。
+    pub llm_transport: Option<LlmTransport<'a>>,
+}
+
+/// LLM 传输函数签名（与 [`ne_engine::llm::call`] 逐字一致）。
+///
+/// 用 `Arc` 而不是 `Box`：双智能体里 Planner / Executor 两个 ctx 需要
+/// **共享同一个注入**（`Box` 不可 clone，只能各建一份，逻辑上就分叉了）。
+pub type LlmTransport<'a> = std::sync::Arc<
+    dyn Fn(&ne_engine::llm::LlmParams, &[ne_engine::llm::Message])
+        -> Result<ne_engine::llm::LlmOutput> + Send + Sync + 'a,
+>;
+
+/// 主循环的实际取数入口：**生产走锁，测试走注入**。
+///
+/// 这是 `harness::run` 里唯一的 LLM 调用点，所以「有没有绕过锁」
+/// 只需要看这一个函数，审计面收敛到 5 行。
+fn call_llm(
+    h: &HarnessCtx,
+    msgs: &[ne_engine::llm::Message],
+) -> Result<ne_engine::llm::LlmOutput> {
+    match &h.llm_transport {
+        // 测试注入：不经锁（只有 tests/approval_e2e.rs 会构造 Some）
+        Some(t) => t(&h.llm, msgs),
+        // 生产路径：必经三重锁
+        None => ne_agent_gov_call(&h.llm, msgs),
+    }
 }
 
 impl<'a> HarnessCtx<'a> {
@@ -404,7 +451,7 @@ pub fn run_session(h: &HarnessCtx, turn_prefix: &TurnPrefix) -> Result<RunOutcom
     while rounds < h.max_rounds() {
         rounds += 1;
         let msgs = build_messages(h, turn_prefix)?;
-        let out = match ne_engine::llm::call(&h.llm, &msgs) {
+        let out = match call_llm(h, &msgs) {
             Ok(o) => o,
             Err(e) => {
                 return Ok(RunOutcome {

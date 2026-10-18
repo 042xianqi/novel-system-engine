@@ -19,6 +19,7 @@
 //! 复用 `health::outline_chapter_sigs` / `dump` 解析口径，避免分叉。
 
 use anyhow::{Context, Result};
+use crate::governance::governed_call::ne_agent_gov_call;
 use std::path::{Path, PathBuf};
 
 use crate::outline_parse::{grab, split_chapters, Chunk};
@@ -267,7 +268,7 @@ pub fn rebuild(lib_root: &Path, llm: &LlmParams, opts: &RebuildOpts) -> Result<(
         let mut block: Option<String> = None;
         let mut errs: Vec<String> = Vec::new();
         for _ in 0..3 {
-            let reply = match llm::call(llm, &[Message::user(prompt.clone())]) {
+            let reply = match ne_agent_gov_call(llm, &[Message::user(prompt.clone())]) {
                 Ok(o) => o.content,
                 Err(e) => {
                     errs = vec![format!("LLM: {e}")];
@@ -412,7 +413,7 @@ pub fn sanitize(lib_root: &Path, llm: &LlmParams, opts: &SanitizeOpts) -> Result
         let mut new_body: Option<String> = None;
         let mut errs: Vec<String> = Vec::new();
         for _ in 0..3 {
-            let reply = match llm::call(llm, &[Message::user(prompt.clone())]) {
+            let reply = match ne_agent_gov_call(llm, &[Message::user(prompt.clone())]) {
                 Ok(o) => o.content,
                 Err(e) => { errs = vec![format!("LLM: {e}")]; continue; }
             };

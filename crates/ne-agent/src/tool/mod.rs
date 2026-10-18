@@ -313,6 +313,13 @@ pub struct ToolCtx {
     pub enabled: Vec<Tool>,
     /// 对外交互回调（ask_user 用；与审批回调同一通道风格）。
     pub asker: Option<AskerFn>,
+    /// **测试专用 LLM 传输层覆盖**（2026-10-18）。
+    ///
+    /// 提供它的唯一理由：`m8_tools_e2e` 这类端到端测试会用 `subagents`
+    /// 工具链去跑 127.0.0.1 假 LLM，而子智能体的主循环必须经过
+    /// `governed_call` 的三重锁。生产工具链**从不构造 Some**
+    /// （`with_llm_transport` 的调用点全集 = tests/）。
+    pub llm_transport: Option<crate::harness::LlmTransport<'static>>,
 }
 
 /// 对外交互回调签名（ask_user 用）。
@@ -332,6 +339,7 @@ impl ToolCtx {
             enabled: Vec::new(),
             asker: None,
             vault_root: None,
+            llm_transport: None,
         }
     }
 
@@ -382,6 +390,16 @@ impl ToolCtx {
     /// 挂上 ask_user 的交互回调（交互式入口用）。
     pub fn with_asker(mut self, f: AskerFn) -> Self {
         self.asker = Some(f);
+        self
+    }
+    /// **测试专用**：注入 LLM 传输层，绕过三重锁（2026-10-18）。
+    ///
+    /// 生产代码零调用（`grep with_llm_transport crates/` 只应命中 tests/）。
+    pub fn with_llm_transport(
+        mut self,
+        t: crate::harness::LlmTransport<'static>,
+    ) -> Self {
+        self.llm_transport = Some(t);
         self
     }
 

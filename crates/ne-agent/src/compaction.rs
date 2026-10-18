@@ -42,6 +42,7 @@
 //! 用"折到哪条消息 id"一个指针即可，不引入水位线。
 
 use anyhow::{bail, Result};
+use crate::governance::governed_call::ne_agent_gov_call;
 
 use crate::context;
 use crate::session::{CompactionRow, SessionStore};
@@ -232,7 +233,7 @@ impl Summarizer for LlmSummarizer {
             ne_engine::llm::Message::system(sys),
             ne_engine::llm::Message::user(user),
         ];
-        let out = ne_engine::llm::call(&llm, &msgs)?;
+        let out = ne_agent_gov_call(&llm, &msgs)?;
         let mut text = out.content.trim().to_string();
         if text.is_empty() {
             bail!("摘要模型返回空文本");

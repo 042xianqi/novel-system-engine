@@ -31,6 +31,7 @@ pub mod task_events;
 pub mod layer_store;
 pub mod web_gateway;
 pub mod llm_gate;
+pub mod governed_call;
 pub mod llm_client;
 pub mod conflict_store;
 pub mod rel_graph;

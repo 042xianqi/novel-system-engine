@@ -100,6 +100,10 @@ fn dual_agent_sequential_success() {
         .with_session(&sid, ne_agent::context_tools::ContextStore::open(&db).unwrap());
 
     let params = DualAgentParams::from_ctx(&ctx, "把目标做完并验收", 6).unwrap();
+    // 【2026-10-18】注入测试传输层：直连 127.0.0.1 假 LLM，不经三重锁。
+    // 生产装配里该字段恒为 None（见 DualAgentParams::from_ctx）。
+    let mut params = params;
+    params.llm_transport = Some(std::sync::Arc::new(|p, msgs| ne_engine::llm::call(p, msgs)));
     let outcome = dual_agent::run(&params).unwrap();
     let _ = child.kill();
 

@@ -288,7 +288,7 @@ http.server.HTTPServer(('127.0.0.1', {port}), H).serve_forever()
 
     let store = SessionStore::open(work.join("agent.db")).unwrap();
     let sid = store.create_session("t").unwrap();
-    let h = ne_agent::task::make_ctx_for_test(
+    let h = ne_agent::task::make_ctx_for_test_unlocked(
         &store,
         &sid,
         &cfg,

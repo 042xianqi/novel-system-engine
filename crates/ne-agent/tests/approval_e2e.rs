@@ -102,7 +102,7 @@ fn do_chat(
     let store = SessionStore::open(work.join("agent.db")).unwrap();
     let sid = store.create_session("t").unwrap();
     let enabled = ne_agent::resolve_enabled_tools(&cfg).unwrap();
-    let h = ne_agent::task::make_ctx_for_test(
+    let h = ne_agent::task::make_ctx_for_test_unlocked(
         &store, &sid, &cfg, llm, work.to_path_buf(), work.to_path_buf(), enabled,
         String::new(),
         match approve {
@@ -170,4 +170,74 @@ fn read_tools_never_blocked() {
                       ApprovalMode::Request, true, None);
     let _ = child.kill();
     assert!(out.contains("内容"), "只读工具应能读到内容：{out}");
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 安全回归：生产装配**必须**被三重锁拦住（2026-10-18 新增）
+// ═══════════════════════════════════════════════════════════════════
+//
+// 背景：把 8 处 `llm::call` 统一收口到 `governed_call` 之后，
+// 本文件的旧测试全挂了。当时有两种修法：
+//
+//   ❌ 错误修法：让 `governed_call` 对 127.0.0.1 放行
+//      → 用户的 ofm 网关就在 127.0.0.1，锁直接形同虚设。
+//   ✅ 正确修法：给 `HarnessCtx` 加 `llm_transport` 注入位，
+//      生产恒为 None（受锁），测试显式注入（不受锁）。
+//
+// 但"能注入"本身也带来新风险：万一某天有人在生产路径构造了 Some(...)，
+// 锁就被绕过了。所以这里补一条**看门狗测试**：
+// 用**生产装配** `make_ctx_for_test`（llm_transport = None）跑一轮，
+// 断言它被锁拦住、且**没有向假 LLM 发出任何请求**。
+//
+// 这条测试是「注入通道没被滥用」的保险丝，改坏了会立刻红。
+#[test]
+fn production_ctx_is_locked_and_makes_no_request() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let work = tmp("locked");
+    let port = 9105;
+    // 假 LLM 若被请求会自增计数
+    let hits = Arc::new(AtomicUsize::new(0));
+    let hits_srv = hits.clone();
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let srv = std::thread::spawn(move || {
+        // 只数连接，不实现协议 —— 一旦有连接就说明出网了
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            if let Ok((_s, _)) = listener.accept() {
+                hits_srv.fetch_add(1, Ordering::SeqCst);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    });
+
+    let mut cfg = RuntimeConfig::default();
+    cfg.tools.enabled = vec!["write".into()];
+    cfg.approval.mode = ApprovalMode::FullAccess.id().into();
+    let llm_dir = work.join("llm");
+    let llm = llm_for(port, &cfg, &llm_dir);
+    let store = SessionStore::open(work.join("agent.db")).unwrap();
+    let sid = store.create_session("t").unwrap();
+    let enabled = ne_agent::resolve_enabled_tools(&cfg).unwrap();
+
+    // ⚠️ 生产装配：llm_transport = None
+    let h = ne_agent::task::make_ctx_for_test(
+        &store, &sid, &cfg, llm, work.to_path_buf(), work.to_path_buf(), enabled,
+        String::new(), None,
+    );
+    let out = ne_agent::task::run_one_for_test(&h, "写个文件").unwrap_or_default();
+    srv.join().unwrap();
+
+    assert!(
+        out.contains("三重锁") || out.contains("模型调用失败"),
+        "生产装配应被三重锁拦住，实际输出：{out}"
+    );
+    assert_eq!(
+        hits.load(Ordering::SeqCst), 0,
+        "锁必须让它**连一个 TCP 连接都不发**，实际连了 {} 次",
+        hits.load(Ordering::SeqCst)
+    );
+    assert!(!work.join("out.txt").exists(), "被拦后不应写入任何文件");
 }

@@ -26,6 +26,7 @@
 //! 的隔离子会话机制（一个步骤一个 Lane），只回传**精炼摘要**，不回传原生工具日志。
 
 use anyhow::{bail, Result};
+use crate::governance::governed_call::ne_agent_gov_call;
 
 use crate::harness::{self, HarnessCtx};
 use crate::prompt::TurnPrefix;
@@ -120,6 +121,11 @@ pub struct DualAgentParams {
     pub llm: ne_engine::llm::LlmParams,
     /// 父会话 id（Executor 的 Lane 会挂在它下面，形成会话树）
     pub parent_session: String,
+    /// **测试专用传输层覆盖**（2026-10-18，见 `harness::HarnessCtx::llm_transport`）。
+    ///
+    /// 生产恒为 `None` → Planner/Executor 的双智能体调用仍受三重锁约束。
+    /// 只有 `tests/dual_agent_e2e.rs` 会构造 `Some(...)` 指向 127.0.0.1 假 LLM。
+    pub llm_transport: Option<crate::harness::LlmTransport<'static>>,
 }
 
 impl DualAgentParams {
@@ -143,6 +149,7 @@ impl DualAgentParams {
             enabled: ctx.enabled.clone(),
             llm,
             parent_session: ctx.session.clone(),
+            llm_transport: None, // 生产：不注入 → 受三重锁
         })
     }
 }
@@ -256,10 +263,19 @@ fn planner_decide(
         system_override: Some(planner_system_prompt(&p.workspace)),
         vault_root: p.vault_root.clone(),
         asker: None,
+        // 透传注入：测试用假 LLM；生产为 None → 受三重锁
+        llm_transport: p.llm_transport.clone(),
     };
     let msgs = harness::build_messages(&h, &TurnPrefix::default())?;
-    let out = ne_engine::llm::call(&planner_llm, &msgs)
-        .map_err(|e| anyhow::anyhow!("Planner 模型调用失败：{e}"))?;
+    // 【2026-10-18】Planner 这处不走 harness 主循环，是独立的一次调用。
+    // 生产：llm_transport=None → governed_call（受三重锁）。
+    // 测试：注入的传输层 → 直连 127.0.0.1 假 LLM。
+    let out = match p.llm_transport.as_ref() {
+        Some(t) => t(&planner_llm, &msgs)
+            .map_err(|e| anyhow::anyhow!("Planner 模型调用失败：{e}"))?,
+        None => ne_agent_gov_call(&planner_llm, &msgs)
+            .map_err(|e| anyhow::anyhow!("Planner 模型调用失败：{e}"))?,
+    };
     let decision = parse_planner_decision(&out.content, current_steps);
     // 落 Planner 原文（含 JSON），供后续轮次参考
     let head = store.head(planner_sid)?;
@@ -322,6 +338,8 @@ fn execute_one_ready(
         system_override: None,
         vault_root: p.vault_root.clone(),
         asker: None,
+        // 透传注入：测试用假 LLM；生产为 None → 受三重锁
+        llm_transport: p.llm_transport.clone(),
     };
     // 先把单步指令落进 Executor 会话（模型从会话历史组装上下文）
     harness::persist_user(&sub, &exec_prompt)?;

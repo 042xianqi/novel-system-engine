@@ -6,6 +6,7 @@
 //! 去干活；这些能力本身不属于任何任务，聊天与写小说共享同一套底层。
 
 use crate::config::RuntimeConfig;
+use crate::governance::governed_call::ne_agent_gov_call;
 use crate::harness::{self, HarnessCtx, StopReason};
 use crate::memory::{self, MemoryStore};
 use crate::prompt::TurnPrefix;
@@ -53,6 +54,8 @@ fn make_ctx<'a>(
         system_override: None,
         vault_root,
         asker: None,
+        // 生产路径：不注入传输层 → 必经三重锁
+        llm_transport: None,
     }
 }
 
@@ -585,7 +588,7 @@ pub fn novel_chapter_with_memory(
             );
         }
     }
-    let out = ne_engine::llm::call(llm, &msgs)
+    let out = ne_agent_gov_call(llm, &msgs)
         .map_err(|e| anyhow::anyhow!("模型调用失败：{e}"))?;
     let text = sanitize_story_text(out.content.trim());
     if text.is_empty() {
@@ -766,6 +769,43 @@ pub fn run_one_for_test(h: &HarnessCtx, input: &str) -> Result<String> {
     Ok(run_one(h, None, input)?.0)
 }
 
+/// **绕过三重锁的测试装配**（2026-10-18）。
+///
+/// 与 [`make_ctx_for_test`] 唯一区别：把 `llm_transport` 换成一个
+/// **直接调 `ne_engine::llm::call`** 的闭包，从而不受 `governed_call` 拦截。
+///
+/// # 为什么不能只靠环境变量放开锁
+///
+/// 三重锁的第 1 条是**编译期 feature**，测试跑在默认构建下必然不满足。
+/// 若为此改 `compile_feature_enabled()` 的行为，等于让所有生产二进制也解除锁
+/// —— 那是把安全边界拆了去迁就测试。
+///
+/// # 安全保证
+///
+/// 1. 本函数在 `task.rs`，是 `pub` 但**只在 `tests/` 里被引用**
+///    （`grep make_ctx_for_test_unlocked` 可验证生产代码零调用）。
+/// 2. 名字带 `_for_test`，任何人 review 时一眼看出用途。
+/// 3. 它仍然走真实的 HTTP 栈（`llm::call`），所以测的是真链路，
+///    只是目标地址由测试指定（`127.0.0.1` 假 LLM）。
+#[allow(clippy::too_many_arguments)]
+pub fn make_ctx_for_test_unlocked<'a>(
+    store: &'a SessionStore,
+    session: &str,
+    cfg: &'a RuntimeConfig,
+    llm: ne_engine::llm::LlmParams,
+    work_root: PathBuf,
+    prompt_dir: PathBuf,
+    enabled: Vec<Tool>,
+    pinned: String,
+    approver: Option<Box<dyn Fn(&crate::approval::Decision) -> bool + 'a>>,
+) -> HarnessCtx<'a> {
+    let mut h = make_ctx_for_test(
+        store, session, cfg, llm, work_root, prompt_dir, enabled, pinned, approver,
+    );
+    h.llm_transport = Some(std::sync::Arc::new(|p, msgs| ne_engine::llm::call(p, msgs)));
+    h
+}
+
 // ───────────────────────────── 子智能体 Lane（M7）
 
 /// 构造一个"父会话"的 HarnessCtx（供 CLI 的 `subagent` 命令调用）。
@@ -872,6 +912,12 @@ fn build_sub_ctx<'a>(parent: &HarnessCtx<'a>, session: &str) -> HarnessCtx<'a> {
         system_override: parent.system_override.clone(),
         vault_root: parent.vault_root.clone(),
         asker: None, // 子任务无交互 → ask_user 会明确报错并交回主智能体
+        // 【2026-10-18】注入**随父 ctx 继承**。
+        // 注意与 `approver` 的区别：审批回调刻意不继承（子任务不该弹审批），
+        // 但传输层必须继承——否则测试注入到父 ctx 却传不到子 Lane，
+        // m8_tools_e2e 里 subagents 工具链就永远跑不通。
+        // 生产路径父 ctx 恒为 None，所以继承 None 仍是受锁的。
+        llm_transport: parent.llm_transport.clone(),
     }
 }
 

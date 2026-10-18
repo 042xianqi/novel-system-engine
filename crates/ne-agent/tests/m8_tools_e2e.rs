@@ -193,6 +193,9 @@ fn subagents_via_tool_bus_runs_in_isolated_lanes() {
         .with_vault_root(&work)
         .with_runtime(db.clone(), cfg, work.clone(), vec![Tool::Read])
         .with_llm(llm)
+        // 【2026-10-18】测试注入：子智能体主循环直连 127.0.0.1 假 LLM。
+        // 生产 ToolCtx 从不调用 with_llm_transport → 仍受三重锁。
+        .with_llm_transport(std::sync::Arc::new(|p, m| ne_engine::llm::call(p, m)))
         .with_session(&sid, ne_agent::context_tools::ContextStore::open(&db).unwrap());
 
     let a = args(&[(

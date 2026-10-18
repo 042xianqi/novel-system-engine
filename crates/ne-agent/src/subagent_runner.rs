@@ -65,6 +65,8 @@ pub fn run_subagents_in_ctx(
         system_override: None,
         vault_root: ctx.vault_root.clone().unwrap_or_else(|| ctx.root.clone()),
         asker: None,
+        // 透传注入：生产为 None（受三重锁）；测试注入 127.0.0.1 假 LLM
+        llm_transport: ctx.llm_transport.clone(),
     };
     crate::task::run_subagents(&parent, tasks, max_tasks)
 }

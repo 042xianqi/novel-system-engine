@@ -11,6 +11,7 @@
 //! 后续：chat(M1) / memory(M2) / novel(M3) / tool(M4)。
 
 use anyhow::{Context, Result};
+use ne_agent::governance::governed_call::ne_agent_gov_call;
 use clap::Parser;
 
 use crate::cli::{Cli, Cmd, LibraryCtlCmd, McpCmd, ModelsCmd, QueueCmd, VaultCmd, WorldGovCmd, AuditExportCmd, CacheCmd, ProbeExportCmd, SelfCheckCmd, TagCmd, NoteCmd, DiffCmd, DiffSnapCmd, WebCmd, ConflictCmd, GraphCmd, SandboxCmd, SandboxTraceCmd, LlmCmd, LlmCacheCmd, LlmConfigCmd, PipelineCmd, HealthCmd, OutlineCmd};
@@ -897,7 +898,7 @@ fn run_score(
         ne_engine::llm::Message::system("你是《残响之河》的质检员。按模板逐维扫描，输出 findings（P0/P1）与总评，不要改写正文。"),
         ne_engine::llm::Message::user(prompt),
     ];
-    let out = ne_engine::llm::call(&llm, &msgs)?;
+    let out = ne_agent_gov_call(&llm, &msgs)?;
     let rep = lib_root.join("07_勘误工坊").join(format!("质检_卷{volume}_第{chap_id}章.md"));
     std::fs::create_dir_all(rep.parent().unwrap())?;
     std::fs::write(&rep, &out.content)?;
@@ -932,7 +933,7 @@ fn run_fix(
         ne_engine::llm::Message::system("你是《残响之河》的修复者。最小改动，只修命中的维度，输出修复后正文全文。"),
         ne_engine::llm::Message::user(prompt),
     ];
-    let out = ne_engine::llm::call(&llm, &msgs)?;
+    let out = ne_agent_gov_call(&llm, &msgs)?;
     if dry_run {
         println!("{}", out.content);
     } else {

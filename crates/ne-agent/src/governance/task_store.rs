@@ -44,7 +44,92 @@ CREATE TABLE IF NOT EXISTS webui_task_fail (
 CREATE INDEX IF NOT EXISTS idx_webui_task_fail_ts ON webui_task_fail(created_ts DESC);
 "#,
     )?;
+    // ── 迁移：webui_task_fail.code（dsh 报告 阶段 2-4）──
+    // 为什么需要：22 次 502 之所以难归因，是因为 reason 只有自由文本。
+    // 加结构化 code 后，直接 `GROUP BY code` 就能出失败类型分布报表，
+    // 不必再靠字符串匹配 reason。
+    // 用 PRAGMA 探测列是否存在，保证幂等（老库自动补齐）。
+    migrate_add_column(
+        conn,
+        "webui_task_fail",
+        "code",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_webui_task_fail_code ON webui_task_fail(code);",
+    )?;
     Ok(())
+}
+
+/// 幂等加列：列不存在才 `ALTER TABLE ADD COLUMN`。
+///
+/// SQLite 没有 `ADD COLUMN IF NOT EXISTS`，只能先查 `PRAGMA table_info`。
+/// 失败不致命（老版本 SQLite / 只读库），只记 stderr，不阻断主流程。
+fn migrate_add_column(conn: &Connection, table: &str, col: &str, decl: &str) -> Result<()> {
+    let exists: bool = {
+        let mut st = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let names: Vec<String> = st
+            .query_map([], |r| r.get::<_, String>(1))?
+            .filter_map(|x| x.ok())
+            .collect();
+        names.iter().any(|n| n == col)
+    };
+    if exists {
+        return Ok(());
+    }
+    match conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {col} {decl}"), []) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            // 并发 ensure_tables 时另一个线程可能刚加完 → 再查一次确认
+            let now_exists: bool = {
+                let mut st = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+                let names: Vec<String> = st
+                    .query_map([], |r| r.get::<_, String>(1))?
+                    .filter_map(|x| x.ok())
+                    .collect();
+                names.iter().any(|n| n == col)
+            };
+            if now_exists {
+                Ok(())
+            } else {
+                eprintln!("[task_store] 迁移 {table}.{col} 失败（不致命）：{e}");
+                Ok(())
+            }
+        }
+    }
+}
+
+/// 从自由文本 reason 里**推断**失败码。
+///
+/// 这是给历史数据和老调用方兜底用的：新代码应当显式传 code。
+/// 推断规则宁可粗糙也不要漏：认不出就归 `UNKNOWN`，
+/// 后续看 `GROUP BY code` 时 UNKNOWN 占比高说明该补调用点。
+pub fn infer_fail_code(reason: &str) -> &'static str {
+    let r = reason.to_ascii_lowercase();
+    let has = |pats: &[&str]| pats.iter().any(|p| r.contains(p));
+    if has(&["502", "bad gateway"]) {
+        "UPSTREAM_502"
+    } else if has(&["429", "rate limit", "too many requests", "限流"]) {
+        "RATE_LIMIT"
+    } else if has(&["401", "403", "unauthorized", "forbidden", "invalid api key", "key"]) {
+        "AUTH"
+    } else if has(&["看门狗", "watchdog", "假死", "无任何输出"]) {
+        "WATCHDOG_IDLE"
+    } else if has(&["超时", "timeout", "timed out"]) {
+        "TIMEOUT"
+    } else if has(&["空内容", "empty content", "content 为空", "未达标 0 字", "0 字"]) {
+        "EMPTY_CONTENT"
+    } else if has(&["gate", "门禁", "p0", "p1"]) {
+        "GATE_BLOCK"
+    } else if has(&["锁", "lock", "locked", "未解锁", "allow"]) {
+        "LOCKED"
+    } else if has(&["json", "解析", "parse"]) {
+        "PARSE"
+    } else if has(&["未找到", "not found", "不存在"]) {
+        "NOT_FOUND"
+    } else {
+        "UNKNOWN"
+    }
 }
 
 fn now() -> i64 {
@@ -346,6 +431,9 @@ pub fn result(conn: &Connection, id: &str) -> Result<Value> {
 
 /// 任务失败归档（任务书 #6）：多次重试/修复回合失败后落档，
 /// 并把原任务置为 failed，供 WebUI 队列面板展示终止原因。
+///
+/// 【2026-10-18 dsh 阶段 2-4】`reason` 保留自由文本（人读），
+/// 新增 `code` 做机器可聚合的失败分类。`code` 可显式传，也可留空自动推断。
 pub fn archive_failure(
     conn: &Connection,
     task_id: &str,
@@ -354,22 +442,44 @@ pub fn archive_failure(
     attempts: u32,
     last_raw: &str,
 ) -> Result<Value> {
+    archive_failure_coded(conn, task_id, kind, "", reason, attempts, last_raw)
+}
+
+/// 带显式 `code` 的失败归档。
+///
+/// `code` 传空串时按 `infer_fail_code(reason)` 推断，
+/// 这样老调用方（只传 reason）也能自动拿到分类。
+pub fn archive_failure_coded(
+    conn: &Connection,
+    task_id: &str,
+    kind: &str,
+    code: &str,
+    reason: &str,
+    attempts: u32,
+    last_raw: &str,
+) -> Result<Value> {
     ensure_tables(conn)?;
+    let code = if code.trim().is_empty() {
+        infer_fail_code(reason).to_string()
+    } else {
+        code.trim().to_ascii_uppercase()
+    };
     let raw_digest = super::llm_obs::digest_of(last_raw, 500);
     conn.execute(
-        "INSERT INTO webui_task_fail(task_id,kind,reason,attempts,last_raw) VALUES(?1,?2,?3,?4,?5)",
-        params![task_id, kind, reason, attempts as i64, raw_digest],
+        "INSERT INTO webui_task_fail(task_id,kind,code,reason,attempts,last_raw) \
+         VALUES(?1,?2,?3,?4,?5,?6)",
+        params![task_id, kind, code, reason, attempts as i64, raw_digest],
     )?;
     let _ = conn.execute(
         "UPDATE webui_task SET state='failed', updated_ts=?1, result=?2 WHERE id=?3",
-        params![now(), format!("FAILED: {reason} (attempts={attempts})"), task_id],
+        params![now(), format!("FAILED[{code}]: {reason} (attempts={attempts})"), task_id],
     );
     category_store::log_op(conn, "task.failed", task_id,
-        &format!("kind={kind} attempts={attempts} reason={reason}"), "")?;
+        &format!("kind={kind} code={code} attempts={attempts} reason={reason}"), "")?;
     Ok(json!({
-        "ok": true, "task_id": task_id, "kind": kind,
+        "ok": true, "task_id": task_id, "kind": kind, "code": code,
         "reason": reason, "attempts": attempts,
-        "note": "失败已归档；WebUI 任务队列可查看终止原因。",
+        "note": "失败已归档（含 code）；WebUI 任务队列可查看终止原因。",
     }))
 }
 
@@ -378,18 +488,59 @@ pub fn failures(conn: &Connection, limit: usize) -> Result<Value> {
     ensure_tables(conn)?;
     let lim = limit.clamp(1, 200) as i64;
     let mut st = conn.prepare(
-        "SELECT id,task_id,kind,reason,attempts,last_raw,created_ts FROM webui_task_fail ORDER BY id DESC LIMIT ?1",
+        "SELECT id,task_id,kind,code,reason,attempts,last_raw,created_ts \
+         FROM webui_task_fail ORDER BY id DESC LIMIT ?1",
     )?;
     let rows: Vec<Value> = st.query_map(params![lim], |r| Ok(json!({
         "id": r.get::<_, i64>(0)?,
         "task_id": r.get::<_, String>(1)?,
         "kind": r.get::<_, String>(2)?,
-        "reason": r.get::<_, String>(3)?,
-        "attempts": r.get::<_, i64>(4)?,
-        "last_raw": r.get::<_, String>(5)?,
-        "created_ts": r.get::<_, i64>(6)?,
+        "code": r.get::<_, String>(3)?,
+        "reason": r.get::<_, String>(4)?,
+        "attempts": r.get::<_, i64>(5)?,
+        "last_raw": r.get::<_, String>(6)?,
+        "created_ts": r.get::<_, i64>(7)?,
     })))?.filter_map(|x| x.ok()).collect();
     Ok(json!({"command": "webui tasks failures", "count": rows.len(), "failures": rows}))
+}
+
+/// 失败类型分布报表（dsh 阶段 2-4 的直接产出物）。
+///
+/// 一句 `GROUP BY code` 就能回答「这周挂掉的批次里，502 占多少、限流占多少」，
+/// 不必再靠 `reason LIKE '%502%'` 猜。
+/// `GROUP_CONCAT(task_id)` 让每类带上样本，方便直接点进去查。
+pub fn failure_stats(conn: &Connection, days: i64) -> Result<Value> {
+    ensure_tables(conn)?;
+    let d = days.clamp(0, 3650);
+    let cutoff = if d == 0 { 0 } else { now() - d * 86400 };
+    let mut st = conn.prepare(
+        "SELECT code, COUNT(*) AS n, SUM(attempts) AS att, \
+                MAX(created_ts) AS last_ts, \
+                GROUP_CONCAT(DISTINCT kind) AS kinds \
+         FROM webui_task_fail WHERE created_ts >= ?1 \
+         GROUP BY code ORDER BY n DESC",
+    )?;
+    let rows: Vec<Value> = st.query_map(params![cutoff], |r| Ok(json!({
+        "code": r.get::<_, String>(0)?,
+        "count": r.get::<_, i64>(1)?,
+        "attempts_sum": r.get::<_, i64>(2)?,
+        "last_ts": r.get::<_, i64>(3)?,
+        "kinds": r.get::<_, String>(4)?,
+    })))?.filter_map(|x| x.ok()).collect();
+    let total: i64 = rows.iter()
+        .filter_map(|v| v.get("count").and_then(|x| x.as_i64()))
+        .sum();
+    Ok(json!({
+        "command": "webui tasks failure-stats",
+        "window_days": d,
+        "total": total,
+        "by_code": rows,
+        "hint": if total == 0 {
+            "该窗口内无失败归档。若任务确实失败过，说明失败发生在归档链路之前。"
+        } else {
+            "按 code 聚合；UPSTREAM_502/RATE_LIMIT 高 → 查网关；EMPTY_CONTENT 高 → 查 max_tokens。"
+        },
+    }))
 }
 
 /// 终止未运行任务（pending → canceled）。
@@ -421,6 +572,34 @@ pub fn update_result(conn: &Connection, id: &str, body: &str) -> Result<Value> {
         params![state, result, now(), id],
     )?;
     category_store::log_op(conn, "task.result", id, &format!("state={state} rows={n}"), "")?;
+
+    // ── 失败自动归档（dsh 阶段 2-4 · 2026-10-18）──
+    //
+    // 改造前：`archive_failure()` 全仓**零调用点**，是死代码。
+    // 后果是 22 次 502 只在 `webui_task.result` 里留一句自由文本，
+    // `webui_task_fail` 表 0 行，无法做失败类型分布。
+    //
+    // 现在：只要执行方回写 state=failed，就自动落一份带 code 的归档。
+    // 归档失败绝不阻断回写主流程（回写本身已成功，归档只是增值信息）。
+    //
+    // code 优先级：body.code（执行方显式给） > 自动推断
+    if state == "failed" && n > 0 {
+        let code = v.get("code").and_then(|x| x.as_str()).unwrap_or("");
+        let kind = conn
+            .query_row("SELECT kind FROM webui_task WHERE id=?1", params![id],
+                |r| r.get::<_, String>(0))
+            .optional()
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let attempts = v.get("attempts").and_then(|x| x.as_u64()).unwrap_or(1) as u32;
+        if let Err(e) = archive_failure_coded(
+            conn, id, &kind, code, &result, attempts, &result,
+        ) {
+            eprintln!("[task_store] 失败归档写入失败（不影响回写）：{e}");
+        }
+    }
+
     // ── SSE 广播：每次 result 回写都推一条 ──
     // 这是「保底通道」：即使 Python 侧细粒度日志没接上，
     // 前端也能通过 state 变化 + progress 字段知道进展。

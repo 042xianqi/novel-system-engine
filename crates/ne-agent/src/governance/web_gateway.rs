@@ -805,6 +805,15 @@ fn route_dyn(
         ("tasks", 3) if segs[2] == "failures" && method == "GET" => {
             super::task_store::failures(conn, limit_of())
         }
+        // 失败类型分布报表（dsh 阶段 2-4）
+        //   GET /api/tasks/failure-stats          → 全窗口
+        //   GET /api/tasks/failure-stats?days=7   → 近 7 天
+        // 改造前 502 无法归因，就是因为只有自由文本 reason；
+        // 现在一句 GROUP BY code 就能出「这次挂的到底是网关还是 max_tokens」。
+        ("tasks", 3) if segs[2] == "failure-stats" && method == "GET" => {
+            let days = qget("days").and_then(|x| x.parse::<i64>().ok()).unwrap_or(0);
+            super::task_store::failure_stats(conn, days)
+        }
         ("tasks", 3) => {
             let tid = segs[2];
             match method {

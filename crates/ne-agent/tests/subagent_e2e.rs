@@ -88,6 +88,10 @@ fn run_subagents_sequentially_in_isolated_sessions() {
     let parent = ne_agent::task::parent_ctx(
         &store, &parent_sid, &cfg, params, work.clone(), work.clone(), enabled,
     );
+    // 【2026-10-18】注入测试传输层：子 Lane 主循环直连 127.0.0.1 假 LLM。
+    // 生产 parent_ctx 恒为 None → 仍受三重锁。
+    let mut parent = parent;
+    parent.llm_transport = Some(std::sync::Arc::new(|p, m| ne_engine::llm::call(p, m)));
 
     // 两个子任务（只读，避免审批）
     let spec = json!({"subagents": [

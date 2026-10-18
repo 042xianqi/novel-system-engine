@@ -27,6 +27,7 @@ pub mod pipeline_view;
 pub mod pipeline_file;
 pub mod pipeline_engine;
 pub mod task_store;
+pub mod task_events;
 pub mod layer_store;
 pub mod web_gateway;
 pub mod llm_gate;
@@ -54,6 +55,27 @@ pub mod probe_cache;
 pub mod probe_export;
 pub mod self_check;
 pub mod semantic_runtime;
+/// 真实 LLM 授权锁（文件锁的面板视图 + 操作）—— 2026-10-17
+/// 把 `/sdcard/wogov_real_llm.allow` 暴露成面板可点的开关，底层语义不变。
+pub mod real_llm_lock;
+/// 对话中枢的 L1 规则层（正则意图解析）—— 2026-10-17
+/// 只解析意图 + 登记任务，**不调 LLM、不写内容**。
+pub mod chat_intent;
+// L2 意图层（LLM 兜底）：L1 正则落空时接管，把自然语言翻译成意图。
+pub mod chat_llm;
+/// 对话中枢的工具桥（只读 ne-mcp 工具 + 结果整形）—— 2026-10-17
+/// 写类工具一律拒绝，必须人点确认。
+pub mod chat_tools;
+/// L2 工具调用层（原生 Function Calling）—— 2026-10-18
+///
+/// 【为什么和 `chat_llm.rs` 并存】`chat_llm` 是"让模型吐 JSON，我们在
+/// Rust 里 if-else 分发"的老路，意图枚举封闭、参数靠正则硬抠。
+/// 本模块改为把工具签名交给模型，**由模型自己决定调哪个工具、参数填什么**，
+/// 彻底摆脱"为每句话写一条正则"的打地鼠循环。
+pub mod chat_tools_fc;
+/// 模型配置的读写接口（models.yml）—— 2026-10-17
+/// 解决"设置中心只能看不能改"：providers.rs 原本只有解析、无序列化。
+pub mod model_config;
 
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -112,6 +134,64 @@ pub struct LayerEntry {
     /// 检查结论：OK | WARN | HIGH-RISK
     pub level: String,
     pub notes: Vec<String>,
+}
+
+/// 会话库路径：`<work-root>/08_运行态/session.db`。
+///
+/// # 为什么放在这里，而不是 agent.db / novel.db
+///
+/// 三个候选都试过，只有这个位置同时满足三件事：
+///
+/// 1. **同备份域**。冷备份脚本只扫 sdcard 资料库根，
+///    放在 repo 内的 `.neagent/agent.db` 意味着 `git clean` 一次就没了。
+/// 2. **不污染资料库 schema**。搬进 `novel.db` 会让聊天表混进 86 张业务表里，
+///    迁移和体检都要跟着改。
+/// 3. **不被扫盘脚本当成脏文件**。放 `work-root/session.db` 会被
+///    稽核/inventory 扫到当成未知产物；`08_运行态/` 是明确的运行态目录，
+///    与 `02_资料库`（资产）、`04_正文`（产物）语义分开。
+///
+/// `SessionStore::open` 内部自带 `create_dir_all`，目录不存在会自动建。
+pub fn session_db_path(lib_root: &Path) -> std::path::PathBuf {
+    lib_root.join("08_运行态").join("session.db")
+}
+
+/// 打开会话库（每请求一次，SQLite 开销可忽略）。
+///
+/// # 为什么每次 open 而不是全局单例
+///
+/// `web_gateway::route_dyn` 是零依赖手写 HTTP，没有共享状态容器，
+/// 传一个 store 下去要改一串签名（含 `route_for_test`）。
+/// 在稳定性窗口期，现开现用最安全：没有初始化顺序问题，
+/// 也不会因为进程内状态和服务生命周期不一致而出现"用着用着连接坏了"。
+///
+/// `SessionStore::open` 自身幂等：建目录 + 建表 + 补列，重复调用无副作用。
+pub fn open_session(lib_root: &Path) -> Result<crate::session::SessionStore> {
+    crate::session::SessionStore::open(session_db_path(lib_root))
+        .map_err(|e| anyhow::anyhow!("打开会话库失败：{e}"))
+}
+
+/// 默认会话 id。前端不传 `session` 时用它。
+pub const DEFAULT_SESSION: &str = "chat";
+
+/// 幂等确保会话行存在。
+///
+/// # 这个取巧为什么必要
+///
+/// `SessionStore::append_meta` 最后执行的是
+/// `UPDATE sessions SET updated_at=?, head_id=? WHERE id=?`。
+/// 若 session 行不存在，UPDATE 影响 0 行——**静默失败**：
+/// 消息插进 messages 表了，但 head_id 没指向它，
+/// 下次 `history()` 从 head 回溯时返回空，表现为"历史丢了"。
+///
+/// `create_session()` 用的是随机 id，无法指定 `"chat"`。
+/// 但 `create_child_session(id, parent, title)` 底层是
+/// `INSERT OR IGNORE INTO sessions`，**可以指定 id 且幂等**，
+/// 正好拿来做"确保存在"。
+///
+/// parent 传空串：这是顶层会话，不挂任何父会话。
+pub fn ensure_session(store: &crate::session::SessionStore, session: &str) {
+    // INSERT OR IGNORE：已存在则什么也不做，返回 false 也无所谓
+    let _ = store.create_child_session(session, "", "对话中枢");
 }
 
 /// 治理库打开：只读既有库 + 幂等附加治理表。

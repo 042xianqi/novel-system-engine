@@ -118,6 +118,57 @@ impl CardTemplate {
 pub fn all_templates() -> Vec<CardTemplate> {
     use FieldKind::*;
     let t = |category: &str, prefix: &str, aliases: &[&str], may_be_empty: bool, fields: Vec<Field>| {
+        // ══════════════════════════════════════════════════════════════════════
+        // 【2026-10-17 统一卡片模板规范 v1.0】四区块结构（决策二：完全替换旧散文式结构）
+        //
+        //   ① 基础要素      —— {唯一编号}
+        //   ② 核心关联实体  —— {核心关联实体}  ⚠️ required=true，强制显式关联
+        //   ③ 扩展描述      —— {扩展描述}（各分类原有内容字段在此之下）
+        //   ④ 溯源与版本
+        //
+        // 原「散文式」字段（介绍/详细信息/基础信息/外貌/…）**降级为可选**（required=false），
+        // 保留其辨识能力（存量卡仍可被识别），但不作为新卡强制结构。
+        // ══════════════════════════════════════════════════════════════════════
+        let mut old_fields: Vec<Field> = fields
+            .into_iter()
+            // 旧的「关联/关联标注」段被新的「核心关联实体」取代 → 作为别名并入，不重复注册
+            .filter(|f| !matches!(f.name.as_str(), "关联" | "关联标注" | "核心关联实体"))
+            .map(|mut f| {
+                // 旧字段一律降级为可选（四区块 v1.0 下不再强制散文式结构）
+                f.required = false;
+                f
+            })
+            .collect();
+
+        let mut fields: Vec<Field> = vec![
+            // ① 基础要素
+            Field::new("基础要素", Section, false)
+                .alias("基本信息")
+                .note("四区块·第一块：编号/名称/分类/子类/状态"),
+            // 胶囊（H1 下第一行引用块，保留既有强约束）
+            Field::new("胶囊", Capsule, true).alias("介绍"),
+        ];
+        // ③ 扩展描述：承接各分类原有内容字段
+        old_fields.sort_by_key(|f| f.name.clone());
+        // ② 核心关联实体（强制）
+        fields.push(
+            Field::new("核心关联实体", Section, true)
+                .alias("核心关联")
+                .alias("关联实体")
+                .alias("关联标注")
+                .alias("关联")
+                .note("四区块·第二块【强制】：列出 {维度: 目标ID}，ID 须为可溯源卡编号"),
+        );
+        // ③ 扩展描述（容器段 + 原有字段）
+        fields.push(Field::new("扩展描述", Section, false)
+            .alias("详细信息")
+            .note("四区块·第三块：各分类原有内容字段归入此区"));
+        fields.extend(old_fields);
+        // ④ 溯源与版本
+        fields.push(Field::new("溯源与版本", Section, false)
+            .alias("溯源")
+            .note("四区块·第四块：依据/版本/正文引用(允许|禁止)"));
+
         CardTemplate {
             category: category.into(),
             code_prefix: prefix.into(),
@@ -390,6 +441,73 @@ pub fn template_of(category: &str) -> Option<CardTemplate> {
     all_templates().into_iter().find(|t| t.category == want)
 }
 
+/// 26 类「核心关联实体」允许出现的维度名（统一规范 v1.0 §四）。
+/// 仅用于统计/提示，不强制（存量卡可自由标注维度）。
+pub const RELATED_FIELDS: [&str; 21] = [
+    "所属文明", "常驻地点", "关联事件", "参与角色", "发生地点", "所属时间线",
+    "关联势力", "关联力量体系", "亲属角色", "代表角色", "核心地点", "双方文明",
+    "起始事件", "涉及角色", "回收卷章", "关系性质", "所属地点", "所属体系",
+    "所属文明 / 适用范围", "出现地点", "持有者",
+];
+
+/// 从卡文本抽出「核心关联实体」表内的 `(维度, 目标ID)` 对。
+///
+/// 兼容三种写法（统一规范 v1.0 §三）：
+/// - 表格：`| 所属文明 | CIVI-99-001 | 出身 |`
+/// - 粗体：`**所属文明**：CIVI-99-001`
+/// - 列表：`- 所属文明：CIVI-99-001`
+///
+/// 目标 ID 的合法性由 [`crate::find_card_refs`] 统一裁定（与全库口径一致）。
+pub fn related_ids(text: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut in_block = false;
+    for raw in text.lines() {
+        let s = raw.trim();
+        // 段边界：遇到新的 ## 段就重判是否在本区块内
+        if let Some(rest) = s.strip_prefix("## ") {
+            let title = rest.trim();
+            in_block = title.contains("核心关联") || title.contains("关联实体");
+            continue;
+        }
+        if !in_block {
+            continue;
+        }
+        if s.starts_with('|') {
+            // 表格行：首列=维度，次列=目标 ID（可多值，用 、 / , 分隔）
+            let cells: Vec<&str> = s.trim_matches('|').split('|').map(|c| c.trim()).collect();
+            if cells.len() < 2 {
+                continue;
+            }
+            let dim = cells[0]
+                .trim_matches('*')
+                .trim()
+                .trim_end_matches(['：', ':'])
+                .trim();
+            if dim.is_empty() || dim.chars().all(|c| c == '-' || c == ' ') {
+                continue;
+            }
+            for id in crate::find_card_refs(cells[1]) {
+                out.push((dim.to_string(), id));
+            }
+        } else {
+            // 粗体 / 列表：`**维度**：ID` 或 `- 维度：ID`
+            let body = s
+                .trim_start_matches(['-', '*', ' '])
+                .trim();
+            let Some(sep) = body.find(['：', ':']) else { continue };
+            let dim = body[..sep].trim_matches('*').trim();
+            let val = body[sep + 1..].trim();
+            if dim.is_empty() {
+                continue;
+            }
+            for id in crate::find_card_refs(val) {
+                out.push((dim.to_string(), id));
+            }
+        }
+    }
+    out
+}
+
 /// 类别名归一（把历史异名映射到当前规范名）。
 pub fn normalize_category(c: &str) -> String {
     match c.trim() {
@@ -455,7 +573,13 @@ mod tests {
     #[test]
     fn field_matches_aliases() {
         let t = template_of("事件").unwrap();
-        let f = t.fields.iter().find(|f| f.name == "关联标注").unwrap();
+        // v1.0：旧「关联标注」段已并入「核心关联实体」，别名仍可命中
+        let f = t
+            .fields
+            .iter()
+            .find(|f| f.name == "核心关联实体")
+            .unwrap();
+        assert!(f.matches("核心关联实体"));
         assert!(f.matches("关联标注"));
         assert!(f.matches("关联"));
         assert!(f.matches("【关联标注】"));
@@ -470,6 +594,69 @@ mod tests {
         }
     }
 
+    #[test]
+    fn every_template_has_related_block() {
+        // 【2026-10-17 规范 v1.0】26 类都必须注册「核心关联实体」段，且为**强制**字段
+        for t in all_templates() {
+            let f = t
+                .fields
+                .iter()
+                .find(|f| f.name == "核心关联实体")
+                .unwrap_or_else(|| panic!("{} 缺「核心关联实体」段", t.category));
+            // 兼容写法：段名 / 核心关联 / 关联实体 / 关联标注 / 关联
+            assert!(f.matches("核心关联实体"));
+            assert!(f.matches("核心关联"));
+            assert!(f.matches("关联实体"));
+            assert!(f.matches("关联标注"), "{} 应兼容旧段名「关联标注」", t.category);
+            assert!(f.required, "{} 的关联段在 v1.0 下应为强制", t.category);
+        }
+    }
+    #[test]
+    fn four_block_skeleton_present() {
+        // 四区块：基础要素 / 核心关联实体 / 扩展描述 / 溯源与版本
+        for t in all_templates() {
+            for want in ["基础要素", "核心关联实体", "扩展描述", "溯源与版本"] {
+                assert!(
+                    t.fields.iter().any(|f| f.name == want),
+                    "{} 缺四区块的「{}」", t.category, want
+                );
+            }
+        }
+    }
+    #[test]
+    fn related_ids_parses_four_block() {
+        // 四区块骨架：二、核心关联实体 表
+        let card = "\
+# CHAR-99-001｜陈寂
+> 胶囊：测试
+## 一、基础要素
+| 编号 | CHAR-99-001 |
+## 二、核心关联实体
+| 关联维度 | 目标 ID | 关系说明 |
+|---|---|---|
+| 所属文明 | CIVI-99-001 | 出身 |
+| 常驻地点 | LOCA-99-003 | 青牛镇 |
+| 关联事件 | EVNT-99-005、EVNT-99-001 | 穿越 |
+## 三、扩展描述
+正文...
+## 四、溯源与版本
+| 依据 | x |
+";
+        let got = related_ids(card);
+        assert_eq!(got.len(), 4, "{got:?}");
+        assert!(got.iter().any(|(d, i)| d == "所属文明" && i == "CIVI-99-001"));
+        assert!(got.iter().any(|(d, i)| d == "常驻地点" && i == "LOCA-99-003"));
+        assert!(got.iter().any(|(d, i)| d == "关联事件" && i == "EVNT-99-005"));
+        assert!(got.iter().any(|(d, i)| d == "关联事件" && i == "EVNT-99-001"));
+        // 「三、扩展描述」「四、溯源」段内的行不得被误抓
+        assert!(!got.iter().any(|(_, i)| i == "CHAR-99-001"), "不应抓回自身 H1/基础要素");
+    }
+    #[test]
+    fn related_ids_no_block_returns_empty() {
+        // 旧卡（无关联块）→ 空，不报错
+        let old = "# CHAR-10-001｜云渺渺\n## 详细信息\n### 基础信息\n- 所属文明：太玄帝国\n";
+        assert!(related_ids(old).is_empty());
+    }
     #[test]
     fn category_of_code_v3_and_alias() {
         assert_eq!(category_of_code("CHAR-99-001").as_deref(), Some("角色"));

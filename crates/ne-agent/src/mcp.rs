@@ -2,8 +2,7 @@
 //!
 //! # 为什么是「一个通用客户端」而不是「把 ne-mcp 的工具写死进来」
 //!
-//! 抄自太墟（`HarnessMessage.kt:24` 的 `MCP` 工具 + `HarnessToolRoundRunner.kt:351`）：
-//! 太墟**不给每个 MCP 工具造一个 enum 变体**，而是：
+//! 设计要点：**不给每个 MCP 工具造一个 enum 变体**，而是：
 //!   * 工具名走 `mcp__<server>__<tool>` 命名空间（模型直接可调，无需先"选服务"）
 //!   * `mcp` 本身只是历史回放别名，模型误调它会拿到真实清单自我纠正
 //!
@@ -15,7 +14,7 @@
 //! `ne-mcp` 的 6 个工具（funnel/cardgen/inject/check/db/db_query）全是**本地小说库操作**，
 //! 而 M3 的 `novel` 任务已在**进程内直接调用**同样的能力（`novel_ctx` + `budget` + `gates`）。
 //! 把本地能力绕道 MCP 子进程是纯粹的额外开销。MCP 通道留给**真正的外部服务**
-//! （如太墟的 `mcp_websearch`）。
+//! （如把搜索单独包成 `mcp_websearch`）。
 //!
 //! # 协议
 //!
@@ -191,7 +190,7 @@ impl McpConnection {
         Ok(serde_json::to_string_pretty(&r)?)
     }
 
-    /// 工具全名（太墟命名法）：`mcp__<server>__<tool>`。
+    /// 工具全名（命名空间法）：`mcp__<server>__<tool>`。
     pub fn qualified_tool_names(&self) -> Vec<String> {
         self.tools
             .iter()
@@ -209,7 +208,7 @@ impl Drop for McpConnection {
 
 /// 从 `mcp__<server>__<tool>` 拆出 (server, tool)。
 ///
-/// ⚠ 工具名本身可能含 `__`，所以**只切前两段**（太墟同法）。
+/// ⚠ 工具名本身可能含 `__`，所以**只切前两段**。
 pub fn split_qualified(name: &str) -> Option<(String, String)> {
     let rest = name.strip_prefix("mcp__")?;
     let (server, tool) = rest.split_once("__")?;

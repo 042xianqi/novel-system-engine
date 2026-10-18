@@ -44,6 +44,121 @@ impl Providers {
     }
 }
 
+/// 把 `Providers` 序列化成 `models.yml` 文本（`parse_models_yml` 的逆运算）。
+///
+/// # 为什么必须自己拼字符串，而不是引 serde_yaml
+///
+/// 1. 解析侧本来就是**手写逐行缩进解析**（不引 YAML 库，见 `parse_models_yml` 注释）。
+///    写入侧如果引 serde_yaml，两边格式假设会分叉——serde_yaml 会输出
+///    `- "sk-xxx"`、把数字加引号、改键顺序，解析侧未必都能吃。
+/// 2. 手写输出能让**格式完全可控**，人肉 diff 时好看。
+/// 3. 零新依赖。
+///
+/// # 输出格式（刻意与现有文件一致）
+///
+/// ```yaml
+/// # 注释...
+/// providers:
+///   <name>:
+///     baseUrl: <url>
+///     api: openai-completions
+///     task:
+///       keyPool:
+///         - "<key>"
+///     models:
+///       - id: <model>
+///         name: <model>
+/// ```
+///
+/// ⚠ **缩进是硬契约**：`models:` 必须缩进 4（在 provider 下面），
+/// 列表项缩进 6。历史上这里被写成缩进 0，导致 `parse_models_yml` 提前退出、
+/// models 全丢（2026-10-17 实测到该损坏）。
+pub fn to_models_yml(p: &Providers) -> String {
+    let mut out = String::new();
+    out.push_str("# 小说系统 · LLM provider 配置（自包含，不依赖 OMP）\n");
+    out.push_str("# 事实源：本文件。查找顺序见 providers.rs 模块文档。\n");
+    out.push_str("# ⚠ 由面板「设置中心」写入；缩进是解析契约，勿手改。\n");
+    out.push_str("providers:\n");
+
+    if p.map.is_empty() {
+        // 空表也要产出合法结构，否则下次解析会报"读不到 provider"
+        out.push_str("  {}\n");
+        return out;
+    }
+
+    for (name, prov) in &p.map {
+        let name = if name.is_empty() { "default" } else { name.as_str() };
+        out.push_str(&format!("  {name}:\n"));
+
+        // baseUrl：空值不写（解析侧缺省为空串，等价）
+        if !prov.base_url.is_empty() {
+            out.push_str(&format!("    baseUrl: {}\n", yaml_scalar(&prov.base_url)));
+        }
+        out.push_str("    api: openai-completions\n");
+
+        // keyPool：至少写一个空串占位（保持与现有文件同形）
+        out.push_str("    task:\n      keyPool:\n");
+        if prov.keys.is_empty() {
+            out.push_str("        - \"\"\n");
+        } else {
+            for k in &prov.keys {
+                out.push_str(&format!("        - {}\n", yaml_scalar(k)));
+            }
+        }
+
+        // models：**必须缩进 4**（在 provider 下），项缩进 6
+        if !prov.models.is_empty() {
+            out.push_str("    models:\n");
+            for m in &prov.models {
+                let m = m.trim();
+                if m.is_empty() {
+                    continue;
+                }
+                out.push_str(&format!("      - id: {}\n", yaml_scalar(m)));
+                out.push_str(&format!("        name: {}\n", yaml_scalar(m)));
+            }
+        }
+    }
+    out
+}
+
+/// 给 YAML 标量做最小安全处理：
+/// · 空串 → `""`
+/// · 含可能引起解析歧义的字符（`#`、`:`、前后空格、引号）→ 双引号包裹并转义
+/// · 其余原样（保持文件干净，不无脑加引号）
+pub fn yaml_scalar(s: &str) -> String {
+    if s.is_empty() {
+        return "\"\"".to_string();
+    }
+    // 加引号的判据必须**与 parse_models_yml 的 unquote 能力对齐**。
+    //
+    // 踩过的坑（2026-10-17）：最初只要含 ':' 就加引号，结果 URL
+    // `http://127.0.0.1:8788/v1` 被写成 `"http://..."`，而 unquote 只剥
+    // 首尾双引号、不处理转义，回读时值里留着引号 → 往返测试失败。
+    //
+    // 正确判据：**只有真正会被解析器误读的字符才加引号**：
+    //   · '#'   → 行内注释起始，必须引
+    //   · 首尾空格 → 会被 trim 掉
+    //   · 首字符 '- '/'{ '/'[' → 会被当结构符号
+    //   · 引号本身 → 会与包裹引号混淆
+    // 冒号**不加引号**：YAML 只在「冒号 + 空格」才当键值分隔，
+    // `http://x` 和 `127.0.0.1:8788` 都不会误判；而 unquote 处理不了
+    // 引号内的冒号，加了反而坏。
+    let need_quote = s.contains('#')
+        || s.contains('"')
+        || s.contains('\'')
+        || s.starts_with(' ')
+        || s.ends_with(' ')
+        || s.starts_with('-')
+        || s.starts_with('{')
+        || s.starts_with('[');
+    if !need_quote {
+        return s.to_string();
+    }
+    let esc = s.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{esc}\"")
+}
+
 /// 旧环境兼容目录（**Deprecated**，仅在前几档都没找到时才用）。
 fn legacy_agent_dir() -> PathBuf {
     std::env::var("OMP_AGENT_DIR")

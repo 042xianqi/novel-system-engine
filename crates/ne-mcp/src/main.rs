@@ -15,7 +15,7 @@ mod wg_tools;
 use tools::Cfg;
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
-const SERVER_NAME: &str = "taixu-novel-engine";
+const SERVER_NAME: &str = "ne-novel-engine";
 // 从 Cargo 包版本取（与 workspace 统一版本号，避免两处漂移）
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -32,6 +32,25 @@ fn tool_specs() -> serde_json::Value {
             "inputSchema": {"type":"object","properties":{
                 "volume": {"type":"string","description":"卷号，如 01"}},
                 "required":["volume"]}
+        },
+        {
+            "name": "ne_cardgen_plan",
+            "description": "【只读】建卡预演：按 --spec 分配编号、查重、出完整计划（每张卡的 code/分类/名称）。不调 LLM、不落盘、不需要解锁。确认计划无误后用 ne_cardgen_run 真跑。",
+            "inputSchema": {"type":"object","properties":{
+                "civ":  {"type":"string","description":"文明名，如 混沌帝国"},
+                "spec": {"type":"string","description":"构建规格，如 \"文明:1,势力:3,地点:3,角色:3\"；可加 : 指定名字，如 \"地点:3:虚空裂隙城|坍缩环带|湮灭回廊\""}},
+                "required":["civ","spec"]}
+        },
+        {
+            "name": "ne_cardgen_run",
+            "description": "【写类·异步】批量建卡：真实调 LLM 生成卡片正文并三同步落盘（文件+materials+library_index+rel_edge）。real=false（默认）走 --dry-run，0 调 LLM 0 落盘；real=true 必须存在 /sdcard/wogov_real_llm.allow。默认异步：spawn 后立即返回 task_id，进度写 webui_task.result（不阻塞 MCP 主循环）。全局单飞锁：同一时刻只允许 1 个建卡进程。",
+            "inputSchema": {"type":"object","properties":{
+                "civ":  {"type":"string","description":"文明名，如 混沌帝国"},
+                "spec": {"type":"string","description":"构建规格，如 \"文明:1,势力:3,地点:3,角色:3\""},
+                "real": {"type":"boolean","description":"是否真实调 LLM（默认 false=空跑）"},
+                "wait": {"type":"boolean","description":"true=同步等结果（建多张会阻塞很久，默认 false 异步）"},
+                "timeout_sec": {"type":"integer","description":"超时秒数（默认 600，上限 3600）"}},
+                "required":["civ","spec"]}
         },
         {
             "name": "ne_inject",
@@ -57,6 +76,16 @@ fn tool_specs() -> serde_json::Value {
             "inputSchema": {"type":"object","properties":{
                 "volume": {"type":"string","description":"卷号，如 01；留空=全 10 卷"}},
                 "required":[]}
+        },
+        {
+            "name": "ne_run_chapter",
+            "description": "【写类】L5 章节生成派发（路径A 最小闭环）。同步拉起 python3 05_管线框架/l5.py：real=false（默认）走 dryrun（0 真生成 0 写 04_正文，只出注入指标 + 14 门禁）；real=true 走 auto（生成+质检+修复+写入+入库），但必须 WOGOV_ALLOW_REAL_LLM=yes 才放行，否则直接拒绝（不静默降级）。",
+            "inputSchema": {"type":"object","properties":{
+                "volume": {"type":"string","description":"卷号，如 01 / 卷01；默认 卷01"},
+                "chapter": {"type":"integer","description":"章号（≥1）"},
+                "real": {"type":"boolean","description":"是否真实调 LLM（默认 false=空跑）"},
+                "timeout_sec": {"type":"integer","description":"子进程超时秒数（默认 300，上限 900）"}},
+                "required":["chapter"]}
         },
         {
             "name": "ne_db",
@@ -269,6 +298,15 @@ fn tool_call(cfg: &Cfg, name: &str, args: &serde_json::Value) -> serde_json::Val
     let r: anyhow::Result<serde_json::Value> = match name {
         "funnel" => tools::funnel(cfg),
         "ne_cardgen" => tools::cardgen(cfg, &vol),
+        "ne_cardgen_plan" => tools::cardgen_plan(cfg, &s("civ"), &s("spec")),
+        "ne_cardgen_run" => tools::cardgen_run(
+            cfg,
+            &s("civ"),
+            &s("spec"),
+            b("real"),
+            b("wait"),
+            if i("timeout_sec") == 0 { 600 } else { i("timeout_sec") },
+        ),
         "ne_inject" => tools::inject(cfg, &vol, i("chapter"), b("allow_missing")),
         "ne_check" => {
             let vol = if vol.trim().is_empty() { "卷01".to_string() } else { vol };
@@ -276,6 +314,13 @@ fn tool_call(cfg: &Cfg, name: &str, args: &serde_json::Value) -> serde_json::Val
         }
         "ne_db" => tools::db_status(cfg),
         "ne_materials" => tools::materials_audit(cfg, &vol),
+        "ne_run_chapter" => tools::run_chapter(
+            cfg,
+            &vol,
+            i("chapter"),
+            b("real"),
+            args.get("timeout_sec").and_then(|v| v.as_u64()).unwrap_or(300) as u32,
+        ),
         "ne_db_query" => {
             let lim = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
             tools::db_query(cfg, &s("sql"), lim.max(1))

@@ -263,6 +263,27 @@ pub fn update_item(conn: &Connection, lib_root: &Path, layer: &str, key: &str, b
     if v["title"].is_string() {
         changed.push("title");
     }
+    // ★ 只改标题、没改正文时：必须同步把磁盘首行 `# 标题` 也改掉。
+    //   否则 library_index.title 与文件首行不一致（索引说 A、文件说 B），
+    //   等下一次全库重扫时，索引会被文件首行覆盖回去，用户改的标题莫名消失。
+    //   传了 content 的情况不动文件：content 是整体覆写，首行由调用方自己写。
+    if v["title"].is_string() && !v["content"].is_string() {
+        let cur = std::fs::read_to_string(&p).unwrap_or_default();
+        let mut lines: Vec<String> = cur.lines().map(|l| l.to_string()).collect();
+        let want = format!("# {}", new_title);
+        if lines.first().map(|l| l.trim_start().starts_with("# ")).unwrap_or(false) {
+            lines[0] = want;
+        } else if !new_title.is_empty() {
+            // 首行不是标题行：在文件头插一行，正文一行不丢
+            lines.insert(0, want);
+            lines.insert(1, String::new());
+        }
+        let mut out = lines.join("\n");
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        std::fs::write(&p, out)?;
+    }
     // 重算 chars
     let cur = std::fs::read_to_string(&p).unwrap_or_default();
     let chars = cur.chars().filter(|c| !c.is_whitespace()).count() as i64;

@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <title>残响之河 · 对话中枢</title>
+  <!--
+    首帧皮肤预设（关键，不要删）：
+      index.html 的内联脚本在 CSS 之前执行，
+      这里先把 data-skin 写死成 mohei，
+      避免「默认浅色 → 用户深色」的一次可见闪白。
+      useSkin.initSkin() 之后会再按存储值校准一次，两者不冲突。
+      同时把 html/body 底色直接写成夜墨的 --bg，
+      这样即使 CSS 还没下载完，屏幕也是深色，不会白闪。
+  -->
+  <script>
+    (function () {
+      try {
+        var el = document.documentElement
+        el.setAttribute('data-skin', 'mohei')
+        el.style.colorScheme = 'dark'
+        el.style.backgroundColor = '#16181f'
+      } catch (e) {}
+    })()
+  </script>
+  <script type="module" crossorigin src="./assets/index-Bpq-7HMz.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-DOXY39IY.css">
+</head>
+<body>
+  <div id="app"></div>
+</body>
+</html>

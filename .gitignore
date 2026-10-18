@@ -18,3 +18,15 @@ agent_override/
 .wf/
 workflows/_backup/
 __pycache__/
+
+# ── 前端工程（frontend/）────────────────────────────────
+# node_modules 不入库（57MB，且 npm install 可完全重建）
+frontend/node_modules/
+# dist 是构建产物：**不入库**，但部署机上要跑一次 npm run build
+# （若将来需要「开箱即用」，改成入库 dist 并删掉这一行即可）
+frontend/dist/
+# 本地开发缓存
+frontend/.vite/
+frontend/*.local
+npm-debug.log*
+

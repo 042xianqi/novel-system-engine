@@ -4,133 +4,470 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
 <meta name="color-scheme" content="dark">
-<title>world-gov 面板</title>
+<title>残响之河 · 创作台</title>
 <style>
   :root{--bg:#0f1115;--panel:#171a21;--line:#2a2f3a;--fg:#d7dce5;--dim:#8b94a7;--acc:#5aa9e6;--warn:#e6b45a;--bad:#e66a6a;--ok:#5ad18a;--hdr:52px}
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
   html,body{margin:0;padding:0;background:var(--bg);color:var(--fg);
-    font:15px/1.55 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+    font:15px/1.65 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
     overscroll-behavior-y:none}
-  /* ── 顶栏（移动优先：汉堡 + 标题 + 刷新） */
+  /* ── 顶栏 ── */
   #top{position:sticky;top:0;z-index:30;height:var(--hdr);display:flex;align-items:center;gap:10px;
     padding:0 12px;padding-top:env(safe-area-inset-top);background:var(--panel);border-bottom:1px solid var(--line)}
-  #burger{font-size:20px;line-height:1;padding:8px 10px;border-radius:8px;background:#22303f;
-    color:var(--acc);border:1px solid var(--line);cursor:pointer}
+  #burger{font-size:20px;line-height:1;padding:8px 10px;border-radius:8px;background:#22303f;color:var(--acc);border:1px solid var(--line);cursor:pointer}
   #title{font-weight:600;font-size:15px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  #reload{font-size:13px;padding:7px 11px;border-radius:8px;background:#22303f;color:var(--acc);
-    border:1px solid var(--line);cursor:pointer}
-  /* ── 抽屉菜单（默认隐藏，点击汉堡从左侧滑入） */
-  #drawer{position:fixed;inset:0 auto 0 0;width:min(78vw,300px);z-index:50;
+  #reload{font-size:13px;padding:7px 11px;border-radius:8px;background:#22303f;color:var(--acc);border:1px solid var(--line);cursor:pointer}
+  /* ── 抽屉 ── */
+  #drawer{position:fixed;inset:0 auto 0 0;width:min(78vw,290px);z-index:50;
     background:var(--panel);border-right:1px solid var(--line);padding:14px 12px;
-    padding-top:calc(14px + env(safe-area-inset-top));
-    transform:translateX(-102%);transition:transform .22s ease;overflow-y:auto}
+    padding-top:calc(14px + env(safe-area-inset-top));transform:translateX(-102%);transition:transform .22s ease;overflow-y:auto}
   #drawer.open{transform:translateX(0)}
   #mask{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:40;display:none}
   #mask.open{display:block}
   #drawer h1{font-size:15px;margin:2px 0 14px;color:var(--acc)}
-  #drawer a{display:flex;align-items:center;gap:8px;padding:12px 12px;margin:3px 0;border-radius:9px;
+  #drawer a{display:flex;align-items:center;gap:9px;padding:11px 12px;margin:2px 0;border-radius:9px;
     color:var(--fg);text-decoration:none;cursor:pointer;font-size:15px}
   #drawer a:active{background:#20242e}
   #drawer a.active{background:#22303f;color:var(--acc);font-weight:600}
-  #drawer a.slot{color:#5b6273;cursor:not-allowed}
-  /* ── 主内容 */
+  #drawer .sec{color:var(--dim);font-size:11.5px;margin:14px 4px 6px;letter-spacing:.08em}
+  #drawer a .num{color:var(--dim);font-size:12px;flex:none}
+  #drawer a.active .num{color:var(--acc)}
+  /* ── 主内容 ── */
   main{padding:14px 13px calc(28px + env(safe-area-inset-bottom));max-width:100%;overflow-x:hidden}
   h2{font-size:17px;margin:0 0 12px}
-  h3{font-size:14px;margin:16px 0 8px;color:var(--acc)}
-  /* ── 卡片（移动优先：竖排，代替表格） */
+  h3{font-size:14px;margin:18px 0 8px;color:var(--acc)}
+  /* 进度条 */
+  .bar{height:8px;background:#1b1f28;border-radius:5px;overflow:hidden;margin:8px 0 4px}
+  .bar>i{display:block;height:100%;background:linear-gradient(90deg,#5aa9e6,#5ad18a);border-radius:5px}
   .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:9px;margin-bottom:14px}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 12px}
   .card .n{font-size:20px;color:var(--acc);font-weight:600;line-height:1.2}
   .card .l{color:var(--dim);font-size:11.5px;margin-top:3px}
-  /* 条目卡片列表（窄屏主力形态） */
-  .item{background:var(--panel);border:1px solid var(--line);border-radius:10px;
-    padding:11px 12px;margin-bottom:9px}
+  /* 条目 */
+  .item{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 12px;margin-bottom:9px}
+  .item.tap{cursor:pointer}
   .item .r1{display:flex;align-items:center;gap:8px;margin-bottom:5px;flex-wrap:wrap}
   .item .lay{background:#22303f;color:var(--acc);border-radius:5px;padding:1px 7px;font-size:11.5px;flex:none}
   .item .k{font-size:13px;color:var(--fg);font-weight:600;word-break:break-all}
   .item .t{font-size:12.5px;color:var(--dim);margin-bottom:7px;word-break:break-word}
-  .item .acts{display:flex;gap:8px;flex-wrap:wrap}
-  /* ── 表格（仅宽屏用；窄屏自动可横滚） */
-  .tw{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;margin-bottom:12px}
-  table{width:100%;min-width:520px;border-collapse:collapse;background:var(--panel);border-radius:10px;overflow:hidden}
-  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);font-size:13px;white-space:nowrap}
-  th{color:var(--dim);font-weight:400;background:#1b1f28}
-  /* ── 控件（触控友好：最小 40px 高） */
-  input,select,textarea{background:#1b1f28;color:var(--fg);border:1px solid var(--line);
-    border-radius:9px;padding:10px 11px;font:inherit;min-height:42px;max-width:100%}
-  textarea{width:100%;min-height:190px;font-family:ui-monospace,monospace;white-space:pre;overflow-wrap:normal;overflow-x:auto}
-  button{background:#22303f;color:var(--acc);border:1px solid var(--line);border-radius:9px;
-    padding:10px 14px;cursor:pointer;font:inherit;min-height:42px}
+  .item .acts{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .flow{margin:9px 0 4px;border-left:2px solid var(--line);padding-left:11px}
+  .flow .fx{display:flex;gap:8px;align-items:baseline;padding:2.5px 0;font-size:13px}
+  .flow .fn{flex:none;width:19px;height:19px;border-radius:50%;background:#22303f;color:var(--acc);font-size:11px;text-align:center;line-height:19px}
+  .dot{width:9px;height:9px;border-radius:50%;flex:none;display:inline-block}
+  .dot.done{background:var(--ok)} .dot.todo{background:#3a4150}
+  /* 故事正文渲染 */
+  .story{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:3px 14px 14px;overflow-wrap:break-word}
+  .story h2{font-size:16px;margin:16px 0 8px;color:var(--fg);border-left:3px solid var(--acc);padding-left:9px}
+  .story h3{font-size:14px;margin:14px 0 6px;color:var(--acc)}
+  .story h4{font-size:13.5px;margin:12px 0 5px;color:var(--fg)}
+  .story p{margin:7px 0}
+  .story ul,.story ol{margin:7px 0;padding-left:20px}
+  .story li{margin:3px 0}
+  .story blockquote{margin:9px 0;padding:6px 11px;border-left:2px solid var(--line);color:var(--dim);background:#13161c;border-radius:0 7px 7px 0}
+  .story strong{color:#eef2f8}
+  .story code{background:#12151b;border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:12.5px}
+  .story table{width:100%;border-collapse:collapse;margin:10px 0;font-size:12.5px;display:block;overflow-x:auto}
+  .story th,.story td{border:1px solid var(--line);padding:7px 9px;text-align:left;white-space:normal;min-width:72px}
+  .story th{background:#1b1f28;color:var(--dim);font-weight:500}
+  /* 控件 */
+  input,select,textarea{background:#1b1f28;color:var(--fg);border:1px solid var(--line);border-radius:9px;padding:10px 11px;font:inherit;min-height:42px;max-width:100%}
+  textarea{width:100%;min-height:190px;font-family:ui-monospace,monospace;white-space:pre;overflow-x:auto}
+  button{background:#22303f;color:var(--acc);border:1px solid var(--line);border-radius:9px;padding:10px 14px;cursor:pointer;font:inherit;min-height:42px}
   button:active{background:#2a3b4f}
   button:disabled{opacity:.42;cursor:not-allowed}
   button.danger{color:var(--bad)}
   button.sm{padding:7px 11px;min-height:34px;font-size:12.5px}
   .muted{color:var(--dim);font-size:12px}
   .err{color:var(--bad)} .ok{color:var(--ok)} .warn{color:var(--warn)}
-  pre{background:#12151b;border:1px solid var(--line);border-radius:10px;padding:11px;
-    overflow:auto;max-height:330px;font-size:12px;white-space:pre;max-width:100%}
   .pill{display:inline-block;padding:2px 9px;border-radius:10px;font-size:11.5px;border:1px solid var(--line)}
   .pill.on{color:#0f1115;background:var(--ok);border-color:var(--ok)}
   .pill.off{color:var(--dim)}
   .row{display:flex;flex-wrap:wrap;gap:9px;align-items:center}
-  .row>*{max-width:100%}
-  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:9px}
-  .box{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
-  .box .k{color:var(--dim);font-size:11px}
-  .box .v{font-size:13px;margin-top:3px;word-break:break-all}
-  /* ── 内联面板（不用 dialog：WebView 兼容性差） */
-  #sheet{position:fixed;inset:0;z-index:60;display:none;overflow-y:auto;
-    background:rgba(15,17,21,.97);padding:14px 13px calc(24px + env(safe-area-inset-bottom))}
-  #sheet.open{display:block}
+  .box{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:10px}
+  .box .k{color:var(--dim);font-size:11.5px}
+  .box .v{font-size:13px;margin-top:3px;word-break:break-word}
+  .box.next{border-color:#2f4a5f}
+  .tab{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+  /* 旧规则保留布局，但 display 改 visibility —— 否则 transform 过渡不生效 */
+  #sheet{position:fixed;inset:0;z-index:60;overflow-y:auto;
+    padding:14px 13px calc(24px + env(safe-area-inset-bottom));
+    visibility:hidden;pointer-events:none}
+  #sheet.open{visibility:visible;pointer-events:auto}
   #sheet .sh{position:sticky;top:0;display:flex;align-items:center;gap:10px;
-    padding:10px 0 12px;background:rgba(15,17,21,.97);border-bottom:1px solid var(--line);margin-bottom:12px}
+    padding:10px 0 12px;background:rgba(15,17,21,.98);border-bottom:1px solid var(--line);margin-bottom:12px}
   #sheet .sh b{flex:1;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .lbl{display:block;color:var(--dim);font-size:12px;margin:11px 0 5px}
-  .two{display:grid;grid-template-columns:1fr;gap:10px}
-  .three{display:grid;grid-template-columns:1fr;gap:10px}
-  /* ── 宽屏（平板/桌面）：恢复双栏 */
   @media (min-width:760px){
     #top{height:auto;padding:12px 18px}
     #burger{display:none}
     #wrap{display:flex;min-height:100vh}
-    #drawer{position:static;transform:none;width:206px;flex:none;transition:none;border-right:1px solid var(--line)}
+    #drawer{position:static;transform:none;width:226px;flex:none;transition:none}
     #mask{display:none!important}
-    main{flex:1;padding:18px 22px}
-    .two{grid-template-columns:1fr 1fr}
-    .three{grid-template-columns:repeat(3,1fr)}
+    main{flex:1;padding:18px 22px;max-width:900px}
+  }
+
+  /* ══════════════════════════════════════════════════════════
+     设计系统 v2（2026-10-17 UI 重构）
+     · 统一圆角/阴影/过渡曲线
+     · 按钮微交互（hover 放大 1.02 / active 按压 0.98 / 发光）
+     · 危险操作渐变红、Loading spinner、禁用灰度
+     · 弹层滑入 + 毛玻璃遮罩、页面淡入
+     · 胶囊呼吸灯、进度条平滑填充、结果列表 stagger
+     ══════════════════════════════════════════════════════════ */
+  :root{
+    /* 圆角 */
+    --r-sm:8px; --r-md:10px; --r-lg:12px; --r-xl:16px; --r-pill:999px;
+    /* 阴影：三层递进（贴近真实的层次感） */
+    --sh-1:0 1px 2px rgba(0,0,0,.18), 0 1px 3px rgba(0,0,0,.12);
+    --sh-2:0 2px 6px rgba(0,0,0,.22), 0 4px 12px rgba(0,0,0,.16);
+    --sh-3:0 4px 12px rgba(0,0,0,.28), 0 12px 32px rgba(0,0,0,.24);
+    --sh-glow-acc:0 0 0 1px rgba(90,169,230,.35), 0 4px 16px rgba(90,169,230,.22);
+    --sh-glow-bad:0 0 0 1px rgba(230,106,106,.40), 0 4px 16px rgba(230,106,106,.26);
+    --sh-glow-ok:0 0 0 1px rgba(90,209,138,.35), 0 4px 16px rgba(90,209,138,.22);
+    /* 过渡曲线：Material 的 standard easing，比 linear 高级得多 */
+    --ease:cubic-bezier(.4,0,.2,1);
+    --ease-out-back:cubic-bezier(.34,1.56,.64,1);
+    --t-fast:140ms; --t-mid:220ms; --t-slow:320ms;
+    /* 危险色（渐变用） */
+    --bad-1:#8e1b1b; --bad-2:#c0392b;
+    --ok-1:#1b5e20; --ok-2:#2e7d32;
+    --wl-1:#7a5a12; --wl-2:#b8860b;
+  }
+
+  /* ── 等宽字体：编号、字数、ID 一律用 Monospace（极客感） ── */
+  .mono, .item .k, .item .lay, .box .v code, code, pre,
+  .nov-num, .nov-id { font-family:'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+    font-variant-numeric:tabular-nums; letter-spacing:-.01em; }
+
+  /* ── 按钮微交互 ── */
+  button{
+    border-radius:var(--r-md);
+    transition:transform var(--t-fast) var(--ease),
+               box-shadow var(--t-mid) var(--ease),
+               background-color var(--t-mid) var(--ease),
+               opacity var(--t-fast) var(--ease),
+               border-color var(--t-mid) var(--ease);
+    will-change:transform;
+    position:relative;
+    overflow:hidden;
+  }
+  @media (hover:hover){
+    button:not(:disabled):hover{
+      transform:scale(1.02) translateY(-1px);
+      box-shadow:var(--sh-2), var(--sh-glow-acc);
+      border-color:#3a5a75;
+    }
+  }
+  button:not(:disabled):active{
+    transform:scale(.98);
+    box-shadow:var(--sh-1);
+    transition-duration:70ms;
+  }
+  button:disabled{
+    opacity:.42; cursor:not-allowed; filter:grayscale(.7);
+    transform:none !important; box-shadow:none !important;
+  }
+  /* 主按钮（蓝） */
+  button.primary{
+    background:linear-gradient(135deg,#1e4a6d,#2b6690);
+    color:#cfe6f7; border-color:#2f6f9e; font-weight:600;
+  }
+  @media (hover:hover){ button.primary:not(:disabled):hover{
+    background:linear-gradient(135deg,#255a83,#327aab);
+  }}
+  /* 危险按钮（渐变深红 + 警示光） */
+  button.warn, button.danger{
+    background:linear-gradient(135deg, var(--bad-1), var(--bad-2));
+    color:#ffdede; border-color:#a93226; font-weight:600;
+    text-shadow:0 1px 2px rgba(0,0,0,.35);
+  }
+  @media (hover:hover){
+    button.warn:not(:disabled):hover, button.danger:not(:disabled):hover{
+      background:linear-gradient(135deg,#a52222,#d0453a);
+      box-shadow:var(--sh-2), var(--sh-glow-bad);
+      border-color:#d0453a;
+    }
+  }
+  /* 成功按钮（渐变绿） */
+  button.ok{
+    background:linear-gradient(135deg, var(--ok-1), var(--ok-2));
+    color:#dcf7e5; border-color:#2e7d32; font-weight:600;
+  }
+  @media (hover:hover){ button.ok:not(:disabled):hover{
+    background:linear-gradient(135deg,#226b28,#37994a); box-shadow:var(--sh-2), var(--sh-glow-ok);
+  }}
+  /* 幽灵按钮（描边） */
+  button.ghost{background:transparent;border:1px solid var(--line);color:var(--dim)}
+  @media (hover:hover){ button.ghost:not(:disabled):hover{background:#1c222c;color:var(--fg);box-shadow:var(--sh-1)}}
+
+  /* ── Loading spinner（按钮内） ── */
+  @keyframes nov-spin{ to{transform:rotate(360deg)} }
+  .nov-spinner{
+    display:inline-block; width:14px; height:14px; vertical-align:-2px;
+    border:2px solid currentColor; border-top-color:transparent; border-radius:50%;
+    animation:nov-spin .72s linear infinite; margin-right:7px; opacity:.9;
+  }
+  button.nov-loading{ pointer-events:none; opacity:.78 }
+  button.nov-loading::after{
+    content:''; position:absolute; inset:0; border-radius:inherit;
+    background:linear-gradient(90deg,transparent,rgba(255,255,255,.10),transparent);
+    animation:nov-shimmer 1.1s infinite;
+  }
+  @keyframes nov-shimmer{ 0%{transform:translateX(-100%)} 100%{transform:translateX(100%)} }
+
+  /* ── 卡片/面板统一圆角阴影 ── */
+  .item, .box, .card, .story{
+    border-radius:var(--r-lg);
+    box-shadow:var(--sh-1);
+    transition:box-shadow var(--t-mid) var(--ease),
+               transform var(--t-mid) var(--ease),
+               border-color var(--t-mid) var(--ease);
+  }
+  .item.tap{cursor:pointer}
+  @media (hover:hover){
+    .item.tap:hover{
+      transform:translateY(-1px);
+      box-shadow:var(--sh-2);
+      border-color:#37414f;
+    }
+  }
+  input, select, textarea{
+    border-radius:var(--r-md);
+    transition:border-color var(--t-mid) var(--ease), box-shadow var(--t-mid) var(--ease);
+  }
+  input:focus, select:focus, textarea:focus{
+    outline:none; border-color:var(--acc);
+    box-shadow:0 0 0 3px rgba(90,169,230,.16), var(--sh-1);
+  }
+
+  /* ── 弹层：从底部升起 + 毛玻璃遮罩 ── */
+  #sheet{
+    border-radius:var(--r-xl) var(--r-xl) 0 0;
+    box-shadow:var(--sh-3);
+    transform:translateY(100%);
+    opacity:0;
+    transition:transform var(--t-slow) var(--ease), opacity var(--t-mid) var(--ease);
+    will-change:transform, opacity;
+    background:rgba(15,17,21,.97);
+    backdrop-filter:blur(18px) saturate(140%);
+    -webkit-backdrop-filter:blur(18px) saturate(140%);
+  }
+  #sheet.open{ transform:translateY(0); opacity:1; visibility:visible; pointer-events:auto; }
+  /* 桌面端：从右侧滑入（更像抽屉） */
+  @media (min-width:760px){
+    #sheet{
+      inset:0 0 0 auto; width:min(560px,52vw);
+      border-radius:var(--r-xl) 0 0 var(--r-xl);
+      transform:translateX(100%);
+    }
+    #sheet.open{ transform:translateX(0); }
+  }
+  /* 半透明毛玻璃遮罩（贴在 sheet 后面） */
+  #novMask{
+    position:fixed; inset:0; z-index:59; display:none;
+    background:rgba(6,8,11,.55);
+    backdrop-filter:blur(6px) saturate(120%);
+    -webkit-backdrop-filter:blur(6px) saturate(120%);
+    opacity:0; transition:opacity var(--t-mid) var(--ease);
+  }
+  #novMask.open{ display:block; opacity:1; }
+
+  /* ── 页面切换淡入 ── */
+  @keyframes nov-fade-in{ from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:none} }
+  main.nov-enter{ animation:nov-fade-in var(--t-mid) var(--ease) both; }
+
+  /* ── 全局任务胶囊 ── */
+  #novCapsule{
+    position:fixed; right:14px; bottom:calc(16px + env(safe-area-inset-bottom));
+    z-index:75; display:none; align-items:center; gap:9px;
+    padding:11px 15px; border-radius:var(--r-pill);
+    background:linear-gradient(135deg,#1e2a38,#243448);
+    border:1px solid #34495e; color:var(--fg);
+    box-shadow:var(--sh-3); cursor:pointer;
+    font-size:13.5px; font-weight:600;
+    transition:transform var(--t-mid) var(--ease-out-back),
+               box-shadow var(--t-mid) var(--ease),
+               background var(--t-mid) var(--ease),
+               opacity var(--t-mid) var(--ease);
+    transform:translateY(14px) scale(.92); opacity:0;
+    overflow:hidden;
+  }
+  #novCapsule.show{ display:flex; transform:translateY(0) scale(1); opacity:1; }
+  @media (hover:hover){ #novCapsule:hover{ transform:translateY(-2px) scale(1.03); box-shadow:var(--sh-3), var(--sh-glow-acc);} }
+  #novCapsule:active{ transform:scale(.97) }
+  #novCapsule.running{ background:linear-gradient(135deg,#17334a,#1d4a68); border-color:#2f6f9e; }
+  #novCapsule.done{ background:linear-gradient(135deg,var(--ok-1),var(--ok-2)); border-color:#43a047; color:#eafaef; }
+  #novCapsule.bad{ background:linear-gradient(135deg,var(--bad-1),var(--bad-2)); border-color:#c0392b; color:#ffe6e6; }
+  /* 呼吸灯 + 流动进度条 */
+  #novCapsule .nov-dot{
+    width:9px; height:9px; border-radius:50%; background:#7fd0ff; flex:none;
+    animation:nov-breathe 1.5s var(--ease) infinite;
+  }
+  @keyframes nov-breathe{
+    0%,100%{ opacity:.45; box-shadow:0 0 0 0 rgba(127,208,255,.55) }
+    50%    { opacity:1;   box-shadow:0 0 0 6px rgba(127,208,255,0) }
+  }
+  #novCapsule .nov-flow{
+    position:absolute; left:0; bottom:0; height:2.5px; width:100%;
+    background:linear-gradient(90deg,transparent,rgba(127,208,255,.85),transparent);
+    background-size:200% 100%;
+    animation:nov-flow 1.4s linear infinite; display:none;
+  }
+  #novCapsule.running .nov-flow{ display:block }
+  @keyframes nov-flow{ 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+  #novCapsule .nov-cap-num{ font-family:monospace; opacity:.95 }
+
+  /* ── 进度条（平滑填充） ── */
+  .nov-prog{
+    height:10px; background:#161a21; border-radius:var(--r-pill);
+    overflow:hidden; margin:10px 0 6px; box-shadow:inset 0 1px 3px rgba(0,0,0,.4);
+  }
+  .nov-prog > i{
+    display:block; height:100%; border-radius:var(--r-pill);
+    background:linear-gradient(90deg,#3d8fd0,#5ad18a);
+    transition:width 620ms var(--ease);
+    box-shadow:0 0 12px rgba(90,209,138,.45);
+    position:relative;
+  }
+  .nov-prog > i::after{
+    content:''; position:absolute; inset:0;
+    background:linear-gradient(90deg,transparent,rgba(255,255,255,.28),transparent);
+    animation:nov-shimmer 1.8s infinite;
+  }
+  .nov-prog.indet > i{ width:38% !important; animation:nov-indet 1.5s var(--ease) infinite }
+  @keyframes nov-indet{
+    0%{ transform:translateX(-100%) } 100%{ transform:translateX(290%) }
+  }
+
+  /* ── 结果列表 stagger 入场 ── */
+  @keyframes nov-rise{ from{opacity:0; transform:translateY(14px) scale(.985)} to{opacity:1; transform:none} }
+  .nov-stagger > *{ animation:nov-rise 380ms var(--ease) both; }
+  .nov-stagger > *:nth-child(1){animation-delay:0ms}
+  .nov-stagger > *:nth-child(2){animation-delay:48ms}
+  .nov-stagger > *:nth-child(3){animation-delay:96ms}
+  .nov-stagger > *:nth-child(4){animation-delay:144ms}
+  .nov-stagger > *:nth-child(5){animation-delay:192ms}
+  .nov-stagger > *:nth-child(6){animation-delay:240ms}
+  .nov-stagger > *:nth-child(7){animation-delay:288ms}
+  .nov-stagger > *:nth-child(8){animation-delay:336ms}
+  .nov-stagger > *:nth-child(9){animation-delay:384ms}
+  .nov-stagger > *:nth-child(10){animation-delay:432ms}
+  .nov-stagger > *:nth-child(n+11){animation-delay:470ms}
+
+  /* ── 结果行 ── */
+  .nov-res{
+    display:flex; align-items:center; gap:9px; padding:8px 10px;
+    border-radius:var(--r-sm); background:#141821; border:1px solid #232a35;
+    margin-bottom:6px; font-size:13px;
+    transition:background var(--t-mid) var(--ease), border-color var(--t-mid) var(--ease);
+  }
+  @media (hover:hover){ .nov-res:hover{ background:#181d28; border-color:#2f3a48 } }
+  .nov-res .ic{ flex:none; font-size:14px; width:18px; text-align:center }
+  .nov-res .cd{ font-family:monospace; font-size:12px; color:var(--acc); flex:none }
+  .nov-res .nm{ flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+  .nov-res .ch{ font-family:monospace; font-size:12px; color:var(--dim); flex:none }
+  .nov-res.ok{ border-color:#24503a; background:#121a16 }
+  .nov-res.fail{ border-color:#5a2626; background:#1a1315 }
+  .nov-res.wait{ opacity:.62 }
+
+  /* ── Toast：从底部浮起 + 渐隐 ── */
+  @keyframes nov-toast-in{
+    from{ opacity:0; transform:translate(-50%,18px) scale(.94) }
+    to  { opacity:1; transform:translate(-50%,0) scale(1) }
+  }
+  @keyframes nov-toast-out{
+    from{ opacity:1; transform:translate(-50%,0) scale(1) }
+    to  { opacity:0; transform:translate(-50%,-10px) scale(.96) }
+  }
+  .nov-toast{
+    position:fixed; left:50%; bottom:calc(26px + env(safe-area-inset-bottom));
+    z-index:99; font-size:13.5px; padding:11px 17px; border-radius:var(--r-md);
+    max-width:90vw; text-align:center; box-shadow:var(--sh-3);
+    animation:nov-toast-in var(--t-mid) var(--ease-out-back) both;
+    backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+    border:1px solid rgba(255,255,255,.09);
+  }
+  .nov-toast.out{ animation:nov-toast-out 240ms var(--ease) both }
+
+  /* ── 锁条 ── */
+  .nov-lockbar{
+    border-radius:var(--r-lg); padding:13px 15px; margin:10px 0; cursor:pointer;
+    box-shadow:var(--sh-2);
+    transition:transform var(--t-fast) var(--ease), box-shadow var(--t-mid) var(--ease),
+               background var(--t-mid) var(--ease);
+    position:relative; overflow:hidden;
+  }
+  .nov-lockbar::before{
+    content:''; position:absolute; left:0; top:0; bottom:0; width:4px;
+    background:rgba(255,255,255,.5);
+  }
+  @media (hover:hover){ .nov-lockbar:hover{ transform:translateY(-1px); box-shadow:var(--sh-3) } }
+  .nov-lockbar:active{ transform:scale(.992) }
+  .nov-lockbar.locked{ background:linear-gradient(135deg,#7f1717,#a8291f); border:1px solid #c0392b }
+  .nov-lockbar.unlocked{ background:linear-gradient(135deg,#14532d,#1f7a3d); border:1px solid #2e7d32 }
+  .nov-lockbar .t1{ font-weight:700; font-size:15px; color:#fff; display:flex; align-items:center; gap:8px }
+  .nov-lockbar .t2{ font-size:12px; opacity:.92; margin-top:5px; color:#fff }
+
+  /* ── 徽章 ── */
+  .nov-badge{
+    display:inline-flex; align-items:center; gap:5px;
+    padding:2px 9px; border-radius:var(--r-pill); font-size:11.5px; font-weight:600;
+    border:1px solid transparent; font-family:monospace;
+  }
+  .nov-badge.pend{ background:rgba(230,180,90,.14); color:var(--warn); border-color:rgba(230,180,90,.35) }
+  .nov-badge.run{ background:rgba(90,169,230,.15); color:var(--acc); border-color:rgba(90,169,230,.38) }
+  .nov-badge.done{ background:rgba(90,209,138,.14); color:var(--ok); border-color:rgba(90,209,138,.35) }
+  .nov-badge.bad{ background:rgba(230,106,106,.14); color:var(--bad); border-color:rgba(230,106,106,.35) }
+
+  /* 尊重用户的"减少动效"偏好 */
+  @media (prefers-reduced-motion:reduce){
+    *, *::before, *::after{
+      animation-duration:.01ms !important; animation-iteration-count:1 !important;
+      transition-duration:.01ms !important;
+    }
   }
 </style>
 </head>
 <body>
 <div id="top">
   <button id="burger" onclick="toggleNav()" aria-label="菜单">☰</button>
-  <div id="title">漏斗总台</div>
+  <div id="title">故事总览</div>
   <select id="volSel" onchange="switchVolume(this.value)" style="min-height:34px;padding:4px 6px;font-size:12.5px">
     <option>卷01</option><option>卷02</option><option>卷03</option><option>卷04</option><option>卷05</option>
     <option>卷06</option><option>卷07</option><option>卷08</option><option>卷09</option><option>卷10</option>
   </select>
   <button id="reload" onclick="reloadView()">刷新</button>
 </div>
-  <button id="reload" onclick="reloadView()">刷新</button>
-</div>
 <div id="mask" onclick="toggleNav(false)"></div>
 <div id="wrap">
   <nav id="drawer">
-    <h1>《残响之河》</h1>
-    <a data-v="funnel" class="active">漏斗总台</a>
-    <a data-v="l0">L0 概括</a>
-    <a data-v="l1">L1 总纲</a>
-    <a data-v="l2">L2 分卷</a>
-    <a data-v="l3">L3 细纲</a>
-    <a data-v="l4">L4 资料</a>
-    <a data-v="l5">L5 正文</a>
-    <a data-v="gov">治理台</a>
-    <a data-v="model">模型配置</a>
+    <h1>《残响之河》创作台</h1>
+    <a data-v="home"><span class="num">◎</span>总览</a>
+    <div class="sec">① 逆向反推（自下而上）</div>
+    <a data-v="l4"><span class="num">L4</span>资料库 · 定弹药库</a>
+    <a data-v="l3"><span class="num">L3</span>细纲 · 定施工图</a>
+    <a data-v="l2"><span class="num">L2</span>分卷大纲 · 定节奏</a>
+    <a data-v="l1x"><span class="num">L1x</span>宏大对抗 · 定棋盘</a>
+    <a data-v="l1"><span class="num">L1</span>具体总纲 · 定骨架</a>
+    <a data-v="l0"><span class="num">L0</span>整本概括 · 定生死</a>
+    <div class="sec">② 正向写作（自上而下）</div>
+    <a data-v="l5"><span class="num">L5</span>正文 · 最终呈现</a>
+    <div class="sec">系统</div>
+    <a data-v="board"><span class="num">☰</span>任务看板</a>
+    <a data-v="gov"><span class="num">⚖</span>治理台</a>
+    <a data-v="model"><span class="num">⚙</span>模型配置</a>
   </nav>
   <main id="main"><p class="muted">加载中…</p></main>
 </div>
+<!-- 毛玻璃遮罩（弹层出现时渐显） -->
+<div id="novMask" onclick="closeSheet()"></div>
+<!-- 全局任务胶囊（右下角，任何页面常驻） -->
+<div id="novCapsule" onclick="capsuleOpen()"></div>
 <div id="sheet">
-  <div class="sh"><b id="shTitle">详情</b><button class="sm" onclick="closeSheet()">关闭</button></div>
+  <div class="sh"><b id="shTitle">详情</b>
+    <span id="shBack"></span>
+    <button class="sm" onclick="closeSheet()">关闭</button></div>
   <div id="shBody"></div>
   <div id="shFoot" class="row" style="margin-top:16px"></div>
 </div>
@@ -138,7 +475,7 @@
 "use strict";
 var main = document.getElementById('main');
 var sheet = document.getElementById('sheet');
-var CUR = 'overview';
+var CUR = 'home';
 function h(x){ main.innerHTML = x; }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'"'}[c]; }); }
 function api(p, opt){
@@ -147,87 +484,418 @@ function api(p, opt){
 }
 function jpost(p, b){ return api(p, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(b)}); }
 function jput(p, b){ return api(p, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(b)}); }
-function jdel(p, b){
-  var o = {method:'DELETE'};
-  if(b){ o.headers={'Content-Type':'application/json'}; o.body=JSON.stringify(b); }
-  return api(p, o);
-}
 function fail(e){ h('<h2>加载失败</h2><p class="err">'+esc(e.message||e)+'</p>'); }
-function pid(on){ return on ? '<span class="pill on">OPEN</span>' : '<span class="pill off">LOCKED</span>'; }
-
+function pid(on){ return on ? '<span class="pill on">已开锁</span>' : '<span class="pill off">未开锁</span>'; }
 function toggleNav(force){
   var d = document.getElementById('drawer'), m = document.getElementById('mask');
   var want = (typeof force === 'boolean') ? force : !d.classList.contains('open');
-  d.classList.toggle('open', want);
-  m.classList.toggle('open', want);
+  d.classList.toggle('open', want); m.classList.toggle('open', want);
 }
 function openSheet(t, body, foot){
   document.getElementById('shTitle').textContent = t;
   document.getElementById('shBody').innerHTML = body;
   document.getElementById('shFoot').innerHTML = foot || '';
+  // 毛玻璃遮罩同步淡入（与 sheet 滑入同节奏）
+  var mask = document.getElementById('novMask');
+  if (mask) mask.classList.add('open');
   sheet.classList.add('open');
   sheet.scrollTop = 0;
+  renderBackBtn();
 }
-function closeSheet(){ sheet.classList.remove('open'); }
+function closeSheet(){
+  sheet.classList.remove('open');
+  var mask = document.getElementById('novMask');
+  if (mask) mask.classList.remove('open');
+  // 关闭弹层即清空返回栈（避免残留脏状态）
+  NAVSTACK.length = 0;
+  renderBackBtn();
+}
 function reloadView(){ var f = views[CUR]; if(f) f(); }
 function toast(m, bad){
   var d = document.createElement('div');
+  d.className = 'nov-toast';
   d.textContent = m;
-  d.style.cssText = 'position:fixed;left:50%;bottom:calc(22px + env(safe-area-inset-bottom));transform:translateX(-50%);'
-    + 'background:' + (bad?'#3a2226':'#1f2a22') + ';color:' + (bad?'#e66a6a':'#5ad18a')
-    + ';padding:10px 15px;border-radius:10px;z-index:99;font-size:13.5px;border:1px solid #2a2f3a;max-width:90vw;text-align:center';
+  d.style.background = bad ? 'rgba(58,34,38,.94)' : 'rgba(31,42,34,.94)';
+  d.style.color = bad ? '#e66a6a' : '#5ad18a';
   document.body.appendChild(d);
-  setTimeout(function(){ d.remove(); }, 3000);
+  // 出场动画由 CSS 负责；2.6s 后触发退场动画，再移除
+  setTimeout(function(){
+    d.classList.add('out');
+    setTimeout(function(){ d.remove(); }, 260);
+  }, 2600);
 }
-function tw(inner){ return '<div class="tw">' + inner + '</div>'; }
-function itemCard(it){
-  return '<div class="item">'
-    + '<div class="r1"><span class="lay">'+esc(it.layer)+'</span><span class="k">'+esc(it.key)+'</span></div>'
-    + '<div class="t">'+esc(it.title||'（无标题）')+' · '+esc(it.chars)+' 字'
-      + (it.note_status ? ' · <span class="warn">'+esc(it.note_status)+'</span>' : '') + '</div>'
-    + '<div class="acts">'
-      + '<button class="sm" onclick="openItem(\''+esc(it.layer)+'\',\''+esc(it.key)+'\')">查看/编辑</button>'
-      + '<button class="sm" onclick="quickTag(\''+esc(it.key)+'\')">打标签</button>'
-    + '</div></div>';
+function statLine(t){ return '<span class="muted">'+esc(t)+'</span>'; }
+
+/* ═══════════════════════════════════════════════════════════════
+   动效与交互内核（2026-10-17 UI 重构）
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── 按钮 Loading 态：包一层，自动防连点 ── */
+// 用法：await withBtn(el, '正在提交…', async () => {...})
+async function withBtn(el, label, fn){
+  if (!el) return fn();
+  if (el.dataset.novBusy === '1') return;          // 已在跑，忽略重复点击
+  el.dataset.novBusy = '1';
+  var old = el.innerHTML;
+  el.classList.add('nov-loading');
+  el.innerHTML = '<span class="nov-spinner"></span>' + (label || '处理中…');
+  try{
+    return await fn();
+  } finally {
+    el.dataset.novBusy = '0';
+    el.classList.remove('nov-loading');
+    el.innerHTML = old;
+  }
 }
-/* ══════ 公共：卷号 / 跳转 / 文件读写 / 模型配置操作 ══════ */
+
+/* ── 导航栈（智能返回） ── */
+var NAVSTACK = [];     // [{label, onBack}]
+function pushNav(label, onBack){
+  NAVSTACK.push({label:label, onBack:onBack});
+  renderBackBtn();
+}
+function popNav(){
+  var c = NAVSTACK.pop();
+  renderBackBtn();
+  return c;
+}
+function renderBackBtn(){
+  var el = document.getElementById('shBack');
+  if (!el) return;
+  var top = NAVSTACK[NAVSTACK.length - 1];
+  if (!top){ el.innerHTML = ''; return; }
+  el.innerHTML = '';
+  var b = document.createElement('button');
+  b.className = 'sm ghost';
+  b.textContent = '‹ ' + top.label;
+  b.onclick = function(){ var c = popNav(); if (c && c.onBack) c.onBack(); };
+  el.appendChild(b);
+}
+
+/* ── 结构化任务结果渲染（cardgen 的 JSON → 好看的列表） ── */
+function renderTaskResult(raw){
+  if (!raw || !String(raw).trim()) return '<p class="muted">（暂无结果）</p>';
+  var d = null;
+  try { d = JSON.parse(raw); } catch(e){ d = null; }
+
+  // 非 JSON：按纯文本降级（保留换行）
+  if (!d || typeof d !== 'object'){
+    return '<pre style="font-size:12px;white-space:pre-wrap;word-break:break-word;'
+         + 'background:#12151b;padding:10px;border-radius:8px;border:1px solid #232a35;'
+         + 'max-height:300px;overflow:auto">' + esc(raw) + '</pre>';
+  }
+
+  var out = '';
+
+  // ── cardgen 形态：{total, success, failed, results[], failures[], dry_run} ──
+  if (typeof d.total === 'number' && (d.results || d.failures)){
+    var total = d.total || 0;
+    var okN = d.success || 0, failN = d.failed || 0;
+    var finished = okN + failN;
+    var pct = total ? Math.round(finished / total * 100) : 0;
+    var isDone = (d.state === 'done' || d.state === 'partial' || (d.ok === true && finished >= total));
+
+    out += '<div class="box" style="border-color:' + (isDone ? '#24503a' : '#2f4a5f') + '">'
+        +  '<div class="k">进度</div>'
+        +  '<div class="v" style="display:flex;align-items:baseline;gap:8px">'
+        +    '<b class="nov-num" style="font-size:19px">' + finished + '</b>'
+        +    '<span class="muted">/ ' + total + ' 张</span>'
+        +    (d.dry_run ? '<span class="nov-badge pend" style="margin-left:auto">预演·未落盘</span>' : '')
+        +  '</div>'
+        +  '<div class="nov-prog' + (total ? '' : ' indet') + '"><i style="width:' + pct + '%"></i></div>'
+        +  '<div class="muted" style="font-size:12px;display:flex;gap:14px">'
+        +    '<span>✅ 成功 <b class="nov-num">' + okN + '</b></span>'
+        +    '<span>❌ 失败 <b class="nov-num">' + failN + '</b></span>'
+        +    (d.swept_placeholders ? '<span>🧹 清理 <b class="nov-num">' + d.swept_placeholders + '</b></span>' : '')
+        +  '</div></div>';
+
+    // 成功列表（stagger 入场）
+    if (d.results && d.results.length){
+      out += '<h3>已建成（' + d.results.length + '）</h3><div class="nov-stagger">';
+      d.results.forEach(function(r){
+        out += '<div class="nov-res ok">'
+            +  '<span class="ic">✅</span>'
+            +  '<span class="cd">' + esc(r.code || '') + '</span>'
+            +  '<span class="nm">' + esc(r.name || r.path || '') + '</span>'
+            +  '<span class="ch">' + (r.chars ? esc(r.chars) + ' 字' : '') + '</span>'
+            +  '</div>';
+      });
+      out += '</div>';
+    }
+
+    // 失败列表
+    if (d.failures && d.failures.length){
+      out += '<h3 style="color:var(--bad)">失败（' + d.failures.length + '）</h3><div class="nov-stagger">';
+      d.failures.forEach(function(f){
+        out += '<div class="nov-res fail">'
+            +  '<span class="ic">⚠</span>'
+            +  '<span class="cd">' + esc(f.code || '') + '</span>'
+            +  '<span class="nm" title="' + esc(f.why || '') + '">' + esc(f.why || '未知原因') + '</span>'
+            +  '</div>';
+      });
+      out += '</div>';
+    }
+
+    if (d.error){ out += '<p class="err" style="font-size:12.5px">' + esc(d.error) + '</p>'; }
+    return out;
+  }
+
+  // ── chapter_gen 形态：纯文本摘要 ──
+  if (typeof raw === 'string' && raw.length < 400 && raw.indexOf('{') < 0){
+    return '<div class="box"><div class="v" style="font-size:13px">' + esc(raw) + '</div></div>';
+  }
+
+  // ── 兜底：键值对美化 ──
+  out += '<div class="box"><div class="k">结果字段</div><div class="v">';
+  Object.keys(d).forEach(function(k){
+    var v = d[k];
+    if (v === null || v === undefined) return;
+    if (Array.isArray(v) || typeof v === 'object'){
+      out += '<div style="margin:4px 0"><span class="muted mono">' + esc(k) + '</span> = '
+          +  '<code style="font-size:11.5px">' + esc(JSON.stringify(v)).slice(0, 300) + '</code></div>';
+    } else {
+      out += '<div style="margin:4px 0"><span class="muted mono">' + esc(k) + '</span> = '
+          +  '<b>' + esc(String(v)) + '</b></div>';
+    }
+  });
+  out += '</div></div>';
+  return out;
+}
+
+/* ── 全局任务胶囊 ── */
+var CAPS = { show:false, mode:'', text:'', sub:'', lastId:'' };
+var CAPS_TIMER = null;
+var CAPS_TICK = 0;
+
+async function pollActive(){
+  var d;
+  try { d = await api('/api/tasks/active'); } catch(e){ return; }
+  if (!d || typeof d.pending === 'undefined') return;
+
+  var active = (d.pending || 0) + (d.running || 0);
+  var el = document.getElementById('novCapsule');
+  if (!el) return;
+
+  if (active > 0){
+    // 有活干：蓝色呼吸 + 流动条
+    var it = (d.items && d.items[0]) || {};
+    var label = '任务进行中';
+    if (it.kind === 'cardgen'){
+      label = '建卡 ' + (it.civ || '') + (it.total ? ' ' + (it.done||0) + '/' + it.total : '');
+    } else if (it.kind === 'chapter_gen'){
+      label = '正文 ' + (it.volume || '') + (it.chapter ? ' 第' + it.chapter + '章' : '');
+    }
+    var sub = (d.executor_alive ? '执行器运行中' : '排队 ' + active + ' 个') ;
+    setCapsule('running', label, sub);
+  } else if (d.last_done && d.last_done.id !== CAPS.lastId){
+    // 刚跑完：绿/红提示，8 秒后收
+    CAPS.lastId = d.last_done.id;
+    var st = d.last_done.state;
+    if (st === 'done') setCapsule('done', '任务已完成', '点此查看结果');
+    else if (st === 'rejected') setCapsule('bad', '任务被拒绝', '点此查看原因');
+    else setCapsule('bad', '任务失败', '点此查看原因');
+    setTimeout(function(){
+      CAPS.lastId = '';      // 允许下次同 id 再提示
+      pollActive();
+    }, 8000);
+  } else if (!d.last_done){
+    hideCapsule();
+  } else {
+    // 没活、也没新完成 → 收起来（但保留 lastId 防重复提示）
+    hideCapsule();
+  }
+}
+
+function setCapsule(mode, text, sub){
+  var el = document.getElementById('novCapsule');
+  if (!el) return;
+  var key = mode + '|' + text + '|' + sub;
+  if (el.dataset.key === key && el.classList.contains('show')) return;
+  el.dataset.key = key;
+  el.className = 'show ' + mode;
+  el.innerHTML = '<span class="nov-dot"></span>'
+    + '<span>' + esc(text) + '</span>'
+    + (sub ? '<span class="nov-cap-num" style="font-size:11.5px;opacity:.72">' + esc(sub) + '</span>' : '')
+    + '<span class="nov-flow"></span>';
+  CAPS.show = true; CAPS.mode = mode;
+}
+
+function hideCapsule(){
+  var el = document.getElementById('novCapsule');
+  if (!el) return;
+  el.classList.remove('show');
+  CAPS.show = false;
+}
+
+function capsuleOpen(){
+  if (CAPS.mode === 'done' || CAPS.mode === 'bad'){
+    // 看结果
+    if (CAPS.lastId) taskDetail(CAPS.lastId);
+    else viewBoard();
+    return;
+  }
+  // 进行中：直接开实时进度抽屉
+  activeTaskSheet();
+}
+
+/* 进行中任务的实时抽屉 */
+async function activeTaskSheet(){
+  var d = await api('/api/tasks/active').catch(function(){ return null; });
+  var items = (d && d.items) || [];
+  if (!items.length){
+    openSheet('后台任务', '<p class="muted">当前没有进行中的任务。</p>',
+      '<button onclick="closeSheet()">关闭</button>');
+    return;
+  }
+  var body = '<div class="nov-stagger">';
+  items.forEach(function(t){
+    var isCard = t.kind === 'cardgen';
+    var title = isCard ? ('建卡 · ' + (t.civ || '?'))
+                       : ('正文 · ' + (t.volume || '') + (t.chapter ? ' 第' + t.chapter + '章' : ''));
+    var badge = t.state === 'running' ? '<span class="nov-badge run">执行中</span>'
+              : t.state === 'blocked' ? '<span class="nov-badge pend">被锁</span>'
+              : '<span class="nov-badge pend">排队</span>';
+    var pct = (t.total ? Math.round((t.done||0) / t.total * 100) : 0);
+    body += '<div class="item">'
+         +  '<div class="r1"><span class="lay">' + esc(isCard ? 'cardgen' : 'chapter') + '</span>'
+         +  '<span class="k">' + esc(title) + '</span>' + badge + '</div>'
+         +  (t.total ? '<div class="nov-prog"><i style="width:' + pct + '%"></i></div>'
+                       + '<div class="muted mono" style="font-size:12px">'
+                       + (t.done||0) + ' / ' + t.total + ' 张'
+                       + (t.current ? ' · 正在做 ' + esc(t.current) : '') + '</div>'
+                     : '<div class="nov-prog indet"><i></i></div>')
+         +  '</div>';
+  });
+  body += '</div>';
+  if (d){
+    body += '<p class="muted" style="font-size:12px">'
+         +  '🔓 授权锁：' + (d.llm_unlocked ? '已解锁' : '已锁定') + '　'
+         +  '⚙ 执行器：' + (d.executor_alive ? '运行中 (pid ' + d.executor_pid + ')' : '空闲')
+         +  '</p>';
+  }
+  openSheet('后台任务', body,
+    '<button class="sm" onclick="closeSheet();viewBoard()">打开任务看板</button>'
+    + '<button onclick="closeSheet()">关闭</button>');
+}
+
+/* 启动轮询：有活 3 秒、没活 8 秒（省电） */
+function startPolling(){
+  if (CAPS_TIMER) clearInterval(CAPS_TIMER);
+  var tick = function(){
+    pollActive().finally(function(){
+      var delay = CAPS.show ? 3000 : 8000;
+      CAPS_TIMER = setTimeout(tick, delay);
+    });
+  };
+  tick();
+}
+
+/* ── 页面切换淡入 ── */
+function hAnimated(x){
+  h(x);
+  main.classList.remove('nov-enter');
+  void main.offsetWidth;     // 强制 reflow，让动画能重播
+  main.classList.add('nov-enter');
+}
+
+
+/* ══════ 极简 Markdown 渲染（让故事读起来不像原始表格） ══════ */
+function md(src){
+  var lines = String(src==null?'':src).replace(/\r\n?/g,'\n').split('\n');
+  var out = [], i = 0;
+  function inline(s){
+    s = esc(s);
+    s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    return s;
+  }
+  function isTableRow(l){ return /^\s*\|.*\|\s*$/.test(l); }
+  while (i < lines.length){
+    var l = lines[i];
+    // 表格
+    if (isTableRow(l) && i+1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i+1])){
+      var head = l.trim().replace(/^\||\|$/g,'').split('|').map(function(x){return x.trim();});
+      i += 2;
+      var rows = [];
+      while (i < lines.length && isTableRow(lines[i])){
+        rows.push(lines[i].trim().replace(/^\||\|$/g,'').split('|').map(function(x){return x.trim();}));
+        i++;
+      }
+      out.push('<table><thead><tr>' + head.map(function(x){return '<th>'+inline(x)+'</th>';}).join('') + '</tr></thead><tbody>'
+        + rows.map(function(r){ return '<tr>' + r.map(function(x){return '<td>'+inline(x)+'</td>';}).join('') + '</tr>'; }).join('')
+        + '</tbody></table>');
+      continue;
+    }
+    // 标题
+    var mH = l.match(/^(#{1,4})\s+(.*)$/);
+    if (mH){ out.push('<h'+Math.min(mH[1].length+1,6)+'>'+inline(mH[2])+'</h'+Math.min(mH[1].length+1,6)+'>'); i++; continue; }
+    // 引用
+    if (/^\s*>/.test(l)){
+      var q = [];
+      while (i < lines.length && /^\s*>/.test(lines[i])){ q.push(lines[i].replace(/^\s*>\s?/,'')); i++; }
+      out.push('<blockquote>'+inline(q.join(' '))+'</blockquote>');
+      continue;
+    }
+    // 列表
+    if (/^\s*[-*+]\s+/.test(l)){
+      var li = [];
+      while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])){ li.push(lines[i].replace(/^\s*[-*+]\s+/,'')); i++; }
+      out.push('<ul>'+li.map(function(x){return '<li>'+inline(x)+'</li>';}).join('')+'</ul>');
+      continue;
+    }
+    if (/^\s*\d+[.、]\s+/.test(l)){
+      var lo = [];
+      while (i < lines.length && /^\s*\d+[.、]\s+/.test(lines[i])){ lo.push(lines[i].replace(/^\s*\d+[.、]\s+/,'')); i++; }
+      out.push('<ol>'+lo.map(function(x){return '<li>'+inline(x)+'</li>';}).join('')+'</ol>');
+      continue;
+    }
+    // 分隔线
+    if (/^\s*---+\s*$/.test(l)){ out.push('<hr style="border:none;border-top:1px solid var(--line);margin:14px 0">'); i++; continue; }
+    // 空行
+    if (!l.trim()){ i++; continue; }
+    // 段落（合并连续行）
+    var p = [l]; i++;
+    while (i < lines.length && lines[i].trim() && !/^(#{1,4}\s|>\s*|[-*+]\s|\d+[.、]\s|---)/.test(lines[i]) && !isTableRow(lines[i])){
+      p.push(lines[i]); i++;
+    }
+    out.push('<p>'+inline(p.join(' '))+'</p>');
+  }
+  return out.join('\n');
+}
+function story(src){ return '<div class="story">'+md(src)+'</div>'; }
+
+/* ══════ 公共 ══════ */
 var CURVOL = '\u537701';
 function switchVolume(v){ CURVOL = v; reloadView(); }
-function go(view){
-  var a = document.querySelector('nav a[data-v="'+view+'"]');
-  if(a) a.click();
-}
+function go(view){ var a = document.querySelector('nav a[data-v="'+view+'"]'); if(a) a.click(); }
 function setTitle(t){ document.getElementById('title').textContent = t; }
 
-/* 读文件（弹层预览） */
+/* 文件预览 / 编辑 */
 async function readFile(path){
   try{
     var d = await api('/api/pipeline/file?path='+encodeURIComponent(path));
-    openSheet(path.split('/').pop()+' \u00b7 '+esc(d.chars)+' 字',
-      '<pre>'+esc(d.content||'')+'</pre>',
-      '<button onclick="closeSheet()">\u5173\u95ed</button><button onclick="editFile(\''+esc(path)+'\')">\u7f16\u8f91</button>');
+    openSheet(path.split('/').pop(),
+      '<p class="muted">'+esc(path)+' · '+esc(d.chars)+' 字</p>' + story(d.content||''),
+      '<button onclick="closeSheet()">关闭</button><button onclick="editFile(\''+esc(path)+'\')">编辑</button>');
   }catch(e){ toast(e.message||e, true); }
 }
-/* 编辑文件（全屏 textarea → PUT） */
 async function editFile(path){
   try{
     var d = await api('/api/pipeline/file?path='+encodeURIComponent(path));
-    openSheet('\u7f16\u8f91 '+path.split('/').pop(),
-      statLine(path)+' \u00b7 '+esc(d.chars)+' \u5b57'
+    openSheet('编辑 '+path.split('/').pop(),
+      statLine(path)+' · '+esc(d.chars)+' 字'
       + '<textarea id="fc" style="min-height:56vh;margin-top:10px">'+esc(d.content||'')+'</textarea>'
-      + '<p class="muted">\u4fdd\u5b58\u524d\u4f1a\u81ea\u52a8\u5feb\u7167\uff0c\u5e76\u4fdd\u7559 .md.bak \u5907\u4efd\u3002</p>',
-      '<button onclick="closeSheet()">\u53d6\u6d88</button><button onclick="saveFile(\''+esc(path)+'\')">\u4fdd\u5b58</button>');
+      + '<p class="muted">保存前自动快照，并保留 .md.bak 备份。</p>',
+      '<button onclick="closeSheet()">取消</button><button onclick="saveFile(\''+esc(path)+'\')">保存</button>');
   }catch(e){ toast(e.message||e, true); }
 }
 async function saveFile(path){
   var c = document.getElementById('fc').value;
-  if(!c.trim()){ toast('\u5185\u5bb9\u4e0d\u80fd\u4e3a\u7a7a', true); return; }
+  if(!c.trim()){ toast('内容不能为空', true); return; }
   var r = await jput('/api/pipeline/file?path='+encodeURIComponent(path), {content:c});
-  if(r && r.ok){ toast('\u5df2\u4fdd\u5b58\uff08\u5feb\u7167 '+String(r.snapshot_id).slice(0,8)+'\uff09'); closeSheet(); reloadView(); }
-  else toast((r&&r.error)||'\u4fdd\u5b58\u5931\u8d25', true);
+  if(r && r.ok){ toast('已保存（快照 '+String(r.snapshot_id).slice(0,8)+'）'); closeSheet(); reloadView(); }
+  else toast((r&&r.error)||'保存失败', true);
 }
-/* L4 卡编辑（复用 openItem，已存在） */
-/* 模型配置操作 */
 function llmBody(){
   var o={};
   var u=document.getElementById('lu').value.trim(); if(u) o.base_url=u;
@@ -241,147 +909,243 @@ function llmBody(){
 }
 async function llmTest(){
   var u=document.getElementById('lu').value.trim();
-  if(!u){ toast('\u5148\u586b\u7aef\u70b9 URL', true); return; }
+  if(!u){ toast('先填端点 URL', true); return; }
   var r = await jpost('/api/config/llm/test-connect', {base_url:u, model_id:(document.getElementById('lm')||{}).value||''});
   var el=document.getElementById('probe'); if(el) el.innerHTML='<pre>'+esc(JSON.stringify(r,null,1))+'</pre>';
-  toast(r&&r.ok?'\u63a2\u6d4b\u901a\u8fc7':'\u63a2\u6d4b\u5931\u8d25', !(r&&r.ok));
+  toast(r&&r.ok?'探测通过':'探测失败', !(r&&r.ok));
 }
-async function llmSave(){ var r = await jput('/api/config/llm', llmBody()); toast(r.ok?'\u5df2\u4fdd\u5b58':((r&&r.error)||'\u5931\u8d25'), !r.ok); if(r.ok) viewModel(); }
-async function llmReload(){ var r = await jpost('/api/config/llm/reload', {}); toast(r.ok?'\u5df2\u91cd\u8f7d':'\u91cd\u8f7d\u5931\u8d25', !r.ok); viewModel(); }
-async function llmReset(){ if(!confirm('\u91cd\u7f6e\u4e3a\u9ed8\u8ba4 llm.toml\uff1f')) return;
-  var r = await jpost('/api/config/llm/reset', {}); toast(r.ok?'\u5df2\u91cd\u7f6e':'\u91cd\u7f6e\u5931\u8d25', !r.ok); viewModel(); }
+async function llmSave(){ var r = await jput('/api/config/llm', llmBody()); toast(r.ok?'已保存':((r&&r.error)||'失败'), !r.ok); if(r.ok) viewModel(); }
+async function llmReload(){ var r = await jpost('/api/config/llm/reload', {}); toast(r.ok?'已重载':'重载失败', !r.ok); viewModel(); }
+async function llmReset(){ if(!confirm('重置为默认 llm.toml？')) return;
+  var r = await jpost('/api/config/llm/reset', {}); toast(r.ok?'已重置':'重置失败', !r.ok); viewModel(); }
 
-/* ══════ 统一样式助手（每页四段式） ══════ */
-function segState(icon, title, lines){
-  return '<div class="box" style="margin-bottom:10px"><div class="k">'+icon+' '+esc(title)+'</div>'
-    + lines.map(function(l){ return '<div class="v">'+l+'</div>'; }).join('') + '</div>';
+/* 层状态中文 */
+function layerName(id){
+  return {L0:'整本概括',L1:'具体总纲',L1x:'宏大对抗总规划',L2:'分卷大纲',L3:'细纲',L4:'资料',L5:'正文'}[id] || id;
 }
-function segGate(items){
-  if(!items || !items.length) return '';
-  return '<div class="box" style="margin-bottom:10px"><div class="k">门禁结果</div>'
-    + '<div class="v">' + items.join('　') + '</div></div>';
+function statusZh(s){
+  var m = {done:'已完成', pending:'待推进', chapters_partial:'部分成稿', missing:'缺失', todo:'待办'};
+  return m[s] || s || '未知';
 }
-function segNext(text){
-  return '<div class="box" style="margin-bottom:10px;border-color:#2f4a5f"><div class="k">\u23ed 下一步</div>'
-    + '<div class="v">'+esc(text)+'</div></div>';
-}
-function ok(b){ return b ? '<span class="ok">\u2713</span>' : '<span class="bad">\u2717</span>'; }
-function statLine(t){ return '<span class="muted">'+esc(t)+'</span>'; }
 
-/* ══════ 页面① 漏斗总台 ══════ */
-async function viewFunnel(){
+/* ══════ 首页 · 总览（逆向反推向导） ══════ */
+async function viewHome(){
   try{
-    var r = await Promise.all([api('/api/pipeline/overview?volume='+encodeURIComponent(CURVOL)), api('/api/overview')]);
-    var o=r[0], ov=r[1];
-    var f = o.funnel||{}, m = o.materials||{}, c = o.chapters||{};
-    var stages = (f.stages||[]).map(function(s){
-      var dot = s.done ? '<span class="ok">\u25cf</span>' : '<span class="warn">\u25cb</span>';
-      var target = {'L0':'l0','L1':'l1','L1x':'l1','L2':'l2','L3':'l3','L4':'l4','L5':'l5'}[s.id]||'';
-      return '<div class="item" '+(target?'onclick="go(\''+target+'\')" style="cursor:pointer"':'')+'>'
-        + '<div class="r1">'+dot+'<span class="lay">'+esc(s.id)+'</span><span class="k">'+esc(s.name)+'</span></div>'
-        + '<div class="t">'+esc(s.status)+(s.file?(' \u00b7 '+esc(s.file)):'')+(s.dir?(' \u00b7 '+esc(s.dir)):'')+'</div>'
-        + '</div>';
-    }).join('');
+    await fetchLlmLock();
+    var r = await Promise.all([
+      api('/api/pipeline/funnel'),
+      api('/api/overview'),
+      api('/api/pipeline/file?path='+encodeURIComponent('03_叙事规划/00_整本概括.md'))
+    ]);
+    var f=r[0], ov=r[1], d=r[2];
+    var done = f.done||0, total = f.total||7;
+    var pct = total ? Math.round(done/total*100) : 0;
     var nx = f.next||{};
-    h('<h2>漏斗总台</h2>'
-      + segState('\ud83d\udcca','漏斗进度',[ '<b style="font-size:19px">'+esc(f.progress||'-')+'</b> '+statLine('（'+esc(f.done||0)+' done / '+esc(f.total||0)+' 层）') ])
-      + segNext((nx.action||'-')+'\n'+(nx.hint||''))
-      + '<h3>层清单</h3><div>'+(stages||'<p class="muted">无</p>')+'</div>'
+    var one = '';
+    var m = (d.content||'').match(/##\s*一、一句话故事[\s\S]*?\n([^\n#][\s\S]*?)(?=\n##|\n#|$)/);
+    if (m) one = m[1].trim();
+    // 层完成状态
+    var stMap = {};
+    (f.stages||[]).forEach(function(s){ stMap[s.id]=s; });
+    function stRow(id, num, name, desc, view){
+      var s = stMap[id]||{};
+      var dotCls = s.done ? 'done' : 'todo';
+      return '<div class="item tap" onclick="go(\''+view+'\')">'
+        + '<div class="r1"><span class="dot '+dotCls+'"></span><span class="lay">'+num+'</span><span class="k">'+name+'</span></div>'
+        + '<div class="t">'+desc+'</div></div>';
+    }
+    h('<h2>总览</h2>' + llmLockBar()
+      + '<div class="box"><div class="k">创作进度</div><div class="v">'
+        + '<b style="font-size:19px">'+done+' / '+total+' 层</b> 已完成'
+        + '<div class="bar"><i style="width:'+pct+'%"></i></div>'
+        + '<span class="muted">当前推进：'+esc(nx.name||'-')+'（'+esc(statusZh(nx.status))+'）</span>'
+      + '</div></div>'
+      + (one ? '<div class="box next"><div class="k">一句话故事（L0 灵魂）</div><div class="v">'+esc(one)+'</div></div>' : '')
+      + (nx.hint ? '<div class="box"><div class="k">下一步</div><div class="v">'+esc(nx.hint)+'</div></div>' : '')
+      + '<h3>① 逆向反推（自下而上）</h3>'
+      + '<p class="muted">从资料库的冲突与欲望出发，逐步收敛，直到定出全书灵魂。</p>'
+      + stRow('L4','L4','资料库','这个世界有什么 · 角色/势力/文明的矛盾与欲望','l4')
+      + stRow('L3','L3','细纲','由资料中的潜在矛盾爆发点提炼出的具体事件','l3')
+      + stRow('L2','L2','分卷大纲','把一连串事件划分成符合起承转合的大卷','l2')
+      + stRow('L1x','L1x','宏大对抗','从世界观终极矛盾提炼的棋盘','l1x')
+      + stRow('L1','L1','具体总纲','主角的个人线 · 人物弧光 · 起承转合','l1')
+      + stRow('L0','L0','整本概括','极度收敛 · 一句话卖点 · 核心主题','l0')
+      + '<h3>② 正向写作（自上而下）</h3>'
+      + stRow('L5','L5','正文','严格按细纲扩写，调资料库保细节准确','l5')
       + '<h3>全局</h3>'
       + '<div class="cards">'
       + '<div class="card"><div class="n">'+esc(ov.open_risks)+'</div><div class="l">未决风险</div></div>'
-      + '<div class="card"><div class="n">'+esc((ov.snapshots||{}).count)+'</div><div class="l">快照</div></div>'
-      + '<div class="card"><div class="n">'+esc(m.total_files)+'</div><div class="l">资料文件</div></div>'
-      + '<div class="card"><div class="n">'+esc(c.progress||'-')+'</div><div class="l">正文 '+esc(CURVOL)+'</div></div>'
+      + '<div class="card"><div class="n">'+esc(((ov.materials)||{}).total_files||'-')+'</div><div class="l">资料文件</div></div>'
+      + '<div class="card"><div class="n">'+esc(((ov.snapshots)||{}).count||'-')+'</div><div class="l">快照</div></div>'
       + '</div>');
   }catch(e){ fail(e); }
 }
 
-/* ══════ 页面② L0 概括 ══════ */
+/* ══════ 1 · 整本概括 ══════ */
 async function viewL0(){
   try{
-    var f = await api('/api/pipeline/funnel');
-    var st = (f.stages||[]).find(function(x){ return x.id==='L0'; })||{};
     var d = await api('/api/pipeline/file?path='+encodeURIComponent('03_叙事规划/00_整本概括.md'));
-    h('<h2>L0 整本概括</h2>'
-      + segState(st.done?'\u2705':'\u25cb','层状态',[ esc(st.status||'-')+' '+ok(st.done), statLine('文件 '+esc(st.file||'-'))+' '+statLine(esc(d.chars)+' 字 / '+esc(d.lines)+' 行'), statLine('依赖 '+(st.deps||[]).join(' ')) ])
-      + segNext(st.done?'该层已完成；下一层 L1 具体总纲。':'推进该层：补全概括内容。')
-      + '<div class="row" style="margin-bottom:10px"><button onclick="editFile(\'03_叙事规划/00_整本概括.md\')">编辑</button>'
-      + '<button onclick="reloadView()">重新读取</button></div>'
-      + '<pre>'+esc(d.content||'')+'</pre>');
+    h('<h2>整本概括</h2>'
+      + '<p class="muted">这本书讲的是一个什么故事。往下看逐卷脉络会越来越细。</p>'
+      + '<div class="row" style="margin-bottom:10px">'
+      + '<button class="sm" onclick="readFile(\'03_叙事规划/00_故事脊梁.md\')">看故事脊梁</button>'
+      + '<button class="sm" onclick="editFile(\'03_叙事规划/00_整本概括.md\')">编辑</button></div>'
+      + story(d.content||''));
   }catch(e){ fail(e); }
 }
 
-/* ══════ 页面③ L1 总纲（含 L1x） ══════ */
-var L1_TAB = '03_叙事规划/00_叙事总纲.md';
+/* ══════ 2 · 逐卷脉络 ══════ */
+var L1_TAB = '03_叙事规划/00_故事脊梁.md';
 async function viewL1(){
   try{
-    var f = await api('/api/pipeline/funnel');
-    var st = (f.stages||[]).find(function(x){ return x.id==='L1'; })||{};
     var d = await api('/api/pipeline/file?path='+encodeURIComponent(L1_TAB));
-    var T = [['03_叙事规划/00_叙事总纲.md','总纲'],['03_叙事规划/00_宏大对抗总规划.md','宏大对抗']];
-    h('<h2>L1 总纲</h2>'
-      + segState(st.done?'\u2705':'\u25cb','层状态',[ esc(st.status||'-')+' '+ok(st.done), statLine('依赖 '+(st.deps||[]).join(' ')) ])
-      + '<div class="row" style="margin-bottom:10px">'
+    var T = [
+      ['03_叙事规划/00_故事脊梁.md','每卷讲什么'],
+      ['03_叙事规划/00_叙事总纲.md','逐卷入场 / 伏笔'],
+      ['03_叙事规划/00_宏大对抗总规划.md','宏大对抗总规划']
+    ];
+    h('<h2>逐卷脉络</h2>'
+      + '<p class="muted">每一卷讲什么：在哪、遇谁、打谁、爱谁、成了什么。这是全书的骨架。</p>'
+      + '<div class="tab">'
       + T.map(function(t){ return '<button class="'+(t[0]===L1_TAB?'':'sm')+'" onclick="L1_TAB=\''+t[0]+'\';viewL1()">'+t[1]+'</button>'; }).join('')
       + '</div>'
-      + segState('\ud83d\udcc4','当前文件',[ esc(L1_TAB), statLine(esc(d.chars)+' 字 / '+esc(d.lines)+' 行') ])
-      + segNext('该层已定案；如需修改直接编辑（写前自动快照）。')
-      + '<div class="row" style="margin-bottom:10px"><button onclick="editFile(L1_TAB)">编辑</button></div>'
-      + '<pre>'+esc(d.content||'')+'</pre>');
+      + '<div class="row" style="margin-bottom:10px"><button class="sm" onclick="editFile(L1_TAB)">编辑</button>'
+      + '<span class="muted">'+esc(d.chars)+' 字</span></div>'
+      + story(d.content||''));
   }catch(e){ fail(e); }
 }
 
-/* ══════ 页面④ L2 分卷大纲 ══════ */
+/* ══════ 3 · 分卷剧情 ══════ */
+/* 从分卷大纲正文里抽出「小故事表」标题（### ① xxx），让用户先看到故事线而非字段表 */
+function extractStoryTitles(src){
+  var lines = String(src==null?'':src).replace(/\r\n?/g,'\n').split('\n');
+  var out = [];
+  for (var i=0;i<lines.length;i++){
+    var m = lines[i].match(/^###\s*([①②③④⑤⑥⑦⑧⑨⑩⑪⑫]|\d+)?\s*(.+?)\s*$/);
+    if (m){
+      var t = m[2].trim();
+      if (t.indexOf('总览')>=0) continue;
+      // 过滤字段小节标题
+      if (/^(谁|在哪|决定|后果|溯源|字段|内容)$/.test(t)) continue;
+      out.push(t);
+    }
+  }
+  return out;
+}
+/* 从正文里抽「在哪/遇谁/打谁/爱谁/成了什么/卷末跃迁」总览字段 */
+function extractOverviewFields(src){
+  var s = String(src==null?'':src);
+  var got = {};
+  var keys = ['在哪','遇谁','打谁·争什么','恩怨','爱恨','卷末跃迁'];
+  keys.forEach(function(k){
+    var re = new RegExp('\\*\\*'+k.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\*\\*\\s*\\|\\s*([^|]+)\\|');
+    var m = s.match(re);
+    if (m) got[k] = m[1].trim();
+  });
+  return got;
+}
 async function viewL2(){
   try{
-    var f = await api('/api/pipeline/funnel');
-    var st = (f.stages||[]).find(function(x){ return x.id==='L2'; })||{};
     var d = await api('/api/pipeline/layer/L2');
-    var cards = (d.files||[]).map(function(x){
-      var name = x.path.split('/').pop().replace('.md','');
-      return '<div class="item"><div class="r1"><span class="k">'+esc(name)+'</span>'
-        + (x.exists?'<span class="lay">'+esc(x.chars)+' 字</span>':'<span class="bad">缺失</span>')+'</div>'
-        + '<div class="t">'+esc(x.path)+'</div>'
-        + '<div class="acts"><button class="sm" onclick="readFile(\''+esc(x.path)+'\')">查看</button>'
+    var files = d.files||[];
+    // 并行取每卷正文，抽出故事线
+    var metas = await Promise.all(files.map(function(x){
+      return api('/api/pipeline/file?path='+encodeURIComponent(x.path))
+        .then(function(r){ return {f:x, c:(r&&r.content)||''}; })
+        .catch(function(){ return {f:x, c:''}; });
+    }));
+    var cards = metas.map(function(m, idx){
+      var x = m.f, c = m.c;
+      var volNo = (idx+1);
+      var name = x.path.split('/').pop().replace('.md','').replace('·卷主体故事','');
+      var titles = extractStoryTitles(c);
+      var ov = extractOverviewFields(c);
+      var isCur = name.indexOf(CURVOL)===0;
+      // 是否全是「待 L3」
+      var pending = (c.match(/待\s*L3/g)||[]).length;
+      var storyList = titles.length
+        ? '<div class="flow">'+titles.map(function(t,n){
+            return '<div class="fx"><span class="fn">'+(n+1)+'</span><span>'+esc(t)+'</span></div>';
+          }).join('')+'</div>'
+        : '<div class="t muted">（本卷还没有写出具体小故事）</div>';
+      var whereLine = ov['在哪'] ? '<div class="t">在哪：'+esc(ov['在哪']).slice(0,90)+'</div>' : '';
+      return '<div class="item">'
+        + '<div class="r1"><span class="lay">'+(isCur?'当前卷':'第'+volNo+'卷')+'</span><span class="k">'+esc(name)+'</span>'
+        + (pending>3 ? '<span class="warn">'+pending+' 处待补</span>' : '<span class="muted">'+esc(x.chars)+' 字</span>')+'</div>'
+        + whereLine
+        + storyList
+        + '<div class="acts"><button class="sm" onclick="readFile(\''+esc(x.path)+'\')">看全文</button>'
         + '<button class="sm" onclick="editFile(\''+esc(x.path)+'\')">编辑</button></div></div>';
     }).join('');
-    h('<h2>L2 分卷大纲</h2>'
-      + segState(st.done?'\u2705':'\u25cb','层状态',[ esc(st.status||'-')+' '+ok(st.done), statLine('依赖 '+(st.deps||[]).join(' ')) ])
-      + segGate([ ok(d.count>0), '<span class="muted">共 '+esc(d.count)+' 份卷文件</span>' ])
-      + segNext('10 卷齐全；缺卡需回 L4 补资料。')
+    h('<h2>分卷剧情 · 定节奏</h2>'
+      + '<p class="muted">每一卷按时间线讲什么故事：主角遇到什么事、发生什么大事。点「看全文」读这一卷的完整大纲。</p>'
+      + '<div class="box"><div class="k">共 '+esc(d.count||files.length)+' 卷</div><div class="v">'
+      + '顶部可切换卷号（影响细纲/正文）；每卷先看故事线，再看全文。</div></div>'
       + '<div>'+(cards||'<p class="muted">无</p>')+'</div>');
   }catch(e){ fail(e); }
 }
 
-/* ══════ 页面⑤ L3 细纲（章级） ══════ */
+/* ══════ 4 · 章节细纲 ══════ */
 async function viewL3(){
   try{
-    var f = await api('/api/pipeline/funnel');
-    var st = (f.stages||[]).find(function(x){ return x.id==='L3'; })||{};
     var d = await api('/api/pipeline/layer/L3/chapters/'+encodeURIComponent(CURVOL));
     var cards = (d.chapters||[]).map(function(c){
-      return '<div class="item"><div class="r1"><span class="lay">\u7b2c'+esc(c.no)+'\u7ae0</span><span class="k">'+esc(c.title||'（无标题）')+'</span></div>'
-        + '<div class="t">'+esc(c.chars)+' 字</div>'
-        + '<div class="acts"><button class="sm" onclick="readL3('+esc(c.no)+')">查看</button>'
-        + '<button class="sm" onclick="editL3('+esc(c.no)+')">编辑</button></div></div>';
+      var t = c.title||'（未命名）';
+      if (/^[\u4e00-\u9fa5]{2,6}$/.test(t) && t!=='（未命名）'){ /* 保留单标题 */ }
+      return '<div class="item tap" onclick="readL3('+esc(c.no)+')">'
+        + '<div class="r1"><span class="lay">第'+esc(c.no)+'章</span><span class="k">'+esc(c.title||'（无标题）')+'</span>'
+        + '<span class="muted">'+esc(c.chars)+' 字</span></div>'
+        + '<div class="acts"><button class="sm" onclick="event.stopPropagation();readL3('+esc(c.no)+')">查看</button>'
+        + '<button class="sm" onclick="event.stopPropagation();editL3('+esc(c.no)+')">编辑</button></div></div>';
     }).join('');
-    h('<h2>L3 细纲 '+esc(CURVOL)+'</h2>'
-      + segState(st.done?'\u2705':'\u25cb','层状态',[ esc(st.status||'-')+' '+ok(st.done), statLine('依赖 '+(st.deps||[]).join(' ')) ])
-      + segGate([ ok(d.count>0), '<span class="muted">共 '+esc(d.count)+' 章 / '+esc(d.total_chars)+' 字</span>' ])
-      + segNext('细纲已齐；下一层 L5 正文（逐章 inject→生成→check→sync）。')
-      + '<p class="row" style="margin-bottom:10px"><input id="l3q" placeholder="跳转第__章" type="number" style="width:130px">'
+    h('<h2>章节细纲 · '+esc(CURVOL)+'</h2>'
+      + '<p class="muted">每一章写什么：目标、阻碍、决定、代价、变化。写作时的直接依据。</p>'
+      + '<div class="box next"><div class="k">章节生成 · 派发</div><div class="v">'
+        + '选定章号后点「派发」，任务登记到队列，由执行器调用 ne_run_chapter → l5.py。'
+        + '<div class="row" style="margin-top:8px">'
+        + '<input id="dq" type="number" value="1" min="1" style="width:100px">'
+        + '<button class="sm" onclick="dispatchChapter(false)">派发（空跑）</button>'
+        + '<button class="sm" onclick="dispatchChapter(true)">派发（真实生成）</button>'
+        + '</div></div></div>'
+      + '<div class="box"><div class="k">本章数</div><div class="v">共 '+esc(d.count||0)+' 章 · '+esc(d.total_chars||0)+' 字</div></div>'
+      + '<p class="row" style="margin-bottom:10px"><input id="l3q" placeholder="跳到第几章" type="number" style="width:140px">'
       + '<button class="sm" onclick="jumpL3()">跳转</button>'
-      + '<button class="sm" onclick="reloadView()">刷新</button></p>'
+      + '<button class="sm" onclick="go(\'board\')">任务看板</button></p>'
       + '<div>'+(cards||'<p class="muted">无</p>')+'</div>');
   }catch(e){ fail(e); }
+}
+/* 派发章节生成任务 → /api/tasks/submit（kind=chapter_gen） */
+async function dispatchChapter(real){
+  var ch = parseInt((document.getElementById('dq')||{}).value, 10) || 0;
+  if (ch < 1){ toast('请填章号', true); return; }
+  if (real){
+    // 二次确认：真实生成会出网 + 写 04_正文
+    openSheet('确认真实生成',
+      '<p class="muted">将派发 <b>真实生成</b> 任务：'+esc(CURVOL)+' 第 '+ch+' 章。</p>'
+      + '<p class="muted">执行时会检查文件锁 <code>/sdcard/wogov_real_llm.allow</code>；不存在则被拒。</p>'
+      + '<p class="muted">真实生成会调用 LLM 出网、通过质检后写入 <code>04_正文/</code>，并入库。</p>',
+      '<button onclick="closeSheet()">取消</button>'
+      + '<button onclick="closeSheet();doDispatchChapter('+ch+',true)" style="color:var(--warn)">确认派发</button>');
+    return;
+  }
+  doDispatchChapter(ch, false);
+}
+async function doDispatchChapter(ch, real){
+  try{
+    var r = await jpost('/api/tasks/submit', {kind:'chapter_gen', payload:{volume:CURVOL, chapter:ch, real:real}});
+    if (r && r.ok){
+      toast('已派发：'+r.id+'（'+esc(r.state)+'）');
+      viewBoard();
+    } else {
+      toast('派发失败：'+((r&&r.error)||r&&r.state||'未知'), true);
+    }
+  }catch(e){ toast(e.message||e, true); }
 }
 function jumpL3(){ var n=parseInt(document.getElementById('l3q').value,10); if(n>0) readL3(n); }
 async function readL3(no){
   try{
     var d = await api('/api/pipeline/layer/L3/chapter/'+encodeURIComponent(CURVOL)+'/'+no);
-    openSheet('第'+no+'章 · '+esc(d.chars)+' 字',
-      '<pre>'+esc(d.content||'')+'</pre>',
+    openSheet('第'+no+'章 · '+esc(d.chars)+' 字', story(d.content||''),
       '<button onclick="closeSheet()">关闭</button><button onclick="editL3('+no+')">编辑</button>');
   }catch(e){ toast(e.message||e, true); }
 }
@@ -405,49 +1169,613 @@ async function saveL3(no){
   else toast((r&&r.error)||'保存失败', true);
 }
 
-/* ══════ 页面⑥ L4 资料 ══════ */
-var L4 = { cat:'', q:'' };
-async function viewL4(){
+/* ══════ L1x · 宏大对抗（定棋盘） ══════ */
+async function viewL1x(){
   try{
-    var r = await Promise.all([
-      api('/api/pipeline/materials'),
-      api('/api/pipeline/cardgen?volume='+encodeURIComponent(CURVOL)),
-      api('/api/items?layer=L4&limit=60')
-    ]);
-    var m=r[0], cg=r[1], it=r[2];
-    var groups = (m.groups||[]).map(function(g){ return '<span class="pill">'+esc(g.name)+' '+esc(g.count)+'</span>'; }).join(' ');
-    var cards = (it.items||[]).map(itemCard).join('');
-    var jobs = (cg.cards||[]).filter(function(x){ return !L4.cat || x.category===L4.cat; })
-      .map(function(x){ return '<div class="item"><div class="r1"><span class="lay">'+esc(x.category)+'</span><span class="k">'+esc(x.name)+'</span></div></div>'; }).join('');
-    h('<h2>L4 资料</h2>'
-      + segState('\ud83d\udcda','层状态',[ statLine('02_资料库 '+esc(m.total_files)+' 文件'), statLine('卷号 '+esc(CURVOL)) ])
-      + '<div class="box" style="margin-bottom:10px"><div class="k">分类分布</div><div class="v">'+(groups||'-')+'</div></div>'
-      + segGate([ '<span class="muted">待建卡工单 '+esc(cg.pending_cards||0)+' 条（细纲【待建卡】）</span>' ])
-      + segNext('缺卡由 ne_cardgen 出工单；改卡后自动快照。')
-      + '<p class="row" style="margin-bottom:10px"><input id="l4q" placeholder="搜索 key/标题" style="flex:1">'
-      + '<button class="sm" onclick="L4.q=document.getElementById(\'l4q\').value;viewL4()">搜索</button>'
-      + '<button class="sm" onclick="openNewCard()">新建卡</button></p>'
-      + '<h3>待建卡工单（'+esc(cg.pending_cards||0)+'）</h3><div>'+(jobs||'<p class="muted">无</p>')+'</div>'
-      + '<h3>卡列表（'+esc(it.count)+'）</h3><div>'+(cards||'<p class="muted">无</p>')+'</div>');
+    var d = await api('/api/pipeline/file?path='+encodeURIComponent('03_叙事规划/00_宏大对抗总规划.md'));
+    h('<h2>宏大对抗 · 定棋盘</h2>'
+      + '<p class="muted">世界运行的终极规则、终极矛盾、势力纠葛。决定主角最终要对抗什么形态。</p>'
+      + '<div class="row" style="margin-bottom:10px"><button class="sm" onclick="editFile(\'03_叙事规划/00_宏大对抗总规划.md\')">编辑</button>'
+      + '<span class="muted">'+esc(d.chars)+' 字</span></div>'
+      + story(d.content||''));
   }catch(e){ fail(e); }
 }
-function openNewCard(){
-  openSheet('新建 L4 卡',
-    '<label class="lbl">卡片编号 key</label><input id="nk" style="width:100%" placeholder="CHAR-99-0xx">'
-    + '<label class="lbl">标题</label><input id="nt" style="width:100%">'
-    + '<label class="lbl">正文</label><textarea id="nc" style="min-height:40vh"></textarea>'
-    + '<p class="muted">写入 02_资料库/_webui/L4/；写前自动快照。</p>',
-    '<button onclick="closeSheet()">取消</button><button onclick="doNewCard()">创建</button>');
+
+/* ══════ L4 · 资料库（定弹药库） ══════ */
+var L4 = { cat:'', q:'' };
+/* key 前缀 → 中文分类 */
+/* key 前缀 → 中文分类（**已废弃**：2026-10-17 L4 修复，改为直接读后端 category 字段）。
+   保留仅作 category 缺失时的兜底。 */
+var L4CAT = [
+  ['CHAR', '角色'], ['CIVI', '文明'], ['FACT', '势力'], ['EVNT', '事件'],
+  ['FORE', '伏笔'], ['LOCA', '地点'], ['ITEM', '物品'], ['CAUS', '因果线'],
+  ['ARTS', '功法技艺'], ['BLDG', '建筑'], ['TECH', '科技'], ['CULT', '文化'],
+  ['PLAT', '力量体系'], ['TIME', '时间'], ['SYST', '系统规则'], ['RACE', '种族'],
+  ['SKIL', '技艺'], ['EQUI', '装备'], ['PILL', '丹药'], ['MATE', '天材地宝'],
+  ['PLAN', '修炼体系'], ['GHOS', '诡异'], ['RELA', '关系'], ['HIST', '历史']
+];
+/* 条目 → 分类：优先用后端返回的真实 category；缺失时才退回 key 前缀兜底。 */
+function catOf(it){
+  if (it && typeof it === 'object'){
+    if (it.category && String(it.category).trim()) return String(it.category).trim();
+    it = it.key;
+  }
+  var p = String(it||'').split('-')[0].toUpperCase();
+  for (var i=0;i<L4CAT.length;i++){ if (L4CAT[i][0]===p) return L4CAT[i][1]; }
+  return '其他';
 }
-async function doNewCard(){
-  var k=document.getElementById('nk').value.trim();
-  var c=document.getElementById('nc').value;
-  if(!k||!c){ toast('key 与正文必填', true); return; }
-  var r = await jpost('/api/layers/L4/items', {key:k, title:document.getElementById('nt').value.trim(), content:c});
-  if(r.ok){ toast('已创建 '+k); closeSheet(); viewL4(); } else toast(r.error||'失败', true);
+/* 打开一张资料卡（查看/编辑） */
+async function openItem(layer, key){
+  try{
+    var d = await api('/api/layers/'+encodeURIComponent(layer)+'/item/'+encodeURIComponent(key));
+    var it = d.item||d||{};
+    openSheet(key,
+      '<p class="muted">'+esc(it.layer||layer)+' · '+esc(it.title||'')+' · '+esc(it.chars||'')+' 字</p>'
+      + story(it.content||''),
+      '<button onclick="closeSheet()">关闭</button>'
+      + '<button onclick="editItem(\''+esc(layer)+'\',\''+esc(key)+'\')">编辑</button>');
+  }catch(e){ toast(e.message||e, true); }
+}
+async function editItem(layer, key){
+  try{
+    var d = await api('/api/layers/'+encodeURIComponent(layer)+'/item/'+encodeURIComponent(key));
+    var it = d.item||d||{};
+    openSheet('编辑 '+key,
+      '<label class="lbl">正文</label>'
+      + '<textarea id="itc" style="min-height:56vh">'+esc(it.content||'')+'</textarea>',
+      '<button onclick="closeSheet()">取消</button><button onclick="saveItem(\''+esc(layer)+'\',\''+esc(key)+'\')">保存</button>');
+  }catch(e){ toast(e.message||e, true); }
+}
+async function saveItem(layer, key){
+  var c = document.getElementById('itc').value;
+  if(!c.trim()){ toast('内容不能为空', true); return; }
+  var r = await jput('/api/layers/'+encodeURIComponent(layer)+'/item/'+encodeURIComponent(key), {content:c});
+  if(r && r.ok){ toast('已保存'); closeSheet(); viewL4(); } else toast((r&&r.error)||'保存失败', true);
+}
+var L4ALL = null;
+async function viewL4(){
+  try{
+    await fetchLlmLock();
+    // 2026-10-17 修复：全量拉取（all=true），并让缺 category 的旧缓存自动失效。
+    if (!L4ALL || !L4ALL.length || typeof L4ALL[0].category === 'undefined'){
+      var d = await api('/api/items?layer=L4&all=true');
+      L4ALL = d.items||[];
+    }
+    var all = L4ALL;
+    // 分类统计（基于**全量**数据，读真实 category）
+    var counts = {};
+    all.forEach(function(it){ var c = catOf(it); counts[c] = (counts[c]||0)+1; });
+    var cats = Object.keys(counts).sort(function(a,b){ return counts[b]-counts[a]; });
+    // 过滤
+    var q = (L4.q||'').trim().toLowerCase();
+    var list = all.filter(function(it){
+      if (L4.cat && catOf(it)!==L4.cat) return false;
+      if (q && (String(it.key)+' '+(it.title||'')).toLowerCase().indexOf(q)<0) return false;
+      return true;
+    });
+    var catPills = '<button class="'+(L4.cat===''?'':'sm')+'" onclick="L4.cat=\'\';viewL4()">全部 '+all.length+'</button>'
+      + cats.map(function(c){ return '<button class="'+(L4.cat===c?'':'sm')+'" onclick="L4.cat=\''+esc(c)+'\';viewL4()">'+esc(c)+' '+counts[c]+'</button>'; }).join('');
+    // 不再截断为 120；全量渲染（分类过滤后通常已收敛）
+    var cards = list.map(function(it){
+      return '<div class="item tap" onclick="openItem(\'L4\',\''+esc(it.key)+'\')">'
+        + '<div class="r1"><span class="lay">'+esc(catOf(it))+'</span><span class="k">'+esc(it.key)+'</span></div>'
+        + '<div class="t">'+esc(String(it.title||'').split('｜').slice(1).join('｜')||'（无标题）')+' · '+esc(it.chars)+' 字</div></div>';
+    }).join('');
+    h('<h2>资料库 · 定弹药库</h2>' + llmLockBar()
+      + '<p class="muted">这个世界有什么。这里是创作的起点——先看清角色 / 势力 / 文明的矛盾与欲望，再往上反推故事。</p>'
+      + '<div class="box"><div class="k">资料总量</div><div class="v">'+all.length+' 张卡 · '+cats.length+' 个分类</div></div>'
+      + '<div class="box next"><div class="k">反推提示</div><div class="v">'
+        + '翻一翻「势力」「文明」卡：它们之间有没有历史恩怨、利益冲突、阵营对立？'
+        + '这些就是 L1x 终极对抗的原料。</div></div>'
+      + '<p class="row" style="margin-bottom:10px"><input id="l4q" placeholder="搜 key / 标题" style="flex:1" value="'+esc(L4.q)+'">'
++ '<button class="sm" onclick="L4.q=document.getElementById(\'l4q\').value;viewL4()">搜索</button></p>'
+      + '<p class="row" style="margin:10px 0">'
+      + '<button onclick="openCardgen()">🏗 一键生成文明卡包</button>'
+      + '<button class="sm" onclick="viewBoard()">任务看板</button></p>'
+      + '<p class="muted">建卡 = 让 LLM 依据库里既有设定，按规范 v1.0 生成新卡并三同步落盘。'
+      + '预演（real=false）不需要解锁；真跑需 <code>/sdcard/wogov_real_llm.allow</code>。</p>'
+      + '<div class="tab">'+catPills+'</div>'
+      + '<p class="muted">显示 '+list.length+' 张'+(L4.cat?'（分类：'+esc(L4.cat)+'）':'（全部）')+'</p>'
+      + '<div>'+(cards||'<p class="muted">无</p>')+'</div>');
+  }catch(e){ fail(e); }
 }
 
-/* ══════ 页面⑦ L5 正文（流水线） ══════ */
+/* ══════ 真实 LLM 授权锁 · 全局开关（2026-10-17） ══════ */
+// 这是**文件锁** /sdcard/wogov_real_llm.allow 的面板视图。
+// 与「二次门控 gate_l1/l2」（语义检视通路）完全不同，别混淆。
+// 解锁 = touch（由人点开关），上锁 = rm（人点 或 真跑结束后自动）。
+var LLMLOCK = {locked:true, unlocked:false, loaded:false};
+
+async function fetchLlmLock(){
+  try{
+    var r = await api('/api/system/llm-lock');
+    if (r && typeof r.locked !== 'undefined'){ LLMLOCK = r; LLMLOCK.loaded = true; }
+    return LLMLOCK;
+  }catch(e){
+    LLMLOCK.loaded = true;
+    return LLMLOCK;
+  }
+}
+
+// 生成开关那一条 HTML（供各页面顶部复用）
+function llmLockBar(){
+  if (!LLMLOCK.loaded){
+    return '<div class="box" id="llmLockBar"><div class="k">真实 LLM 授权锁</div>'
+         + '<div class="v muted">读取中…</div></div>';
+  }
+  var on = !!LLMLOCK.unlocked;
+  var bg = on ? '#1b5e20' : '#8e1b1b';
+  var label = on ? '\ud83d\udd13 真实 LLM 授权锁（当前：已解锁）'
+                 : '\ud83d\udd12 真实 LLM 授权锁（当前：已锁定）';
+  return '<div id="llmLockBar" style="background:'+bg+';color:#fff;border-radius:10px;'
+       + 'padding:12px 14px;margin:10px 0;cursor:pointer" onclick="toggleLlmLock()">'
+       + '<div style="font-weight:700;font-size:15px">'+label+'</div>'
+       + '<div style="font-size:12px;opacity:.9;margin-top:4px">'
+       + (on ? '真跑可以外呼。跑完系统会自动上锁（也可现在点这里手动上锁）。'
+             : '真跑会被拒绝。预演（real=false）不受影响，可随时跑。点这里可解锁。')
+       + '</div></div>';
+}
+
+async function toggleLlmLock(){
+  await fetchLlmLock();
+  var on = !!LLMLOCK.unlocked;
+  if (!on){
+    // 解锁 → 二次确认（防误触）
+    openSheet('\ud83d\udd13 解锁真实 LLM 授权锁',
+      '<div class="box next"><div class="k">即将解锁真实外呼</div><div class="v" style="font-size:14px">'
+      + '解锁后，<b>真跑</b>类任务（批量建卡 / L5 正文生成）会<b>真实调用 LLM 并写入磁盘</b>：'
+      + '生成卡片正文（或正文段落）、写入 02_资料库、同步 materials / library_index / rel_edge。'
+      + '<br><br>这会消耗 API 额度与时间（10 张卡约 10–30 分钟）。'
+      + '<br>跑完系统会<b>自动上锁</b>；你也可以随时手动上锁。'
+      + '</div></div>'
+      + '<div class="box"><div class="k">当前文件</div><div class="v" style="font-size:12px">'
+      + esc(LLMLOCK.file||'/sdcard/wogov_real_llm.allow')+'</div></div>',
+      '<button onclick="doUnlockLlm()">确认解锁</button>'
+      + '<button class="sm" onclick="closeSheet()">取消</button>');
+  } else {
+    // 上锁 → 确认
+    openSheet('\ud83d\udd12 上锁真实 LLM 授权锁',
+      '<div class="box"><div class="k">即将上锁</div><div class="v" style="font-size:14px">'
+      + '上锁后，任何真跑任务都会被拒绝（预演不受影响）。'
+      + '<br>如果当前有真跑正在跑，它会跑完但下次将被拒。</div></div>',
+      '<button onclick="doLockLlm()">确认上锁</button>'
+      + '<button class="sm" onclick="closeSheet()">取消</button>');
+  }
+}
+
+async function doUnlockLlm(){
+  var r = await jpost('/api/system/llm-lock/unlock', {});
+  closeSheet();
+  if (r && r.ok){
+    toast('\ud83d\udd13 已解锁：真跑现在可用', false);
+  } else {
+    toast((r && (r.error||r.note)) || '解锁失败', true);
+  }
+  await fetchLlmLock();
+  reloadView();
+}
+
+async function doLockLlm(){
+  var r = await jpost('/api/system/llm-lock/lock', {});
+  closeSheet();
+  if (r && r.ok){
+    toast('\ud83d\udd12 已上锁：真跑将被拒绝', false);
+  } else {
+    toast((r && (r.error||r.note)) || '上锁失败', true);
+  }
+  await fetchLlmLock();
+  reloadView();
+}
+
+/* ══════ 建卡（cardgen · 2026-10-17 P0） ══════ */
+// 各文明缺的卡不一样，给"建议规格"而非统一模板（可手改）。
+var CARDGEN_PRESETS = {
+  '混沌帝国':   {spec:'文明:1,势力:3,地点:3,角色:3', note:'唯一缺文明主卡的正名文明；机制卡已有 4 张（MECH-99-013~016）'},
+  '圣辉教廷':   {spec:'文明:1,势力:6,地点:6,角色:6,文化:3,物品:3', note:'四大空壳之一，需补基础包'},
+  '万界通途':   {spec:'文明:1,势力:6,地点:6,角色:6,文化:3,物品:3', note:'四大空壳之一，需补基础包'},
+  '逻辑族':     {spec:'文明:1,势力:5,地点:5,角色:5,科技:3', note:'已有 16 张，补势力/地点/角色'},
+  '界碑交汇所': {spec:'文明:1,势力:3,地点:3,角色:3', note:'机制卡已有 4 张（MECH-99-041~044）'}
+};
+
+function openCardgen(){
+  var civs = Object.keys(CARDGEN_PRESETS);
+  var opts = civs.map(function(c){ return '<option value="'+esc(c)+'">'+esc(c)+'</option>'; }).join('');
+  openSheet('🏗 生成文明卡包',
+    '<div class="box"><div class="k">文明</div><div class="v">'
+      + '<select id="cgCiv" style="width:100%" onchange="cgPreset()">'+opts
+      + '<option value="__other__">（其它：手动输入）</option></select></div></div>'
+    + '<div class="box"><div class="k">规格 spec</div><div class="v">'
+      + '<input id="cgSpec" style="width:100%" value="'+esc(CARDGEN_PRESETS[civs[0]].spec)+'"></div>'
+      + '<div class="t">格式：<code>分类:数量</code> 逗号分隔；也可指定名字 '
+      + '<code>地点:3:虚空裂隙城|坍缩环带|湮灭回廊</code>'
+      + '<br>合法分类：角色/文明/势力/地点/文化/事件/物品/科技/功法/境界/力量体系/伏笔…（共 26 类）</div></div>'
+    + '<div class="box"><div class="k">提示</div><div class="v" id="cgNote" style="font-size:13px">'
+      + esc(CARDGEN_PRESETS[civs[0]].note)+'</div></div>'
+    + '<div class="box next"><div class="k">两种跑法</div><div class="v" style="font-size:13px">'
+      + '<b>预演</b>：只分配编号、出计划，0 调 LLM、0 落盘，<b>不需要解锁</b>。<br>'
+      + '<b>真跑</b>：真实调 LLM 生成正文并落盘，必须先 '
+      + '<code>touch /sdcard/wogov_real_llm.allow</code> 解锁。'
+      + '<br>同一时刻只允许 1 个建卡进程（全局单飞锁）。</div></div>',
+    '<button class="sm" onclick="submitCardgen(false)">预演（安全）</button>'
+    + '<button class="sm" onclick="submitCardgen(true)">真跑（需解锁）</button>'
+    + '<button onclick="closeSheet()">关闭</button>');
+}
+
+function cgPreset(){
+  var c = document.getElementById('cgCiv').value;
+  var p = CARDGEN_PRESETS[c];
+  if (p){
+    document.getElementById('cgSpec').value = p.spec;
+    document.getElementById('cgNote').textContent = p.note;
+  } else {
+    document.getElementById('cgNote').textContent =
+      '手动输入文明名与 spec（文明名要与资料库里的 sub_category 一致）';
+  }
+}
+
+async function submitCardgen(real, btnEl){
+  var civ = document.getElementById('cgCiv').value;
+  var spec = document.getElementById('cgSpec').value;
+  if (civ === '__other__'){
+    civ = prompt('请输入文明名（须与资料库 sub_category 一致）','');
+    if (!civ) return;
+  }
+  if (!spec) { toast('spec 不能为空', true); return; }
+
+  // 真跑前先看锁
+  if (real){
+    await fetchLlmLock();
+    if (!LLMLOCK.unlocked){
+      openSheet('🔒 需要先解锁',
+        '<div class="box next"><div class="k">真跑需要授权</div><div class="v" style="font-size:14px">'
+        + '真跑会<b>真实调用 LLM 并写入磁盘</b>。<br>文明：<b>' + esc(civ) + '</b><br>规格：<span class="mono">'
+        + esc(spec) + '</span><br><br>'
+        + '当前授权锁<b>已锁定</b>，直接提交会被拒绝。<br>'
+        + '点下面的按钮会：① 解锁 → ② 登记任务 → ③ 自动执行 → ④ 跑完自动上锁。'
+        + '</div></div>',
+        '<button class="warn" onclick="unlockThenSubmit(\'' + esc(civ).replace(/'/g,"\\'") + '\', \''
+          + esc(spec).replace(/'/g,"\\'") + '\')">解锁并执行</button>'
+        + '<button class="sm" onclick="submitCardgen(false)">改为预演</button>'
+        + '<button class="ghost" onclick="closeSheet()">取消</button>');
+      return;
+    }
+  }
+
+  await doSubmitCardgen(civ, spec, real, btnEl);
+}
+
+/* 真正提交 —— 提交后**不关弹层**，原地变进度面板 */
+async function doSubmitCardgen(civ, spec, real, btnEl){
+  await withBtn(btnEl, real ? '提交中…' : '预演中…', async function(){
+    var r = await jpost('/api/tasks/submit', {kind:'cardgen',
+                        payload:{civ:civ, spec:spec, real:!!real}});
+    if (!(r && r.ok)){
+      toast((r && r.error) || '提交被拒', true);
+      return;
+    }
+    // 原地变形：切到进度视图
+    showCardgenProgress(r.id, civ, spec, real);
+
+    // 立刻自动派发执行器（真跑和预演都自动跑，用户不用再去点）
+    var dp = await jpost('/api/tasks/'+encodeURIComponent(r.id)+'/dispatch', {limit:1});
+    if (dp && dp.ok){
+      if (dp.already_running) toast('已有执行器在跑，任务将排队', false);
+    } else {
+      toast((dp && (dp.reason||dp.error)) || '执行器未启动', true);
+    }
+    // 开始轮询这个任务
+    startCardgenPoll(r.id, civ, spec, real);
+  });
+}
+
+/* 一键：解锁 → 提交 → 自动执行 */
+async function unlockThenSubmit(civ, spec){
+  var u = await jpost('/api/system/llm-lock/unlock', {});
+  if (!u || !u.ok){ toast((u && (u.note||u.error)) || '解锁失败', true); return; }
+  await fetchLlmLock();
+  toast('🔓 已解锁，正在提交…', false);
+  await doSubmitCardgen(civ, spec, true, null);
+}
+
+/* ══════ 建卡任务 · 原地进度视图 ══════ */
+var CG_POLL = null;
+
+function showCardgenProgress(tid, civ, spec, real){
+  var tag = real ? '真跑' : '预演';
+  var body =
+      '<div class="box next"><div class="k">任务</div>'
+    +   '<div class="v" style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">'
+    +     '<b>' + esc(civ) + '</b>'
+    +     '<span class="nov-badge ' + (real?'run':'pend') + '">' + tag + '</span>'
+    +     '<span class="muted mono" style="font-size:11px;margin-left:auto">' + esc(tid) + '</span>'
+    +   '</div>'
+    +   '<div class="mono muted" style="font-size:11.5px;margin-top:5px">' + esc(spec) + '</div>'
+    + '</div>'
+    + '<div id="cgLive">'
+    +   '<div class="nov-prog indet"><i></i></div>'
+    +   '<p class="muted" style="text-align:center;font-size:13px">已提交，等待执行器接手…</p>'
+    + '</div>'
+    + '<div id="cgList"></div>'
+    + '<p class="muted" id="cgLock" style="font-size:11.5px;margin-top:10px"></p>';
+
+  openSheet('🏗 ' + civ + ' · ' + tag + '中', body,
+      '<button class="sm" onclick="cgRunInBackground()">后台运行</button>'
+    + '<button class="sm danger" id="cgAbort" onclick="cgAbort(\'' + esc(tid) + '\')">中止</button>');
+}
+
+function cgRunInBackground(){
+  if (CG_POLL){ clearInterval(CG_POLL); CG_POLL = null; }
+  closeSheet();
+  toast('已转入后台，右下角胶囊可随时查看进度', false);
+  setTimeout(pollActive, 300);
+}
+
+async function cgAbort(tid){
+  var r = await api('/api/tasks/'+encodeURIComponent(tid), {method:'DELETE'}).catch(function(){return null;});
+  if (CG_POLL){ clearInterval(CG_POLL); CG_POLL = null; }
+  toast(r && r.canceled ? '已取消' : '取消请求已发出', !(r && r.canceled));
+  refreshCardgenView(tid, null, null, null, true);
+}
+
+function startCardgenPoll(tid, civ, spec, real){
+  if (CG_POLL) clearInterval(CG_POLL);
+  var tick = async function(){
+    var d = null;
+    try { d = await api('/api/tasks/'+encodeURIComponent(tid)); } catch(e){ return; }
+    if (!d || !d.state) return;
+    // 弹层已关（后台运行）→ 停轮询，交给胶囊
+    if (!sheet.classList.contains('open')){ clearInterval(CG_POLL); CG_POLL = null; return; }
+    // 弹层标题被换成别的了（用户开了别的详情）→ 也停
+    var title = document.getElementById('shTitle').textContent || '';
+    if (title.indexOf(civ) < 0 && title.indexOf('建卡') < 0 && title.indexOf('文明') < 0){
+      clearInterval(CG_POLL); CG_POLL = null; return;
+    }
+    refreshCardgenView(tid, civ, spec, real, false, d);
+    if (['done','failed','rejected','canceled'].indexOf(d.state) >= 0){
+      clearInterval(CG_POLL); CG_POLL = null;
+      // 让胶囊也尽快更新
+      setTimeout(pollActive, 350);
+    }
+  };
+  CG_POLL = setInterval(tick, 2000);
+  tick();
+}
+
+/* 刷新进度视图（局部更新，不重建整个弹层 —— 保证进度条能平滑过渡） */
+function refreshCardgenView(tid, civ, spec, real, aborted, d){
+  var live = document.getElementById('cgLive');
+  var list = document.getElementById('cgList');
+  var lockEl = document.getElementById('cgLock');
+  if (!live || !list) return;
+
+  if (!d){
+    live.innerHTML = '<p class="muted" style="text-align:center">刷新中…</p>';
+    return;
+  }
+
+  var st = d.state;
+  var prog = null;
+  try { prog = JSON.parse(d.result || '{}'); } catch(e){ prog = null; }
+
+  var total = (prog && prog.total) || 0;
+  var doneN = (prog && prog.done) || 0;
+  var okN = (prog && prog.success) || 0;
+  var failN = (prog && prog.failed) || 0;
+  var finished = okN + failN;
+  var pct = total ? Math.round(finished / total * 100) : 0;
+
+  var finishedStates = ['done','failed','rejected','canceled'];
+  var isFin = finishedStates.indexOf(st) >= 0;
+
+  // ── 顶部进度 ──
+  var badge = st === 'running' ? '<span class="nov-badge run">执行中</span>'
+            : st === 'pending' ? '<span class="nov-badge pend">排队中</span>'
+            : st === 'done' ? '<span class="nov-badge done">已完成</span>'
+            : st === 'rejected' ? '<span class="nov-badge bad">被拒</span>'
+            : st === 'canceled' ? '<span class="nov-badge bad">已取消</span>'
+            : '<span class="nov-badge bad">失败</span>';
+
+  var head = '<div style="display:flex;align-items:baseline;gap:9px;margin-bottom:2px">'
+           +   '<b class="nov-num" style="font-size:22px">' + finished + '</b>'
+           +   '<span class="muted">/ ' + (total || '?') + ' 张</span>'
+           +   '<span style="margin-left:auto">' + badge + '</span>'
+           + '</div>';
+
+  if (total){
+    head += '<div class="nov-prog"><i style="width:' + pct + '%"></i></div>';
+  } else if (!isFin){
+    head += '<div class="nov-prog indet"><i></i></div>';
+  }
+
+  if (isFin){
+    head += '<div class="muted" style="font-size:12px;display:flex;gap:14px;margin-top:6px">'
+         +    '<span>✅ 成功 <b class="nov-num">' + okN + '</b></span>'
+         +    '<span>❌ 失败 <b class="nov-num">' + failN + '</b></span>'
+         +    (prog && prog.swept_placeholders ? '<span>🧹 清理 <b class="nov-num">'+prog.swept_placeholders+'</b></span>' : '')
+         +  '</div>';
+  } else {
+    head += '<p class="muted" style="font-size:12.5px;margin:6px 0 0">'
+         +  (st === 'pending' ? '等待执行器接手…'
+            : (prog && prog.current ? '正在生成 <span class="mono">' + esc(prog.current) + '</span>'
+                                    : '生成中…'))
+         +  '</p>';
+  }
+  live.innerHTML = head;
+
+  // ── 结果列表（按 code 顺序，stagger） ──
+  if (prog && (prog.results || prog.failures)){
+    var rows = [];
+    (prog.results || []).forEach(function(r){
+      rows.push('<div class="nov-res ok"><span class="ic">✅</span>'
+        + '<span class="cd">' + esc(r.code||'') + '</span>'
+        + '<span class="nm">' + esc(r.name || r.path || '') + '</span>'
+        + '<span class="ch">' + (r.chars ? esc(r.chars)+' 字' : '') + '</span></div>');
+    });
+    (prog.failures || []).forEach(function(f){
+      rows.push('<div class="nov-res fail"><span class="ic">⚠</span>'
+        + '<span class="cd">' + esc(f.code||'') + '</span>'
+        + '<span class="nm" title="' + esc(f.why||'') + '">' + esc(f.why || '未知') + '</span></div>');
+    });
+    list.innerHTML = rows.length
+      ? '<div class="nov-stagger" style="margin-top:12px">' + rows.join('') + '</div>'
+      : '';
+  } else if (!isFin){
+    list.innerHTML = '';
+  }
+
+  // ── 锁状态提示 ──
+  if (lockEl){
+    if (real){
+      lockEl.innerHTML = isFin
+        ? '🔒 真跑结束，授权锁已自动上锁'
+        : '🔓 真跑进行中（授权锁已开，跑完自动上锁）';
+    } else {
+      lockEl.innerHTML = '安全预演：0 调 LLM、0 落盘';
+    }
+  }
+
+  // ── 底部按钮：跑完换一套 ──
+  var foot = document.getElementById('shFoot');
+  if (foot && isFin){
+    var okClick = "document.getElementById('L4').value=''";
+    foot.innerHTML =
+        '<button class="ok" onclick="cgAgain(\'' + esc(tid) + '\')">再建一批</button>'
+      + '<button class="sm" onclick="cgViewCards(\'' + esc(tid) + '\')">查看新卡</button>'
+      + '<button class="ghost" onclick="closeSheet()">关闭</button>';
+  }
+}
+
+/* 再建一批：重开建卡弹层 */
+function cgAgain(tid){
+  closeSheet();
+  setTimeout(openCardgen, 240);
+}
+
+/* 查看新卡：回资料库并按文明筛选 */
+async function cgViewCards(tid){
+  var d = null;
+  try { d = await api('/api/tasks/'+encodeURIComponent(tid)); } catch(e){}
+  var civ = (d && d.payload && d.payload.civ) || '';
+  closeSheet();
+  L4.cat = ''; L4.q = civ; L4ALL = null;   // 强刷全量，再按文明筛
+  go('l4');
+  setTimeout(function(){ toast('已筛选：' + civ, false); }, 500);
+}
+
+/* ══════ 任务看板（路径A） ══════ */
+var BOARD_FILTER = '';
+async function viewBoard(){
+  try{
+    var d = await api('/api/tasks/list');
+    var tasks = (d.tasks||[]);
+    var cnt = {};
+    tasks.forEach(function(t){ cnt[t.state]=(cnt[t.state]||0)+1; });
+    var stateZh = {pending:'待执行',blocked:'被锁',running:'执行中',done:'已完成',rejected:'被拒',failed:'失败',canceled:'已取消'};
+    var stateCls = {done:'ok',pending:'',running:'warn',blocked:'warn',rejected:'bad',failed:'bad',canceled:'muted'};
+    var list = BOARD_FILTER ? tasks.filter(function(t){ return t.state===BOARD_FILTER; }) : tasks;
+    var cards = list.map(function(t){
+      var st = stateZh[t.state]||t.state;
+      var cls = stateCls[t.state]||'';
+      var ts = t.created_ts ? new Date(t.created_ts*1000).toLocaleString() : '';
+      var prev = t.result_preview ? '<div class="t">'+(esc(String(t.result_preview)))+'</div>' : '';
+      var actionable = (t.state==='pending');
+      return '<div class="item" id="task_'+esc(t.id)+'">'
+        + '<div class="r1"><span class="lay">'+esc(t.kind)+'</span><span class="k">'+esc(t.id)+'</span>'
+        + '<span class="'+cls+'" style="font-size:12px">'+esc(st)+'</span></div>'
+        + '<div class="t">'+esc(ts)+(t.gate_l1||t.gate_l2?' · 门控 L1='+esc(t.gate_l1)+' L2='+esc(t.gate_l2):'')+'</div>'
+        + prev
+        + '<div class="acts">'
+        + (actionable ? '<button class="sm" onclick="runTask(\''+esc(t.id)+'\')">触发执行</button>' : '')
+        + '<button class="sm" onclick="taskDetail(\''+esc(t.id)+'\')">详情</button>'
+        + ((t.state==='pending'||t.state==='blocked') ? '<button class="sm danger" onclick="cancelTask(\''+esc(t.id)+'\')">取消</button>' : '')
+        + '</div></div>';
+    }).join('');
+    var pills = '<button class="'+(BOARD_FILTER===''?'':'sm')+'" onclick="BOARD_FILTER=\'\';viewBoard()">全部 '+tasks.length+'</button>'
+      + Object.keys(cnt).map(function(s){ return '<button class="'+(BOARD_FILTER===s?'':'sm')+'" onclick="BOARD_FILTER=\''+s+'\';viewBoard()">'+esc(stateZh[s]||s)+' '+cnt[s]+'</button>'; }).join('');
+    h('<h2>任务看板</h2>'
+      + '<p class="muted">面板派发的任务落在这里。点「触发执行」由执行器调用 ne_run_chapter → l5.py，结果自动回写。</p>'
+      + '<div class="box"><div class="k">队列概况</div><div class="v">'
+        + '待执行 '+esc(cnt.pending||0)+' · 执行中 '+esc(cnt.running||0)+' · 完成 '+esc(cnt.done||0)+' · 被拒 '+esc(cnt.rejected||0)
+        + '<br><span class="muted">执行器：需在 Operit 侧手动触发（见「触发执行」）</span></div></div>'
+      + '<div class="tab">'+pills+'</div>'
+      + '<div>'+(cards||'<p class="muted">暂无任务。到「L3 细纲」页点「派发」创建。</p>')+'</div>');
+  }catch(e){ fail(e); }
+}
+/* 触发执行（2026-10-17 重构：真派发）
+ *
+ * 【历史 bug】改造前这里是
+ *     jpost('/api/tasks/{id}/result', {state:'running'})
+ * 把任务从 pending 改成 running，而 exec_pending.py 只扫 pending
+ * → 用户越点「触发执行」，任务越不可能被执行，永久僵死。
+ *
+ * 现在改为 POST /api/tasks/{id}/dispatch，服务端 spawn 执行器并立即返回，
+ * 不改任务状态（保持 pending 让执行器扫到，状态由执行器回写）。
+ */
+async function runTask(id, btnEl){
+  await withBtn(btnEl, '启动中…', async function(){
+    var r = await jpost('/api/tasks/'+encodeURIComponent(id)+'/dispatch', {limit:1});
+    if (r && r.ok){
+      if (r.already_running){
+        toast('已有执行器在跑（pid ' + r.pid + '），本轮不重复启动', false);
+      } else {
+        toast('执行器已启动（pid ' + r.pid + '），后台跑，不阻塞面板', false);
+      }
+      // 立刻轮询一次，让胶囊出现
+      setTimeout(pollActive, 400);
+      setTimeout(function(){ if (CUR === 'board') viewBoard(); }, 1500);
+    } else {
+      toast((r && (r.reason || r.error)) || '启动失败', true);
+    }
+  });
+}var STATE_ZH = {pending:'待执行',blocked:'被锁',running:'执行中',done:'已完成',
+                rejected:'被拒',failed:'失败',canceled:'已取消'};
+var STATE_BADGE = {pending:'pend',blocked:'pend',running:'run',done:'done',
+                   rejected:'bad',failed:'bad',canceled:'bad'};
+
+async function taskDetail(id){
+  try{
+    var d = await api('/api/tasks/'+encodeURIComponent(id));
+    var pl = d.payload || {};
+    var st = d.state || '';
+    var badge = STATE_BADGE[st] || 'pend';
+    var title = (d.kind === 'cardgen')
+      ? ('建卡 · ' + (pl.civ || '?'))
+      : (d.kind === 'chapter_gen')
+        ? ('正文 · ' + (pl.volume || '') + (pl.chapter ? ' 第'+pl.chapter+'章' : ''))
+        : ('任务 · ' + (d.kind || ''));
+
+    var body = ''
+      + '<div class="box"><div class="k">状态</div><div class="v" style="display:flex;align-items:center;gap:9px">'
+      +   '<span class="nov-badge '+badge+'" style="font-size:12.5px">'+esc(STATE_ZH[st]||st)+'</span>'
+      +   '<span class="muted mono" style="font-size:11.5px">'+esc(id)+'</span>'
+      + '</div></div>'
+      + '<div class="box"><div class="k">参数</div><div class="v mono" style="font-size:12px">'
+      +   esc(JSON.stringify(pl, null, 1)) + '</div></div>'
+      + '<h3>结果</h3>' + renderTaskResult(d.result);
+
+    var foot = '';
+    if (st === 'pending'){
+      foot += '<button class="primary" onclick="runTask(\''+esc(id)+'\', this)">立即执行</button>';
+    }
+    foot += '<button class="sm" onclick="closeSheet();viewBoard()">任务看板</button>'
+          + '<button onclick="closeSheet()">关闭</button>';
+
+    openSheet(title, body, foot);
+
+    // 若从别处跳来（如建卡弹层），给个返回入口
+    if (typeof TASK_BACK_FROM !== 'undefined' && TASK_BACK_FROM){
+      pushNav(TASK_BACK_FROM.label, TASK_BACK_FROM.onBack);
+      TASK_BACK_FROM = null;
+    }
+  }catch(e){ toast(e.message||e, true); }
+}
+var TASK_BACK_FROM = null;
+async function cancelTask(id){
+  if(!confirm('取消任务 '+id+'？')) return;
+  var r = await api('/api/tasks/'+encodeURIComponent(id), {method:'DELETE'});
+  toast(r.canceled?'已取消':'取消失败', !r.canceled); viewBoard();
+}
+/* ══════ 正文进度 ══════ */
 async function viewL5(){
   try{
     var r = await Promise.all([
@@ -461,16 +1789,17 @@ async function viewL5(){
     var tasks = (t.tasks||[]).slice(0,5).map(function(x){
       return '<div class="item"><div class="r1"><span class="lay">'+esc(x.kind)+'</span><span class="k">'+esc(x.state)+'</span></div></div>';
     }).join('');
-    h('<h2>L5 正文 '+esc(CURVOL)+'</h2>'
-      + segState('\u270d\ufe0f','层状态',[ esc(c.progress||'-')+' 章 '+statLine('（DB '+esc(c.db_chapters||0)+' / 磁盘 '+esc(c.disk_files||0)+' / 细纲 '+esc(c.outline_chapters||0)+'）') ])
-      + segGate([ ok(1), '<span class="muted">下一章：第 '+esc(CH)+' 章</span>' ])
-      + segNext(c.next_action||'-')
-      + '<h3>流水线</h3>'
-      + '<div class="box" style="margin-bottom:10px"><div class="v">'
-      + '<p>\u2460 \u53d6\u6ce8\u5165\u5305  <button class="sm" onclick="showInject('+CH+')">\u53d6\u5305</button></p>'
-      + '<p>\u2461 \u751f\u6210\u6b63\u6587 <button class="sm" '+dis+' onclick="genChapter('+CH+')">\u751f\u6210</button> '+(g.unlocked?'':'<span class="muted">(\u9501\u672a\u5f00)</span>')+'</p>'
-      + '<p>\u2462 16 \u95e8\u7981   <button class="sm" onclick="checkChapter('+CH+')">\u68c0\u67e5</button></p>'
-      + '<p>\u2463 \u843d\u5e93 sync  <button class="sm" '+dis+' onclick="syncChapter()">\u843d\u5e93</button></p>'
+    h('<h2>正文进度 · '+esc(CURVOL)+'</h2>'
+      + '<p class="muted">按细纲逐章生成正文，再过 16 道门禁质检、落库。</p>'
+      + '<div class="box"><div class="k">成稿进度</div><div class="v">'+esc(c.progress||'-')+' 章 '
+        + statLine('（已落库 '+esc(c.db_chapters||0)+' / 磁盘 '+esc(c.disk_files||0)+' / 细纲 '+esc(c.outline_chapters||0)+'）')+'</div></div>'
+      + '<div class="box next"><div class="k">下一章</div><div class="v">第 '+esc(CH)+' 章</div></div>'
+      + (c.next_action ? '<div class="box"><div class="k">下一步</div><div class="v">'+esc(c.next_action)+'</div></div>' : '')
+      + '<h3>写作流水线</h3><div class="box"><div class="v">'
+      + '<p>① 取注入包 <button class="sm" onclick="showInject('+CH+')">取包</button></p>'
+      + '<p>② 生成正文 <button class="sm" '+dis+' onclick="genChapter('+CH+')">生成</button> '+(g.unlocked?'':'<span class="muted">（未开锁）</span>')+'</p>'
+      + '<p>③ 16 道门禁 <button class="sm" onclick="checkChapter('+CH+')">检查</button></p>'
+      + '<p>④ 落库同步 <button class="sm" '+dis+' onclick="syncChapter()">落库</button></p>'
       + '</div></div>'
       + '<h3>已登记任务</h3><div>'+(tasks||'<p class="muted">无</p>')+'</div>');
   }catch(e){ fail(e); }
@@ -481,12 +1810,12 @@ async function showInject(ch){
     var b = d.blocks_summary||{};
     var rows = Object.keys(b).map(function(k){
       var v = b[k];
-      var s = (typeof v==='object' && v!==null) ? JSON.stringify(v).slice(0,120) : String(v);
+      var s = (typeof v==='object' && v!==null) ? JSON.stringify(v).slice(0,160) : String(v);
       return '<div class="item"><div class="r1"><span class="k">'+esc(k)+'</span></div><div class="t">'+esc(s)+'</div></div>';
     }).join('');
-    openSheet('第'+ch+'章 注入包',
+    openSheet('第'+ch+'章 · 注入包',
       '<p class="muted">'+esc(d.title||'')+' · '+esc(d.note||'')+'</p>'
-      + '<h3>12 块摘要</h3><div>'+rows+'</div>'
+      + '<h3>素材块摘要</h3><div>'+rows+'</div>'
       + '<h3>缺失引用（'+(d.missing_refs||[]).length+'）</h3>'
       + '<pre>'+esc(JSON.stringify(d.missing_refs||[], null, 1))+'</pre>',
       '<button onclick="closeSheet()">关闭</button>');
@@ -496,55 +1825,49 @@ async function checkChapter(ch){
   var r = await jpost('/api/pipeline/check', {volume:CURVOL, chapter:ch});
   if(!r || r.error){ toast((r&&r.error)||'检查失败', true); return; }
   var gates = (r.gates||[]).map(function(g){
-    return '<div class="item"><div class="r1">'+(g.pass?'<span class="ok">\u2713</span>':'<span class="bad">\u2717</span>')+'<span class="k">'+esc(g.name)+'</span></div>'
-      + (g.detail?'<div class="t">'+esc(String(g.detail).slice(0,160))+'</div>':'')+'</div>';
+    return '<div class="item"><div class="r1">'+(g.pass?'<span class="ok">✓</span>':'<span class="bad">✗</span>')+'<span class="k">'+esc(g.name)+'</span></div>'
+      + (g.detail?'<div class="t">'+esc(String(g.detail).slice(0,200))+'</div>':'')+'</div>';
   }).join('');
-  openSheet('第'+ch+'章 门禁 · '+esc(r.verdict),
-    segGate([ 'P0 '+esc(r.p0_count||0)+' 条　P1 '+esc(r.p1_count||0)+' 条', statLine('字数 '+esc(r.words)+' / 跑 '+esc(r.gates_run)+' 道') ])
+  openSheet('第'+ch+'章 · 门禁 '+esc(r.verdict),
+    '<div class="box"><div class="k">结论</div><div class="v">P0 '+esc(r.p0_count||0)+' 条　P1 '+esc(r.p1_count||0)+' 条　'
+    + statLine('字数 '+esc(r.words)+' / 跑 '+esc(r.gates_run)+' 道')+'</div></div>'
     + '<div>'+(gates||'<p class="muted">无</p>')+'</div>',
     '<button onclick="closeSheet()">关闭</button>');
 }
 async function genChapter(ch){
   var r = await jpost('/api/tasks/submit', {kind:'chapter_gen', payload:{volume:CURVOL, chapter:ch}});
-  toast(r.ok?('已登记生成任务 '+r.id):(r.error||'被拒'), !r.ok);
-  viewL5();
+  toast(r.ok?('已登记生成任务 '+r.id):(r.error||'被拒'), !r.ok); viewL5();
 }
 async function syncChapter(){
   var r = await jpost('/api/tasks/submit', {kind:'sync', payload:{volume:CURVOL}});
-  toast(r.ok?('已登记落库任务 '+r.id):(r.error||'被拒'), !r.ok);
-  viewL5();
+  toast(r.ok?('已登记落库任务 '+r.id):(r.error||'被拒'), !r.ok); viewL5();
 }
 
-/* ══════ 页面⑧ 治理台 ══════ */
+/* ══════ 治理台 ══════ */
 async function viewGov(){
   try{
-    var r = await Promise.all([
-      api('/api/overview'), api('/api/system/gate'),
-      api('/api/audit/snapshots'), api('/api/audit/llm-logs')
-    ]);
+    var r = await Promise.all([api('/api/overview'), api('/api/system/gate'), api('/api/audit/snapshots'), api('/api/audit/llm-logs')]);
     var ov=r[0], g=r[1], sn=r[2], llm=r[3];
     var snaps = (sn.snapshots||[]).slice(0,6).map(function(s){
       return '<div class="item"><div class="r1"><span class="k">'+esc(String(s.snap_id).slice(0,14))+'</span></div>'
-        + '<div class="t">'+esc(s.label)+' \u00b7 '+esc(new Date(s.created_ts*1000).toLocaleString())+'</div></div>';
+        + '<div class="t">'+esc(s.label)+' · '+esc(new Date(s.created_ts*1000).toLocaleString())+'</div></div>';
     }).join('');
     h('<h2>治理台</h2>'
-      + segState('\u2696\ufe0f','法理基线',[ statLine('world-gov · 风险库两库分离') ])
-      + segGate([ '结构脏点（待审）', '<span class="muted">未决风险 '+esc(ov.open_risks)+' 条</span>' ])
-      + segNext('单卡检视/全库扫描属高危，走任务提交（需双重门控）。')
-      + '<h3>二次门控</h3><p class="row">\u2460 '+pid(g.gate_l1)+'\u3000\u2461 '+pid(g.gate_l2)+'</p>'
-      + '<div class="row" style="margin:10px 0"><button class="sm" onclick="submitGovTask(\'inspect_card\')">\u5355\u5361\u68c0\u89c6</button>'
-      + '<button class="sm" onclick="submitGovTask(\'scan\')">\u5168\u5e93\u626b\u63cf</button></div>'
+      + '<div class="box"><div class="k">风险</div><div class="v">未决风险 '+esc(ov.open_risks)+' 条</div></div>'
+      + '<div class="box"><div class="k">二次门控</div><div class="v">① '+pid(g.gate_l1)+'　② '+pid(g.gate_l2)+'</div></div>'
+      + '<p class="muted">单卡检视 / 全库扫描属高危操作，走任务提交（需双重门控）。</p>'
+      + '<div class="row" style="margin:10px 0"><button class="sm" onclick="submitGovTask(\'inspect_card\')">单卡检视</button>'
+      + '<button class="sm" onclick="submitGovTask(\'scan\')">全库扫描</button></div>'
       + '<h3>快照（'+esc(sn.count)+'）</h3><div>'+(snaps||'<p class="muted">无</p>')+'</div>'
-      + '<h3>LLM 调用统计</h3><pre>'+esc(JSON.stringify(llm,null,1).slice(0,600))+'</pre>');
+      + '<h3>模型调用统计</h3><pre>'+esc(JSON.stringify(llm,null,1).slice(0,700))+'</pre>');
   }catch(e){ fail(e); }
 }
 async function submitGovTask(kind){
   var r = await jpost('/api/tasks/submit', {kind:kind, payload:{}});
-  toast(r.ok?('已登记 '+r.id):(r.error||'被拒（锁未开）'), !r.ok);
-  viewGov();
+  toast(r.ok?('已登记 '+r.id):(r.error||'被拒（锁未开）'), !r.ok); viewGov();
 }
 
-/* ══════ 页面⑨ 模型配置 ══════ */
+/* ══════ 模型配置 ══════ */
 async function viewModel(){
   try{
     var r = await Promise.all([api('/api/config/llm'), api('/api/system/gate'), api('/api/audit/op-logs?limit=30')]);
@@ -553,57 +1876,57 @@ async function viewModel(){
     var epCards = Object.keys(eps).map(function(k){
       var e=eps[k]||{};
       return '<div class="item"><div class="r1"><span class="k">'+esc(k)+'</span></div>'
-        + '<div class="t">\u5730\u5740 '+(e.base_configured?'<span class="ok">\u5df2\u914d</span>':'<span class="bad">\u672a\u914d</span>')
-        + ' \u00b7 '+(e.base_loopback?'<span class="ok">\u672c\u673a</span>':'<span class="warn">\u5916\u90e8</span>')
-        + '<br>Key '+(e.api_key_configured?'<span class="ok">\u5df2\u8bbe\uff08\u63a9\u7801\uff09</span>':'<span class="muted">\u65e0</span>')
-        + ' \u00b7 \u6a21\u578b '+esc(e.model_configured?'\u5df2\u914d':'\u7f3a')+'</div></div>';
+        + '<div class="t">地址 '+(e.base_configured?'<span class="ok">已配</span>':'<span class="bad">未配</span>')
+        + ' · '+(e.base_loopback?'<span class="ok">本机</span>':'<span class="warn">外部</span>')
+        + '<br>密钥 '+(e.api_key_configured?'<span class="ok">已设（掩码）</span>':'<span class="muted">无</span>')
+        + ' · 模型 '+esc(e.model_configured?'已配':'缺')+'</div></div>';
     }).join('');
-    var logCards=(logs.logs||[]).filter(function(x){ return String(x.action).indexOf('llm')===0; })
-      .slice(0,6).map(function(x){ return '<div class="item"><div class="r1"><span class="k">'+esc(x.action)+'</span></div><div class="t">'+esc(x.time)+'<br>'+esc(x.detail)+'</div></div>'; }).join('');
     h('<h2>模型配置</h2>'
-      + segState('\u2699\ufe0f','配置文件',[ '<code>'+esc(cfg.path)+'</code> '+(cfg.exists?'<span class="ok">\u5df2\u5b58\u5728</span>':'<span class="warn">\u4e0d\u5b58\u5728</span>') ])
+      + '<div class="box"><div class="k">配置文件</div><div class="v"><code>'+esc(cfg.path)+'</code> '+(cfg.exists?'<span class="ok">已存在</span>':'<span class="warn">不存在</span>')+'</div></div>'
       + '<h3>端点（掩码）</h3><div>'+(epCards||'<p class="muted">无</p>')+'</div>'
       + '<div class="cards" style="margin:10px 0">'
-      + '<div class="card"><div class="n">'+esc(c.max_resp_tokens)+'</div><div class="l">max_tokens</div></div>'
-      + '<div class="card"><div class="n">'+esc(c.timeout_sec)+'</div><div class="l">timeout</div></div>'
-      + '<div class="card"><div class="n">'+esc(c.max_retry)+'</div><div class="l">retry</div></div>'
-      + '<div class="card"><div class="n">'+esc(c.breaker_threshold)+'</div><div class="l">\u7194\u65ad</div></div></div>'
+      + '<div class="card"><div class="n">'+esc(c.max_resp_tokens)+'</div><div class="l">输出上限</div></div>'
+      + '<div class="card"><div class="n">'+esc(c.timeout_sec)+'</div><div class="l">超时(秒)</div></div>'
+      + '<div class="card"><div class="n">'+esc(c.max_retry)+'</div><div class="l">重试</div></div>'
+      + '<div class="card"><div class="n">'+esc(c.breaker_threshold)+'</div><div class="l">熔断阈值</div></div></div>'
       + '<h3>修改</h3>'
-      + '<label class="lbl">\u7aef\u70b9 URL</label><input id="lu" style="width:100%" placeholder="http://127.0.0.1:8788/v1">'
-      + '<label class="lbl">\u6a21\u578b\u540d</label><input id="lm" style="width:100%" placeholder="glm-5.3-flash">'
-      + '<label class="lbl">API Key（\u7559\u7a7a=\u4e0d\u6539）</label><input id="lk" type="password" style="width:100%">'
-      + '<label class="lbl">\u540e\u7aef\u540d</label><input id="lb" style="width:100%" value="openai_compat">'
-      + '<div class="three"><div><label class="lbl">max_tokens</label><input id="lt" type="number" style="width:100%" value="'+esc(c.max_resp_tokens)+'"></div>'
-      + '<div><label class="lbl">temperature</label><input id="lp" type="number" step="0.1" style="width:100%" placeholder="0.7"></div>'
-      + '<div><label class="lbl">\u91cd\u8bd5</label><input id="lr" type="number" style="width:100%" value="'+esc(c.max_retry)+'"></div></div>'
-      + '<div class="row" style="margin:12px 0"><button class="sm" onclick="llmTest()">\u6d4b\u8bd5</button>'
-      + '<button class="sm" onclick="llmSave()">\u4fdd\u5b58</button>'
-      + '<button class="sm" onclick="llmReload()">\u91cd\u8f7d</button>'
-      + '<button class="sm danger" onclick="llmReset()">\u91cd\u7f6e</button></div>'
+      + '<label class="lbl">端点 URL</label><input id="lu" style="width:100%" placeholder="http://127.0.0.1:8788/v1">'
+      + '<label class="lbl">模型名</label><input id="lm" style="width:100%" placeholder="glm-5.3-flash">'
+      + '<label class="lbl">API Key（留空=不改）</label><input id="lk" type="password" style="width:100%">'
+      + '<label class="lbl">后端名</label><input id="lb" style="width:100%" value="openai_compat">'
+      + '<div class="row" style="margin-top:10px">'
+      + '<div><label class="lbl">输出上限</label><input id="lt" type="number" value="'+esc(c.max_resp_tokens)+'"></div>'
+      + '<div><label class="lbl">温度</label><input id="lp" type="number" step="0.1" placeholder="0.7"></div>'
+      + '<div><label class="lbl">重试</label><input id="lr" type="number" value="'+esc(c.max_retry)+'"></div></div>'
+      + '<div class="row" style="margin:12px 0"><button class="sm" onclick="llmTest()">测试连接</button>'
+      + '<button class="sm" onclick="llmSave()">保存</button>'
+      + '<button class="sm" onclick="llmReload()">重载</button>'
+      + '<button class="sm danger" onclick="llmReset()">重置</button></div>'
       + '<div id="probe"></div>'
-      + '<h3>\u95e8\u63a7</h3><p class="row">\u2460 '+pid(g.gate_l1)+'\u3000\u2461 '+pid(g.gate_l2)+'</p>'
-      + '<h3>\u6700\u8fd1\u5ba1\u8ba1</h3><div>'+(logCards||'<p class="muted">无</p>')+'</div>');
+      + '<h3>门控</h3><p class="row">① '+pid(g.gate_l1)+'　② '+pid(g.gate_l2)+'</p>');
   }catch(e){ fail(e); }
 }
 
-/* ══════ 路由（9 页） ══════ */
-var views = { funnel:viewFunnel, l0:viewL0, l1:viewL1, l2:viewL2, l3:viewL3,
-              l4:viewL4, l5:viewL5, gov:viewGov, model:viewModel };
-var TITLES = { funnel:'\u6f0f\u6597\u603b\u53f0', l0:'L0 \u6982\u62ec', l1:'L1 \u603b\u7eb2',
-               l2:'L2 \u5206\u5377', l3:'L3 \u7ec6\u7eb2', l4:'L4 \u8d44\u6599',
-               l5:'L5 \u6b63\u6587', gov:'\u6cbb\u7406\u53f0', model:'\u6a21\u578b\u914d\u7f6e' };
+/* ══════ 路由 ══════ */
+var views = { home:viewHome, l0:viewL0, l1:viewL1, l1x:viewL1x, l2:viewL2, l3:viewL3, l4:viewL4, l5:viewL5, board:viewBoard, gov:viewGov, model:viewModel };
+var TITLES = { home:'总览', l0:'L0 整本概括', l1:'L1 具体总纲', l1x:'L1x 宏大对抗', l2:'L2 分卷大纲', l3:'L3 细纲', l4:'L4 资料库', l5:'L5 正文', board:'任务看板', gov:'治理台', model:'模型配置' };
 Array.prototype.forEach.call(document.querySelectorAll('nav a[data-v]'), function(a){
   a.onclick = function(){
     Array.prototype.forEach.call(document.querySelectorAll('nav a'), function(x){ x.classList.remove('active'); });
     a.classList.add('active');
     CUR = a.dataset.v;
-    setTitle(TITLES[CUR] || 'world-gov');
+    setTitle(TITLES[CUR] || '创作台');
     toggleNav(false);
+    // 切页淡入：先移除再加，强制 reflow 让动画能重播
+    main.classList.remove('nov-enter');
+    void main.offsetWidth;
+    main.classList.add('nov-enter');
     views[CUR]();
   };
 });
-viewFunnel();
-
+viewHome();
+/* 启动全局任务轮询（右下角胶囊：有活 3 秒、没活 8 秒） */
+startPolling();
 </script>
 </body>
 </html>

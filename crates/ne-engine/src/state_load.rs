@@ -3,7 +3,7 @@
 //! **修复的历史 bug**：这些脚本全部硬编码
 //! `ROOT = "/sdcard/projects/系统/资料库"`（`load_state_a.py:28`、`load_state_b.py:33`、
 //! `emuload.py:31`、`tick.py:41`、`fill.py:20`）。真库实际在
-//! `/sdcard/Download/小说相关备份/projects/projects/系统/资料库`。
+//! `<资料库根>/`。
 //! Rust 版路径由调用方注入。
 //!
 //! 本模块只做**解析 + 校验**（产出结构化行 / 报告），不写 DB。

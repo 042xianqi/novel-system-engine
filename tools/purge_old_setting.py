@@ -21,7 +21,7 @@
 """
 import argparse, glob, json, os, shutil, sqlite3, sys, datetime
 
-R = os.environ.get("S10_ROOT", "/sdcard/Download/小说相关备份/projects/projects/系统/资料库")
+R = os.environ.get("S10_ROOT", os.environ.get("NOVEL_LIB_ROOT", "/sdcard/Download/小说相关备份/projects/projects/系统/资料库"))
 DB = os.path.join(R, "novel.db")
 BK = os.path.join(R, "09_冷备份", "pre_s10_20261011_0148")
 DUMP = os.path.join(BK, "old_setting_dump")

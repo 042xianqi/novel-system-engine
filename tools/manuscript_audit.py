@@ -14,7 +14,7 @@
 #   python3 tools/manuscript_audit.py --volume 卷01 --json-only
 import subprocess, json, os, sys, re, argparse, datetime, collections
 
-ROOT = '/sdcard/Download/小说相关备份/projects/projects/系统/资料库'
+ROOT = os.environ.get('NOVEL_LIB_ROOT', '/sdcard/Download/小说相关备份/projects/projects/系统/资料库')
 TEXT_DIR = os.path.join(ROOT, '04_正文')
 BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'target', 'release', 'ne-mcp')
 REPORT_DIR = os.path.join(ROOT, '07_勘误工坊', 'reports')

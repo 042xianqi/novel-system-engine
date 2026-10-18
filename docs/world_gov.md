@@ -30,7 +30,7 @@ L0（宇宙顶层总纲）
 
 ```bash
 B=/root/novel-system/target/release/ne-agent
-LIB='/sdcard/Download/小说相关备份/projects/projects/系统/资料库'
+LIB='${NOVEL_LIB_ROOT}/'
 
 # 1) 建立法理基线（只存摘要/指纹，不存原文；--dry-run 沙盘不落盘）
 $B --work-root "$LIB" world-gov bootstrap --dry-run   # 沙盘

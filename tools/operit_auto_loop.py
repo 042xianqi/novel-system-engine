@@ -21,7 +21,7 @@
 #   （env 未开闸时直接拒绝执行；daily 预算超限拒绝执行）
 import subprocess, json, sys, os, time, random, argparse, datetime
 
-ROOT = '/sdcard/Download/小说相关备份/projects/projects/系统/资料库'
+ROOT = os.environ.get('NOVEL_LIB_ROOT', '/sdcard/Download/小说相关备份/projects/projects/系统/资料库')
 REPO = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
 BIN = os.path.join(REPO, 'target', 'release', 'ne-mcp')
 DAILY_TOKEN_CAP = 1_200_000

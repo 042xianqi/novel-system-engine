@@ -13,7 +13,7 @@ set -uo pipefail
 SKILL_ROOT=".skill_run"
 mkdir -p "${SKILL_ROOT}/jobs" "${SKILL_ROOT}/logs" "${SKILL_ROOT}/tmp"
 
-DEFAULT_LIB="/sdcard/Download/小说相关备份/projects/projects/系统/资料库"
+DEFAULT_LIB="${NOVEL_LIB_ROOT:-/sdcard/Download/小说相关备份/projects/projects/系统/资料库}"
 LIB="${NE_AGENT_LIB:-$DEFAULT_LIB}"
 
 gen_job_id() { echo "job_$(date +%Y%m%d_%H%M%S)_$RANDOM"; }

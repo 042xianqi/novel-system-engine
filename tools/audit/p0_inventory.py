@@ -3,7 +3,7 @@
 """P0 quansystem static probe. Output inventory.json."""
 import os, re, json, sqlite3
 
-LIB = "/sdcard/Download/小说相关备份/projects/projects/系统/资料库"
+LIB = os.environ.get('NOVEL_LIB_ROOT', os.environ.get("NOVEL_LIB_ROOT", "/sdcard/Download/小说相关备份/projects/projects/系统/资料库"))
 ROOT = "/root/novel-system"
 CRATES = os.path.join(ROOT, "crates")
 OUT = os.path.join(ROOT, "tools/audit/inventory.json")

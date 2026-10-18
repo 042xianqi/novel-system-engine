@@ -20,7 +20,7 @@
 #   python3 tools/conflict_triage.py --json-only    # 只要统计
 import sqlite3, json, hashlib, os, sys, argparse, datetime, collections
 
-ROOT = '/sdcard/Download/小说相关备份/projects/projects/系统/资料库'
+ROOT = os.environ.get('NOVEL_LIB_ROOT', '/sdcard/Download/小说相关备份/projects/projects/系统/资料库')
 DB = os.path.join(ROOT, 'novel.db')
 REPORT_DIR = os.path.join(ROOT, '07_勘误工坊', 'reports')
 RANK = {'conflict': 0, 'suspect': 1, 'unclear': 2, 'ok': 3}

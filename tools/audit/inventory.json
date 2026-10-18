@@ -1,6 +1,6 @@
 {
  "meta": {
-  "lib": "/sdcard/Download/小说相关备份/projects/projects/系统/资料库",
+  "lib": "${NOVEL_LIB_ROOT}/",
   "crate_count": 10,
   "src_files": 86,
   "data_unused": [

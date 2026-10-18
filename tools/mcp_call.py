@@ -9,7 +9,7 @@
 # 默认 DRY（real_semantic 缺省 false），绝不真实外呼。
 import subprocess, json, sys, os
 
-ROOT = '/sdcard/Download/小说相关备份/projects/projects/系统/资料库'
+ROOT = os.environ.get('NOVEL_LIB_ROOT', '/sdcard/Download/小说相关备份/projects/projects/系统/资料库')
 BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'target', 'release', 'ne-mcp')
 
 

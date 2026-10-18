@@ -18,7 +18,7 @@ fn lib_root() -> Option<std::path::PathBuf> {
         }
     }
     let default =
-        std::path::Path::new("/sdcard/Download/小说相关备份/projects/projects/系统/资料库");
+        std::path::Path::new("<资料库根>/");
     if default.join("novel.db").exists() {
         return Some(default.to_path_buf());
     }

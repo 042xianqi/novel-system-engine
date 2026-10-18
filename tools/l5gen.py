@@ -17,14 +17,18 @@
 #   python3 tools/l5gen.py --chapter 1 --force     # 覆写已存在文件
 import subprocess, json, os, sys, re, time, argparse, urllib.request
 
-ROOT = '/sdcard/Download/小说相关备份/projects/projects/系统/资料库'
+ROOT = os.environ.get('NOVEL_LIB_ROOT', '/sdcard/Download/小说相关备份/projects/projects/系统/资料库')
 REPO = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
 BIN = os.path.join(REPO, 'target', 'release', 'ne-mcp')
 STYLE = os.path.join(ROOT, '05_管线框架', 'prompts', 'l5_正文.md')
 TEXT_DIR = os.path.join(ROOT, '04_正文', '卷01')
-ENDPOINT = 'http://127.0.0.1:8788/v1/chat/completions'
-MODEL = 'glm-5.3-flash'
-KEY = 'sk-9c8bc3e9c09df023e7ca572d058e5d17af62226d18297a14'
+# 【2026-10-18 安全清理】原先此处硬编码了明文 API Key / 模型名，
+# 仓库即将转为公开，故改为全部从环境变量读取（默认值只指向本地网关）。
+# 铁律：任何 API Key 都不得写入版本库。
+ENDPOINT = os.environ.get(
+    'NOVEL_LLM_ENDPOINT', 'http://127.0.0.1:8788/v1/chat/completions')
+MODEL = os.environ.get('NOVEL_LLM_MODEL', 'deepseek-v4.1-flash')
+KEY = os.environ.get('NOVEL_LLM_KEY', '')  # 本地网关可留空
 
 
 class Mcp:

@@ -1,9 +1,0 @@
-=== stage: v50 ===
-2026-10-15 01:34:07
---- build ---
-build_errors=0
---- test ---
-passed=793 failed=0
-RESULT=OK passed=793 failed=0
---- restore-feature ---
-feature_restore=OK（release 产物已为 llm_integration 版，三重锁第一锁可用）

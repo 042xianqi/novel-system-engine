@@ -1,7 +1,0 @@
-=== stage: v41 ===
-2026-10-14 14:26:45
---- build ---
-build_errors=0
---- test ---
-passed=791 failed=0
-RESULT=OK passed=791 failed=0

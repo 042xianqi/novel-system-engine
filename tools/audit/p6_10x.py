@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # P6: 全模块总体 10 轮稳定性测试
 import subprocess, json, sys
-R="/sdcard/Download/小说相关备份/projects/projects/系统/资料库"
+R = os.environ.get('NOVEL_LIB_ROOT', os.environ.get("NOVEL_LIB_ROOT", "/sdcard/Download/小说相关备份/projects/projects/系统/资料库"))
 NA="/root/novel-system/target/release/ne-agent"
 PRB="/root/novel-system/target/release/examples/p1_probe"
 G07="/root/novel-system/target/release/examples/g07test"

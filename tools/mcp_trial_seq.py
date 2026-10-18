@@ -18,7 +18,7 @@
 #   python3 tools/mcp_trial_seq.py --mode real   --limit 20 --slice 1/4
 import subprocess, json, sys, os, time, random, argparse
 
-ROOT = '/sdcard/Download/小说相关备份/projects/projects/系统/资料库'
+ROOT = os.environ.get('NOVEL_LIB_ROOT', '/sdcard/Download/小说相关备份/projects/projects/系统/资料库')
 REPO = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
 BIN = os.path.join(REPO, 'target', 'release', 'ne-mcp')
 

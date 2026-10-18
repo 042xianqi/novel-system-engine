@@ -30,3 +30,22 @@ frontend/.vite/
 frontend/*.local
 npm-debug.log*
 
+
+# ══════════════════════════════════════════════════════════════
+# 2026-10-18 开源前清理：把「运行产物」与「本地环境残留」赶出版本库
+# 理由：这些不是源码，且含本地绝对路径 / 真实业务数据 / 审计快照，
+#       公开仓库里出现既不专业也有泄露风险。
+# ══════════════════════════════════════════════════════════════
+.ci/
+.skill_run/
+nohup.out
+*.log
+*.stdout
+*.err
+*.out
+
+# 第三方项目逆向/对照笔记（涉及他人代码库，不公开发布）
+docs/ref_taixu_harness_notes.md
+docs/ref_omp_notes.md
+# 太墟 App 工作流安装器（操作第三方 App 内部 Room DB）
+workflows/install_taixu_workflows.py

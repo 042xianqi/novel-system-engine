@@ -1,7 +1,7 @@
 #!/bin/bash
 # 全系统自动审计+实测套件
 set -u
-R="/sdcard/Download/小说相关备份/projects/projects/系统/资料库"
+R="${NOVEL_LIB_ROOT:-/sdcard/Download/小说相关备份/projects/projects/系统/资料库}"
 NROOT="/root/novel-system"
 T="$NROOT/tools/audit"
 mkdir -p "$T/reports"

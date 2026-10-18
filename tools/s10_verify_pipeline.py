@@ -15,7 +15,7 @@
 import json, os, subprocess, sys, shutil, tempfile
 
 BIN = sys.argv[1] if len(sys.argv) > 1 else "target/release/ne-mcp"
-R = sys.argv[2] if len(sys.argv) > 2 else "/sdcard/Download/小说相关备份/projects/projects/系统/资料库"
+R = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("NOVEL_LIB_ROOT", "/sdcard/Download/小说相关备份/projects/projects/系统/资料库")
 
 ok = fail = 0
 def chk(cond, msg, extra=""):

@@ -22,7 +22,7 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let cmd = args.get(1).cloned().unwrap_or_default();
     let root = PathBuf::from(
-        arg(&args, "--root").unwrap_or_else(|| "/sdcard/Download/小说相关备份/projects/projects/系统/资料库".into()),
+        arg(&args, "--root").unwrap_or_else(|| "<资料库根>/".into()),
     );
     let write = args.iter().any(|a| a == "--write");
     let lib = root.join("02_资料库");

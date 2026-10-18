@@ -1,7 +1,0 @@
-=== stage: job_20261014_055741_22507 ===
-2026-10-14 05:57:41
---- build ---
-build_errors=0
---- test ---
-passed=0 failed=0
-RESULT=TEST_FAIL passed=0 failed=0

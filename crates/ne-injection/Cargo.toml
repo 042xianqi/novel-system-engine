@@ -1,0 +1,14 @@
+[package]
+name = "ne-injection"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ne-core = { path = "../ne-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+regex = "1"
+# DB 卡片回退（S10 后 02_资料库 已删，卡片正文只在 materials.content）
+rusqlite = { version = "0.31", features = ["bundled"] }

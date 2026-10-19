@@ -19,8 +19,12 @@ use serde_json::{json, Value};
 
 /// 单个 SSE 订阅者
 struct Subscriber {
+    /// 唯一订阅号，供 unsubscribe 精确摘除
+    id: u64,
     tx: Sender<String>,
 }
+/// 订阅号自增源（进程内唯一即可，不要求跨重启连续）
+static NEXT_SUB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 struct Hub {
     subs: Mutex<Vec<Subscriber>>,
@@ -38,14 +42,24 @@ fn hub() -> &'static Hub {
     })
 }
 
-/// 订阅：返回 receiver，SSE 线程不断 recv 并写 socket。
+/// 订阅：返回 (receiver, 订阅号)。
 /// 新订阅者会立刻收到最近 RECENT_CAP 条历史事件（补发）。
-pub fn subscribe() -> std::sync::mpsc::Receiver<String> {
+///
+/// 【R12 修复】原签名只返回 Receiver，调用方无法注销自己：
+///   `publish()` 里虽有 `subs.retain(|s| s.tx.send(...).is_ok())`，
+///   但那只在**有新事件发布时**才执行一次。本系统的 SSE 常年无事件
+///   （任务看板一天可能只发几条），于是一旦 curl / 浏览器关掉连接，
+///   对应订阅者会一直躺在 Vec 里直到下一个事件 —— 实测表现为
+///   subscribers 只增不减（2→3→4→5），且每个僵尸订阅都持有一个
+///   unbounded channel 缓冲，长期运行会线性吃内存。
+///   现在返回唯一 id，SSE 线程退出时调 `unsubscribe(id)` 立刻摘除。
+pub fn subscribe() -> (std::sync::mpsc::Receiver<String>, u64) {
     let (tx, rx) = channel::<String>();
     let tx_backup = tx.clone();   // 补发历史用（避免二次加锁）
+    let id = NEXT_SUB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     {
         let mut subs = hub().subs.lock().unwrap_or_else(|e| e.into_inner());
-        subs.push(Subscriber { tx });
+        subs.push(Subscriber { id, tx });
     }
     // 补发历史（在阻塞 recv 之前，保证顺序）
     // 【注意】这里不能再去 lock subs —— 会与上面的锁顺序冲突造成死锁。
@@ -56,7 +70,13 @@ pub fn subscribe() -> std::sync::mpsc::Receiver<String> {
             let _ = tx_backup.send(ev.clone());
         }
     }
-    rx
+    (rx, id)
+}
+
+/// 注销订阅者（SSE 线程退出时必须调用，否则订阅者泄漏）。
+pub fn unsubscribe(id: u64) {
+    let mut subs = hub().subs.lock().unwrap_or_else(|e| e.into_inner());
+    subs.retain(|s| s.id != id);
 }
 
 /// 广播一条事件。所有存活订阅者都会收到；已断开的自动摘除。

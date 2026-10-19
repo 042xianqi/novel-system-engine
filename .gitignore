@@ -87,3 +87,7 @@ secrets/
 # 允许入库前端打包产物（开箱即用）
 !frontend/dist/
 !frontend/dist/**
+
+# 2026-10-19: OAuth App 缺 workflow scope，GitHub 拒绝推送 .github/workflows/*
+# 本地保留原件（CI 照常跑），范本入档 docs/ci.yml.example
+.github/workflows/ci.yml

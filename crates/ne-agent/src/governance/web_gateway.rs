@@ -1127,14 +1127,31 @@ fn handle_conn(mut stream: TcpStream, lib_root: &Path) {
 /// - 写 socket 失败（前端关了页面 / 切了 tab）
 /// - 超过 MAX_SSE_SECS 强制回收，防止僵尸连接无限堆积
 fn sse_task_stream(stream: &mut TcpStream) {
+    // 订阅必须在发头之前完成：首帧要报真实订阅数（含自己），且
+    // subscribe() 会把 recent 历史补发进 channel，先订阅才能不漏事件。
+    let (rx, sub_id) = super::task_events::subscribe();
+    // 【R12】无论从哪条 return/break 退出，都必须注销订阅。
+    //   原实现只靠 publish() 里的 retain 间接清理，无事件时永不执行，
+    //   实测 curl 断开后 subscribers 计数只增不减（2→3→4→5）。
+    sse_stream_body(stream, &rx);
+    super::task_events::unsubscribe(sub_id);
+    // 注销后打一行（仅 NE_SSE_DEBUG=1 时输出，避免污染生产日志）。
+    //   本轮靠这行实测确认了「死订阅是否真的被摘除」：
+    //   修复前 0 条，修复后 5 条且 remaining 递减到 0。
+    if std::env::var("NE_SSE_DEBUG").ok().as_deref() == Some("1") {
+        eprintln!("[sse] unsubscribed id={} remaining={}", sub_id,
+                  super::task_events::subscriber_count());
+    }
+}
+
+/// SSE 主循环（与订阅生命周期绑定）。
+fn sse_stream_body(stream: &mut TcpStream, rx: &std::sync::mpsc::Receiver<String>) {
     use std::io::Write;
     use std::sync::mpsc::RecvTimeoutError;
     use std::time::{Duration, Instant};
-
     const MAX_SSE_SECS: u64 = 3600;      // 单连接最长 1 小时
     const PING_EVERY_SECS: u64 = 15;     // 空闲保活间隔
 
-    let rx = super::task_events::subscribe();
     let head = "HTTP/1.1 200 OK\r\n\
                 Content-Type: text/event-stream; charset=utf-8\r\n\
                 Cache-Control: no-cache, no-store\r\n\
@@ -1178,10 +1195,40 @@ fn sse_task_stream(stream: &mut TcpStream) {
                     break;
                 }
                 let _ = stream.flush();
+                // 【R12】主动探活：写成功不代表对端还活着。
+                //   实测 curl 客户端断开后，向已 RST 的 socket 写 ping
+                //   在 Linux 上第一次仍会成功（数据进了内核缓冲），
+                //   于是订阅者最长要挂 15s（下一个 ping）才被摘除。
+                //   这里用 peek 非阻塞读一次：对端正常关闭时返回 Ok(0)，
+                //   RST 时返回错误，两者都说明连接已死 → 立刻退出循环。
+                if peer_closed(stream) {
+                    break;
+                }
             }
             Err(RecvTimeoutError::Disconnected) => break,
         }
     }
+}
+
+/// 探测对端是否已断开（SSE 用）。
+///
+/// 语义：**只在确定断开时返回 true**，拿不准一律返回 false（保守）。
+///   - peek 返回 Ok(0)      → 对端正常关闭（FIN），确认断开
+///   - peek 返回 Err(WouldBlock) → 无数据，连接还活着（正常情况）
+///   - peek 返回其它 Err     → RST 等异常，确认断开
+/// 不用 recv 是为了不消费数据（SSE 上行本来就没数据，但 peek 更安全）。
+fn peer_closed(stream: &TcpStream) -> bool {
+    use std::io::ErrorKind;
+    let _ = stream.set_nonblocking(true);
+    let mut buf = [0u8; 1];
+    let closed = match stream.peek(&mut buf) {
+        Ok(0) => true,
+        Ok(_) => false,
+        Err(ref e) if e.kind() == ErrorKind::WouldBlock => false,
+        Err(_) => true,
+    };
+    let _ = stream.set_nonblocking(false);
+    closed
 }
 
 fn write_resp(stream: &mut TcpStream, r: &Resp) -> std::io::Result<()> {

@@ -13,7 +13,7 @@
 //! - ❌ 不打包资料库源文件；❌ 不新增表；✅ 路径白名单（严格限定在允许目录内）。
 
 use anyhow::Result;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 /// 包版本。

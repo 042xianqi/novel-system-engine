@@ -368,7 +368,7 @@ pub fn get_note(conn: &Connection, key: &str) -> Result<Option<Value>> {
         .query_row(
             "SELECT key,status,content,created_ts,modified_ts FROM item_note WHERE key=?1",
             params![k],
-            |r| note_row(r),
+            note_row,
         )
         .optional()?;
     Ok(v)
@@ -386,7 +386,7 @@ pub fn list_notes(conn: &Connection, status: Option<&str>) -> Result<Vec<Value>>
         let mut stmt = conn.prepare(
             "SELECT key,status,content,created_ts,modified_ts FROM item_note WHERE status=?1 ORDER BY key",
         )?;
-        let it = stmt.query_map(params![s], |r| note_row(r))?;
+        let it = stmt.query_map(params![s], note_row)?;
         for x in it.filter_map(|v| v.ok()) {
             rows.push(x);
         }
@@ -394,7 +394,7 @@ pub fn list_notes(conn: &Connection, status: Option<&str>) -> Result<Vec<Value>>
         let mut stmt = conn.prepare(
             "SELECT key,status,content,created_ts,modified_ts FROM item_note ORDER BY key",
         )?;
-        let it = stmt.query_map([], |r| note_row(r))?;
+        let it = stmt.query_map([], note_row)?;
         for x in it.filter_map(|v| v.ok()) {
             rows.push(x);
         }

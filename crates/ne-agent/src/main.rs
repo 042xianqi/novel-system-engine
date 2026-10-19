@@ -1290,7 +1290,7 @@ fn safe_export_path(lib_root: &Path, to: &Path) -> Result<PathBuf> {
     }
 }
 
-fn run_world_gov(vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool, quiet: bool) -> Result<()> {
+fn run_world_gov(_vault: &Vault, lib_root: &Path, cmd: &WorldGovCmd, json: bool, quiet: bool) -> Result<()> {
     use ne_agent::world_gov;
     use ne_agent::governance::{get_semantic_gate, semantic_gate_status};
     let conn = ne_agent::governance::open_gov(lib_root)?;

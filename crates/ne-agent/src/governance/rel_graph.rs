@@ -58,6 +58,43 @@ fn now_secs() -> i64 {
         .as_secs() as i64
 }
 
+/// 叙事层节点白名单（R-04）。
+///
+/// `rel_edge` 的 `src_key` 里混了 26 个非卡号节点，实测全部是**叙事层文件名**：
+/// `00_整本概括` / `00_故事脊梁` / `00_宏大对抗总规划` / `00_叙事总纲` / `_全局角色档案库` /
+/// `卷01`…`卷10` / `卷NN·卷主体故事` / `护栏·规划约束` / `跨卷线锚点表`。
+///
+/// 这些是 `library_index` 里 layer=L0/L0.5/L1/L1x/L2 的**合法条目**（叙事层本来就不是卡片），
+/// 由 `graph build` 从 `library_index` 全量扫描自然产生。它们不是脏数据，
+/// 但不能参与「悬空引用」统计——否则每次体检都会报 26 个假悬空。
+///
+/// 判据刻意用**显式枚举 + 结构性模式**，不靠模糊匹配，避免把未来某张卡片误判成叙事层。
+pub fn is_narrative_node(key: &str) -> bool {
+    // ① 显式清单（当前库里出现的全部 8 个固定名）
+    const FIXED: [&str; 8] = [
+        "00_整本概括",
+        "00_故事脊梁",
+        "00_宏大对抗总规划",
+        "00_叙事总纲",
+        "_全局角色档案库",
+        "护栏·规划约束",
+        "跨卷线锚点表",
+        "L0.5_故事脊梁",
+    ];
+    if FIXED.contains(&key) {
+        return true;
+    }
+    // ② 结构性模式：`卷NN` 或 `卷NN·卷主体故事`（卷号必须两位数字）
+    // 注意用 **chars 计数**而非字节数：「卷01」5 字节 / 「卷01·卷主体故事」21 字节，
+    // 按字节判 `>=6` 会把最短的「卷01」漏掉（写错过一次，已由单测兜住）。
+    let chars: Vec<char> = key.chars().collect();
+    if chars.len() >= 3 && chars[0] == '卷' && chars[1].is_ascii_digit() && chars[2].is_ascii_digit() {
+        let rest: String = chars[3..].iter().collect();
+        return rest.is_empty() || rest == "·卷主体故事";
+    }
+    false
+}
+
 /// 一张卡的引用信息（纯结构，供 build 与测试复用）。
 #[derive(Debug, Clone)]
 pub struct CardRefs {
@@ -115,13 +152,27 @@ pub fn build(conn: &Connection, lib_root: &Path, max_cards: Option<usize>, dry_r
         .iter()
         .flat_map(|(s, d, _)| [s.clone(), d.clone()])
         .collect();
-    let dangling: Vec<String> = edges
-        .iter()
-        .map(|(_, d, _)| d.clone())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .filter(|d| !known.contains(d))
-        .collect();
+    // 悬空号分类（R-04 扩展）：
+    //   · card_dangling：被**卡片**引用的不存在编号 → 真故障，必须修
+    //   · narrative_only：只被**叙事层文档**引用的不存在编号 → 多为例子/占位
+    //     （实测 `护栏·规划约束.md:16` 写「如 TECH-99-006 / CHAR-99-001 / LOCA-99-001 / CIVI-99-001」，
+    //      那是格式范例不是真实引用，LOCA-99-001 从未建卡；混进 dangling 就是永久假阳性）
+    // 两者都返回，但只有前者参与 `dangling` 计数，避免体检永远红着。
+    let mut card_dangling: BTreeSet<String> = BTreeSet::new();
+    let mut narrative_only: BTreeSet<String> = BTreeSet::new();
+    for (s, d, _) in &edges {
+        if known.contains(d) || is_narrative_node(d) {
+            continue;
+        }
+        if is_narrative_node(s) {
+            narrative_only.insert(d.clone());
+        } else {
+            card_dangling.insert(d.clone());
+        }
+    }
+    // 只被叙事层引用的，若同时被卡片引用，则升级为 card_dangling
+    narrative_only.retain(|d| !card_dangling.contains(d));
+    let dangling: Vec<String> = card_dangling.iter().cloned().collect();
 
     if dry_run {
         return Ok(json!({
@@ -131,7 +182,9 @@ pub fn build(conn: &Connection, lib_root: &Path, max_cards: Option<usize>, dry_r
             "unreadable": unreadable,
             "nodes": node_set.len(),
             "edges": edges.len(),
+            "dangling": dangling.clone(),
             "dangling_unique": dangling.len(),
+            "narrative_only": narrative_only.iter().cloned().collect::<Vec<_>>(),
             "note": "只统计未落库。",
         }));
     }
@@ -165,7 +218,9 @@ pub fn build(conn: &Connection, lib_root: &Path, max_cards: Option<usize>, dry_r
         "unreadable": unreadable,
         "nodes": node_set.len(),
         "edges": real_edges,
+        "dangling": dangling.clone(),
         "dangling_unique": dangling.len(),
+        "narrative_only": narrative_only.iter().cloned().collect::<Vec<_>>(),
         "note": "只写隔离表 rel_edge/rel_graph_meta；未改 library_index 与源文件。",
     }))
 }
@@ -472,7 +527,23 @@ pub fn table_check(conn: &Connection) -> Result<Value> {
     for x in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.filter_map(|v| v.ok()) {
         dirty.push(json!({"src": x.0, "dst": x.1, "why": "self_loop"}));
     }
-    Ok(json!({"ok": dirty.is_empty(), "edges": edges, "dirty": dirty, "built": meta(conn)["built_ts"].is_i64()}))
+    // R-04：叙事层节点统计（不是脏数据，但要能看见，才不会被误当悬空）
+    let mut narrative: Vec<String> = Vec::new();
+    let mut st2 = conn.prepare("SELECT DISTINCT src_key FROM rel_edge")?;
+    for k in st2.query_map([], |r| r.get::<_, String>(0))?.filter_map(|v| v.ok()) {
+        if is_narrative_node(&k) {
+            narrative.push(k);
+        }
+    }
+    narrative.sort();
+    Ok(json!({
+        "ok": dirty.is_empty(),
+        "edges": edges,
+        "dirty": dirty,
+        "built": meta(conn)["built_ts"].is_i64(),
+        // 26 个叙事层节点（卷01…卷10 / L0-L2 规划件），设计如此，已白名单
+        "narrative_nodes": {"count": narrative.len(), "items": narrative},
+    }))
 }
 
 #[cfg(test)]
@@ -601,5 +672,29 @@ mod tests {
         c.execute_batch("CREATE TABLE library_index(key TEXT, layer TEXT, source TEXT);").unwrap();
         let s = summary(&c, 3).unwrap();
         assert_eq!(s["edges"], 0);
+    }
+
+    /// R-04 回归：叙事层节点必须被白名单识别，卡号必须**不被**误判。
+    #[test]
+    fn narrative_node_whitelist_precise() {
+        // 显式清单
+        for k in [
+            "00_整本概括", "00_故事脊梁", "00_宏大对抗总规划", "00_叙事总纲",
+            "_全局角色档案库", "护栏·规划约束", "跨卷线锚点表",
+        ] {
+            assert!(is_narrative_node(k), "应识别为叙事层：{k}");
+        }
+        // 卷号两种形态（含最短的「卷01」，曾因按字节判长而漏掉）
+        for v in 1..=10 {
+            assert!(is_narrative_node(&format!("卷{v:02}")), "应识别：卷{v:02}");
+            assert!(is_narrative_node(&format!("卷{v:02}·卷主体故事")), "应识别：卷{v:02}·卷主体故事");
+        }
+        // 反例：卡号、以及其他以「卷」开头但不是卷号的串，一律不得误判
+        for k in [
+            "CHAR-99-001", "CIVI-99-002", "卷01·第3章", "卷1", "卷0A", "卷一", "卷",
+            "卷01x", "00_叙事总纲·副本",
+        ] {
+            assert!(!is_narrative_node(k), "不得识别为叙事层：{k}");
+        }
     }
 }

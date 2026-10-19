@@ -223,7 +223,7 @@ impl GateCtx for RepoCtx {
             let mut any=false;
             for (i,d) in dims.iter().enumerate() {
                 let v: Option<f64> = r.get(4+i).unwrap_or(None);
-                if let Some(x)=v { any=true; }
+                if v.is_some() { any=true; }
                 em.insert(d.to_string(), serde_json::json!(v.unwrap_or(50.0)));
             }
             let sup: Option<f64> = r.get(14).unwrap_or(None);

@@ -13,6 +13,26 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
+use std::sync::OnceLock;
+
+// ───────────────────── 全局正则缓存（C-09：禁止在循环/热路径里重复编译）
+//
+// `extract_chapter` 每次调用都会解析锚点块，而锚点块内是 `for line in body.lines()`；
+// 原先 `[,，/]` 这条正则写在内层循环体里，等于「每个锚点行编译一次正则」。
+// 统一提到模块级 `OnceLock`，全进程只编译一次。
+
+fn cached_re<'a>(cell: &'a OnceLock<regex::Regex>, pat: &str) -> &'a regex::Regex {
+    cell.get_or_init(|| regex::Regex::new(pat).expect("budget.rs 静态正则必须可编译"))
+}
+
+static RE_PAREN: OnceLock<regex::Regex> = OnceLock::new();
+static RE_TAIL: OnceLock<regex::Regex> = OnceLock::new();
+static RE_NEXT_CH: OnceLock<regex::Regex> = OnceLock::new();
+static RE_SEP: OnceLock<regex::Regex> = OnceLock::new();
+static RE_REF: OnceLock<regex::Regex> = OnceLock::new();
+static RE_ANCHOR: OnceLock<regex::Regex> = OnceLock::new();
+static RE_ANCHOR_LINE: OnceLock<regex::Regex> = OnceLock::new();
+static RE_TAG_SEP: OnceLock<regex::Regex> = OnceLock::new();
 
 /// 场景关键词表（**照抄 SCENE_KEYWORDS，顺序即优先级**）。
 pub const SCENE_KEYWORDS: [(&str, &[&str]); 7] = [
@@ -74,7 +94,7 @@ pub fn infer_scene(outline_text: &str) -> String {
 /// '主角-陈寂（CHAR-99-001）' → '陈寂'
 pub fn extract_person(name: &str) -> String {
     // 去括号（中英文）
-    let re_paren = regex::Regex::new(r"[（(][^）)]*[）)]").unwrap();
+    let re_paren = cached_re(&RE_PAREN, r"[（(][^）)]*[）)]");
     let s = re_paren.replace_all(name, "").trim().to_string();
     // 按 - · / 取最后一段
     let mut s = s;
@@ -84,7 +104,7 @@ pub fn extract_person(name: &str) -> String {
         }
     }
     // 末尾 2-4 个汉字
-    let re_tail = regex::Regex::new(r"([\u{4e00}-\u{9fff}]{2,4})$").unwrap();
+    let re_tail = cached_re(&RE_TAIL, r"([\u{4e00}-\u{9fff}]{2,4})$");
     if let Some(m) = re_tail.captures(&s) {
         m.get(1).unwrap().as_str().to_string()
     } else {
@@ -121,8 +141,8 @@ pub fn extract_chapter(outline: &str, chapter_no: u32) -> ChapterSeg {
 
     // 找下一个边界：`### 第` 或 `\n=== `
     let rest = &outline[after_head..];
-    let next_re = regex::Regex::new(r"\n###\s*第").unwrap();
-    let sep_re = regex::Regex::new(r"\n=== ").unwrap();
+    let next_re = cached_re(&RE_NEXT_CH, r"\n###\s*第");
+    let sep_re = cached_re(&RE_SEP, r"\n=== ");
     let n1 = next_re.find(rest).map(|m| m.start());
     let n2 = sep_re.find(rest).map(|m| m.start());
     let cut = match (n1, n2) {
@@ -138,7 +158,7 @@ pub fn extract_chapter(outline: &str, chapter_no: u32) -> ChapterSeg {
     let title = outline[after_head..end].trim().to_string();
 
     // card_refs: [A-Z]{2,5}(-?\d+)+
-    let re_ref = regex::Regex::new(r"\b([A-Z]{2,5}(?:-?\d+)+)\b").unwrap();
+    let re_ref = cached_re(&RE_REF, r"\b([A-Z]{2,5}(?:-?\d+)+)\b");
     let mut seen = BTreeSet::new();
     let mut refs = Vec::new();
     for c in re_ref.captures_iter(&whole) {
@@ -153,17 +173,17 @@ pub fn extract_chapter(outline: &str, chapter_no: u32) -> ChapterSeg {
 
     // 锚点块
     let mut anchors = serde_json::Map::new();
-    let re_anchor = regex::Regex::new(r"锚点：\n((?:\s*-\s*.+\n?)+)").unwrap();
+    let re_anchor = cached_re(&RE_ANCHOR, r"锚点：\n((?:\s*-\s*.+\n?)+)");
     if let Some(am) = re_anchor.captures(&whole) {
         let body = am.get(1).map(|x| x.as_str()).unwrap_or("");
-        let re_line = regex::Regex::new(r"\s*-\s*([^：:]+)[：:]\s*(.+)").unwrap();
+        let re_line = cached_re(&RE_ANCHOR_LINE, r"\s*-\s*([^：:]+)[：:]\s*(.+)");
+        let re_tag_sep = cached_re(&RE_TAG_SEP, r"[,，/]");
         for line in body.lines() {
             if let Some(lm) = re_line.captures(line.trim()) {
                 let key = lm.get(1).unwrap().as_str().trim().to_string();
                 let val = lm.get(2).unwrap().as_str().trim().to_string();
                 if key == "引典" || key == "情绪曲线" {
-                    let tags: Vec<String> = regex::Regex::new(r"[,，/]")
-                        .unwrap()
+                    let tags: Vec<String> = re_tag_sep
                         .split(&val)
                         .map(|t| t.trim().trim_matches(|c| c == '[' || c == ']' || c == '【' || c == '】').to_string())
                         .filter(|t| !t.is_empty())

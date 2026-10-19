@@ -176,3 +176,34 @@ use super::*;
         assert_eq!(s2.history(&sid).unwrap().len(), 1);
         let _ = std::fs::remove_file(&p);
     }
+
+    /// 回归：同一毫秒内连续更新，`latest_session` 必须仍按「最近更新」排序。
+    ///
+    /// 事故背景：`now_ms()` 原来直接取系统毫秒，连续 append 会拿到相同值，
+    /// 排序退化成 rowid，`--resume` 会恢复到错误的会话。
+    /// 该问题在全量并发跑测时偶发复现（单独跑 5 次全过），属典型的同毫秒竞争。
+    #[test]
+    fn latest_session_survives_same_millisecond_updates() {
+        let (s, p) = store("latest_ms");
+        // 连续快速创建 + 追加，全部落在同一毫秒的概率极高
+        for _ in 0..50 {
+            let a = s.create_session("A").unwrap();
+            let b = s.create_session("B").unwrap();
+            s.append(&a, None, "user", "touch a").unwrap();
+            assert_eq!(s.latest_session().unwrap().unwrap().id, a, "touch a 之后最新应是 A");
+            s.append(&b, None, "user", "touch b").unwrap();
+            assert_eq!(s.latest_session().unwrap().unwrap().id, b, "touch b 之后最新应是 B");
+        }
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// `now_ms()` 本身必须严格单调递增（任意两次调用不得相等）。
+    #[test]
+    fn now_ms_is_strictly_increasing() {
+        let mut prev = super::now_ms();
+        for _ in 0..10_000 {
+            let cur = super::now_ms();
+            assert!(cur > prev, "now_ms 必须严格递增：{prev} -> {cur}");
+            prev = cur;
+        }
+    }

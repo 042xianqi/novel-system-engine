@@ -479,6 +479,30 @@ pub fn obj_re() -> &'static regex::Regex {
     RE.get_or_init(|| regex::Regex::new(r"`?([A-Z]{2,5}(?:-\d+){1,3})`?").unwrap())
 }
 
+/// 标题首位 `#` 前缀（C-09：`events_from_graph` 的 `for` 循环体内原为就地编译）。
+fn cached_h1_re() -> &'static regex::Regex {
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r"^#\s*").expect("h1 正则必须可编译"))
+}
+
+/// `EVT-xx｜名` 前缀（C-09：同一循环内第二条正则）。
+fn cached_evt_re() -> &'static regex::Regex {
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r"^EVT-\S*\s*[｜·]\s*").expect("EVT 正则必须可编译"))
+}
+
+/// 世界时间线索正则（`world_time_of` 每次调用都编译，一并缓存）。
+fn cached_world_time_re() -> &'static regex::Regex {
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        regex::Regex::new(r"(汐潮历[^，。\n]*|第[\d一二三四五六七八九十]+纪元[^，。\n]*)")
+            .expect("世界时间正则必须可编译")
+    })
+}
+
 /// 细纲单章（对应 `_outline_chapters` 返回的 dict）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutlineChapter {
@@ -587,7 +611,7 @@ pub fn protagonist_seed() -> (String, Value) {
 
 /// 世界时间线索（照抄 `fill_timeline` 的正则）。
 pub fn world_time_of(chapter_text: &str) -> String {
-    let re = regex::Regex::new(r"(汐潮历[^，。\n]*|第[\d一二三四五六七八九十]+纪元[^，。\n]*)").unwrap();
+    let re = cached_world_time_re();
     re.captures(chapter_text)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().trim().to_string())
@@ -615,7 +639,7 @@ pub fn events_from_graph(graph: &Value, h1_of: impl Fn(&str) -> Option<String>) 
         let Some(eid) = eid.as_str() else { continue };
         let h1 = h1_of(eid).unwrap_or_default();
         let name = {
-            let t = regex::Regex::new(r"^#\s*").unwrap().replace(&h1, "").to_string();
+            let t = cached_h1_re().replace(&h1, "").to_string();
             let v = t.split('｜').last().unwrap_or("").trim().to_string();
             if v.is_empty() { eid.to_string() } else { v }
         };
@@ -636,7 +660,7 @@ pub fn events_from_graph(graph: &Value, h1_of: impl Fn(&str) -> Option<String>) 
         let Some(eid) = node.get("id").and_then(|v| v.as_str()) else { continue };
         let h1 = node.get("h1").and_then(|v| v.as_str()).unwrap_or(eid);
         let name: String = {
-            let re = regex::Regex::new(r"^EVT-\S*\s*[｜·]\s*").unwrap();
+            let re = cached_evt_re();
             re.replace(h1, "").chars().take(60).collect()
         };
         let note = format!(

@@ -414,6 +414,20 @@ pub fn g07_ooc<C: GateCtx>(ctx: &C, text: &str, chapter_no: u32) -> GateOut {
 
 // ───────────────────────── G08 伏笔回收率
 
+/// 【第1轮修复 A-02】原实现把两条正则写在 `for r in &rows` 循环体内，
+/// 每张到期伏笔都重新 `Regex::new` 两次。G08 每章都跑，属正文生成热路径，
+/// 正则编译是纯浪费（单次 ~10µs × 2 × 伏笔数 × 章数）。
+/// 改为 `OnceLock` 全局编译一次。
+static RE_NUM: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+static RE_PAR: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+
+fn re_num() -> &'static regex::Regex {
+    RE_NUM.get_or_init(|| regex::Regex::new(r"\b[A-Z]+-\d+\b").expect("RE_NUM 是常量正则，不可能失败"))
+}
+fn re_par() -> &'static regex::Regex {
+    RE_PAR.get_or_init(|| regex::Regex::new(r"[（(][^）)]*[）)]").expect("RE_PAR 是常量正则，不可能失败"))
+}
+
 pub fn g08_foreshadow_recover<C: GateCtx>(ctx: &C, text: &str, chapter_no: u32, volume: &str) -> GateOut {
     let mut out = GateOut { pass: true, p0: vec![], p1: vec![], detail: String::new() };
     let rows = ctx.due_foreshadows(volume, chapter_no);
@@ -424,10 +438,8 @@ pub fn g08_foreshadow_recover<C: GateCtx>(ctx: &C, text: &str, chapter_no: u32, 
     let mut flagged = 0usize;
     for r in &rows {
         // 证据判定：去编号/去括号后取前 6 字，正文提及则 evidence=0.5
-        let re_num = regex::Regex::new(r"\b[A-Z]+-\d+\b").unwrap();
-        let core = re_num.replace_all(&r.content, "");
-        let re_par = regex::Regex::new(r"[（(][^）)]*[）)]").unwrap();
-        let core = re_par.replace_all(&core, "");
+        let core = re_num().replace_all(&r.content, "");
+        let core = re_par().replace_all(&core, "");
         let core: String = core.trim().chars().take(6).collect();
         let evidence = if !core.is_empty() && text.contains(&core) { 0.5 } else { 0.0 };
         let bm = crate::dynamics::bayes_mood(&json!({

@@ -7,11 +7,15 @@
 //   · 发送中禁用按钮 + 显示 loading
 //   · 移动端键盘弹出时不被遮挡（用 env(safe-area-inset-bottom)）
 
-import { ref, computed, nextTick, watch } from 'vue'
+import { ref, computed, nextTick, watch, onUnmounted } from 'vue'
 import { chat } from '../store.js'
-import { useChat } from '../composables/useChat.js'
-
+import { useChat, stopChatTyping } from '../composables/useChat.js'
 const { send } = useChat()
+
+// 【R12】组件销毁时把还在跑的逐字动画停掉。
+//   输入框在切底栏页签时会被卸载，若不 stop，孤儿 setTimeout 会继续
+//   往已卸载组件的 msg 写文本（useChat 的旧实现无句柄可取消）。
+onUnmounted(() => { stopChatTyping() })
 
 const text = ref('')
 const ta = ref(null)

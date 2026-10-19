@@ -198,6 +198,11 @@ pub fn cardgen(cfg: &Cfg, volume: &str) -> Result<serde_json::Value> {
     }
     drop(push_name);
     let lib = cfg.lib_root();
+    // 【第1轮修复 A-03】原实现在 `for j in &jobs` 内、且在 `read_dir` 双层遍历的
+    // 最深循环里才 `Regex::new`。jobs 多时要编译 N 次，纯浪费。
+    // 提到循环外编译一次（正则是常量）。
+    let code_re: regex::Regex = regex::Regex::new(r"^([A-Z]+-\d+-\d+)\b")
+        .unwrap_or_else(|_| regex::Regex::new(r"$^").expect("兜底正则不可能失败"));
     let mut jobs_json: Vec<serde_json::Value> = Vec::with_capacity(jobs.len());
     for j in &jobs {
         let db_hit: Vec<String> = names_db
@@ -206,7 +211,7 @@ pub fn cardgen(cfg: &Cfg, volume: &str) -> Result<serde_json::Value> {
             .map(|(c, _)| c.clone())
             .collect();
         let disk_hit = {
-            let re = regex::Regex::new(r"^([A-Z]+-\d+-\d+)\b").unwrap_or_else(|_| regex::Regex::new(r"$^").unwrap());
+            let re = &code_re;
             let mut hit = String::new();
             if let Ok(rd) = fs::read_dir(&lib) {
                 'outer: for cat in rd.flatten() {
@@ -237,6 +242,7 @@ pub fn cardgen(cfg: &Cfg, volume: &str) -> Result<serde_json::Value> {
         };
         jobs_json.push(serde_json::json!({
             "name": j.name, "source_ref": j.source_ref, "material": j.material,
+            "category": j.category,
             "exists_db": !db_hit.is_empty(), "db_codes": db_hit,
             "exists_disk": !disk_hit.is_empty(), "disk_code": disk_hit,
             "need_create": db_hit.is_empty() && disk_hit.is_empty(),
@@ -244,15 +250,32 @@ pub fn cardgen(cfg: &Cfg, volume: &str) -> Result<serde_json::Value> {
     }
     let real_jobs: Vec<&serde_json::Value> =
         jobs_json.iter().filter(|j| j["need_create"] == true).collect();
+    // 【2026-10-19 第5轮 P1 修】原实现**完全不读 CardJob.category**（该字段一路 dead_code），
+    // 改用 `material` 文本里是否含「角色」「地点」二字来猜类别：
+    //   只有这两个能命中，势力/丹药/科技/力量体系/事件… 一律落进「未分类」，
+    //   导致 ne_cardgen_plan 的 by_category 分组对绝大多数工单失效。
+    // 现改为：先取 parse_card_inner 已解析出的 category（正则白名单命中），
+    // 未命中时再退回 material 文本粗判（保留旧行为兜底），最后才是「未分类」。
     let mut by_cat: std::collections::BTreeMap<String, Vec<serde_json::Value>> =
         std::collections::BTreeMap::new();
     for j in &real_jobs {
-        let cat = j["material"]
-            .as_str()
-            .map(|m| if m.contains("角色") { "角色".to_string() }
-                else if m.contains("地点") { "地点".to_string() }
-                else { "未分类".to_string() })
-            .unwrap_or_else(|| "未分类".to_string());
+        let parsed = j["category"].as_str().unwrap_or("").trim();
+        let cat = if !parsed.is_empty() {
+            parsed.to_string()
+        } else {
+            j["material"]
+                .as_str()
+                .map(|m| {
+                    if m.contains("角色") {
+                        "角色".to_string()
+                    } else if m.contains("地点") {
+                        "地点".to_string()
+                    } else {
+                        "未分类".to_string()
+                    }
+                })
+                .unwrap_or_else(|| "未分类".to_string())
+        };
         by_cat.entry(cat).or_default().push((*j).clone());
     }
     Ok(serde_json::json!({
@@ -284,7 +307,14 @@ pub struct CardJob {
 /// 早先用 `^>?` 把细纲正文里的普通 `- xxx（yyy）` 行也扫进来，
 /// 卷01 实测误抽 542 行、真卡仅 9 张（卡名被污染成 `**目标**：把白鸦` 之类）。
 pub fn extract_card_jobs(outline_text: &str) -> Vec<CardJob> {
-    let re = regex::Regex::new(r"(?m)^>\s*-\s+([^（\n]+)（(.*)）\s*$").unwrap();
+    // 【2026-10-19 第5轮】原实现每次调用都 `Regex::new(...).unwrap()`。
+    // 卷01 单卷就上千次调用，等于上千次重复编译。改为 OnceLock 静态编译一次。
+    // 回退语义不变：正则字面量编译失败属编程错误，`expect` 带明确断言信息。
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(r"(?m)^>\s*-\s+([^（\n]+)（(.*)）\s*$")
+            .expect("extract_card_jobs 行正则编译失败（字面量为常量，不应发生）")
+    });
     let mut jobs = Vec::new();
     for m in re.captures_iter(outline_text) {
         let name = m.get(1).map(|x| x.as_str().trim()).unwrap_or("");
@@ -316,19 +346,41 @@ pub fn extract_card_jobs(outline_text: &str) -> Vec<CardJob> {
 /// 形态：`- **在场**：陈寂、林晚秋、加百列·黑刃【天启帝国核心设定§核心人物，待建卡】`
 /// 名字 = 【 前最后一个强分隔段，去尾部括号、去开头虚词，再过**类别白名单**（宁缺毋滥）。
 fn inline_card_jobs(outline_text: &str) -> Vec<CardJob> {
-    let br = regex::Regex::new(r"【([^】]*待建卡[^】]*)】").unwrap();
-    let sep = regex::Regex::new(r#"[、，,：:=（）()\[\]"“”'‘’「」\s]+"#).unwrap();
-    let lead = regex::Regex::new(r"^[把将与和及的在向从对为被]+").unwrap();
-    let trailer = regex::Regex::new(r"[）)]$").unwrap();
-    let role = regex::Regex::new(
-        r"(修士|长老|执事|祭司|主教|大祭司|教皇|密探|随员|近侍|骑士|守卒|货主|老主|巡守|录事|验录使|使者|侍从|守卫|军官|统领|大导师|大占星师|大航海士|团主|舵手|掌柜|伙计|大修士|船长)$",
-    )
-    .unwrap();
-    let place = regex::Regex::new(
-        r"(墙|街|区|殿|坛|塔|廊|院|海|城|村|镇|山|洞|谷|窟|港|桥|门|冢|渊|废墟|遗址|防线|边界|缓冲带|回廊|祭坛|圣柱)$",
-    )
-    .unwrap();
-    let bad = regex::Regex::new(r#"[§#/+*"“”'‘’（）()\[\]]"#).unwrap();
+    // 【2026-10-19 第5轮】6 个正则字面量提到 OnceLock，避免每次调用重复编译。
+    static BR: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static SEP: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static LEAD: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static TRAILER: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static ROLE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static PLACE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static BAD: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let br = BR.get_or_init(|| {
+        regex::Regex::new(r"【([^】]*待建卡[^】]*)】").expect("inline 待建卡标记正则编译失败")
+    });
+    let sep = SEP.get_or_init(|| {
+        regex::Regex::new(r#"[、，,：:=（）()\[\]"“”'‘’「」\s]+"#).expect("inline 分隔符正则编译失败")
+    });
+    let lead = LEAD.get_or_init(|| {
+        regex::Regex::new(r"^[把将与和及的在向从对为被]+").expect("inline 虚词前缀正则编译失败")
+    });
+    let trailer = TRAILER.get_or_init(|| {
+        regex::Regex::new(r"[）)]$").expect("inline 尾括号正则编译失败")
+    });
+    let role = ROLE.get_or_init(|| {
+        regex::Regex::new(
+            r"(修士|长老|执事|祭司|主教|大祭司|教皇|密探|随员|近侍|骑士|守卒|货主|老主|巡守|录事|验录使|使者|侍从|守卫|军官|统领|大导师|大占星师|大航海士|团主|舵手|掌柜|伙计|大修士|船长)$",
+        )
+        .expect("inline 角色词白名单正则编译失败")
+    });
+    let place = PLACE.get_or_init(|| {
+        regex::Regex::new(
+            r"(墙|街|区|殿|坛|塔|廊|院|海|城|村|镇|山|洞|谷|窟|港|桥|门|冢|渊|废墟|遗址|防线|边界|缓冲带|回廊|祭坛|圣柱)$",
+        )
+        .expect("inline 地点词白名单正则编译失败")
+    });
+    let bad = BAD.get_or_init(|| {
+        regex::Regex::new(r#"[§#/+*"“”'‘’（）()\[\]]"#).expect("inline 非法字符正则编译失败")
+    });
 
     let mut out: Vec<CardJob> = Vec::new();
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -369,23 +421,65 @@ fn inline_card_jobs(outline_text: &str) -> Vec<CardJob> {
 
 /// 从卡面内文解析 (来源引用, 素材, 类别)。
 fn parse_card_inner(inner: &str) -> (String, String, String) {
+    // 【2026-10-19 第5轮】3 个正则字面量提到 OnceLock。
+    // 原实现每解析一条待建卡就编译 3 次；卷01 上百条待建卡 = 数百次重复编译。
+    static CAT_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static REF_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static STRIP_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     // 类别：优先取明确的“X类”标记，其次按已知类别名兜底
-    let cat_re = regex::Regex::new(r"(角色|势力|地点|物品|文化|技艺|丹药|科技|地图|事件|历史|时间|生物|组织|制度|民俗|语言|货币|历法|传说|修炼)类?").unwrap();
+    let cat_re = CAT_RE.get_or_init(|| {
+        regex::Regex::new(r"(角色|势力|地点|物品|文化|技艺|丹药|科技|地图|事件|历史|时间|生物|组织|制度|民俗|语言|货币|历法|传说|修炼)类?")
+            .expect("类别识别正则编译失败")
+    });
     let category = cat_re
         .captures(inner)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().to_string())
         .unwrap_or_default();
-    // 来源引用：形如 REL-99-004 / CHAR-01-003
-    let ref_re = regex::Regex::new(r"\b((?:CHAR|EVT|LOC|REL|ART|ORG|TECH|SYS|CULT|MTC|CAS|TIME|ANC|YGEN|OTHER)-\d+(?:-\d+)?)").unwrap();
+    // 来源引用：形如 REL-99-004 / CHAR-01-003 / FACT-99-906 / ARTS-99-902
+    //
+    // 【2026-10-19 第5轮 P0 修】原正则把前缀写成 15 个手写字面量：
+    //   `(?:CHAR|EVT|LOC|REL|ART|ORG|TECH|SYS|CULT|MTC|CAS|TIME|ANC|YGEN|OTHER)`
+    // 与《L4统一卡片模板规范_v1.0》§三·A 的格式定义 `^[A-Z]{2,6}-\d{2,3}-\d{3,4}$` 不符，
+    // 且库内实测 27 种前缀里有 24 种对不上（EVNT/LOCA/PILL/FACT/MECH/CIVI/CLTR/POWR/
+    // FORE/ARTS/SYSX/WEIR/HIST/ITEM/CAUS/GEAR/RELA/BLDG/CRAFT/MTRL/PRAC/REAL/WRLD/XREA），
+    // 845 张卡里 543 张（64.3%）的来源编号会被漏抓 → source_ref 恒空。
+    // 现按规范改为前缀泛匹配 `[A-Z]{2,6}`，与模板规范同源。
+    let ref_re = REF_RE.get_or_init(|| {
+        // 【2026-10-19 第5轮 · 回归自测】从「只认规范两段」放宽为「两段优先、一段兜底」。
+        // 实测细纲目录里旧口径（任意一段/两段）唯一编号 82 个，强制两段后掉 9 个：
+        //   CAS-014 / CAS-019（旧类别卡，一段式，属真卡号 → 必须保留）
+        //   CHAR-90 / CIVI-99 / EVNT-99 / FORE-99 / FORE-9 / FORE-99-02（正文里的「号段」提及，
+        //     后面通常跟「这一类」「号段」「系列」，不是具体卡号 → 不该抓）
+        // ⚠ rust regex crate 不支持 lookahead，故号段排除在下面用代码判，不进正则。
+        regex::Regex::new(r"\b([A-Z]{2,6}-\d{2,3}-\d{3,4}|[A-Z]{2,6}-\d{3})\b")
+            .expect("来源引用编号正则编译失败")
+    });
     let source_ref = ref_re
         .captures(inner)
         .and_then(|c| c.get(1))
-        .map(|m| m.as_str().to_string())
+        .map(|m| {
+            // 号段提及排除：一段式编号（`CHAR-90` / `EVNT-99` / `FORE-9`）后紧跟中文时，
+            // 多为「CHAR-90 这一类」「EVNT-99 号段」这类区间描述，不是具体卡号。
+            // 判据来自实测：细纲里 6/9 个一段式命中都是号段提及，只有 CAS-014 / CAS-019 是真卡号。
+            let code = m.as_str();
+            let is_two_seg = code.matches('-').count() >= 2;
+            if !is_two_seg {
+                let tail = &inner[m.end()..];
+                let next_is_cjk = tail.chars().next().map(|c| c as u32 >= 0x4E00 && c as u32 <= 0x9FFF).unwrap_or(false);
+                if next_is_cjk {
+                    return String::new();
+                }
+            }
+            code.to_string()
+        })
         .unwrap_or_default();
     // 素材：去掉“无…卡/待建”提示后的剩余描述
-    let material = regex::Regex::new(r"无[^，,、；;\s]*卡|待建|无编号|无独立|无 ?LOC|无 ?EVT")
-        .unwrap()
+    let material = STRIP_RE
+        .get_or_init(|| {
+            regex::Regex::new(r"无[^，,、；;\s]*卡|待建|无编号|无独立|无 ?LOC|无 ?EVT")
+                .expect("待建提示剥离正则编译失败")
+        })
         .replace_all(inner, "")
         .trim_matches(|c: char| c.is_whitespace() || c == '，' || c == ',' || c == '、' || c == ';' || c == '；')
         .to_string();
@@ -791,7 +885,7 @@ pub fn materials_audit(cfg: &Cfg, volume: &str) -> Result<serde_json::Value> {
         let mut missing: Vec<serde_json::Value> = Vec::new();
         for code in &seen {
             match codes.get(code) {
-                Some((name, cat, fp, stale)) => ok.push(serde_json::json!({
+                Some((name, cat, _fp, stale)) => ok.push(serde_json::json!({
                     "code": code, "name": name, "category": cat,
                     "db": true, "disk": disk.contains_key(code),
                     "stale": stale,
@@ -1376,5 +1470,62 @@ mod cardgen_tests {
         let jobs = extract_card_jobs(t);
         let names: Vec<&str> = jobs.iter().map(|j| j.name.as_str()).collect();
         assert_eq!(names, vec!["白鸦"], "实际：{names:?}");
+    }
+
+    // 【2026-10-19 第5轮回归】parse_card_inner 的 category 解析必须真的被消费。
+    // 修前：CardJob.category 一路 dead_code，by_category 只按 material 文本猜「角色/地点」，
+    //       势力/丹药/科技 全部落进「未分类」。
+    // 修后：category 走白名单正则先命中，未命中才退回 material 粗判。
+    #[test]
+    fn card_job_category_is_parsed_not_guessed() {
+        // 势力类：material 里不含「角色」「地点」，但内文有「势力」二字
+        let t = "> - 联邦科学院（FACT-99-906，无势力卡）\n";
+        let jobs = extract_card_jobs(t);
+        assert_eq!(jobs.len(), 1, "应抽到 1 张工单：{jobs:?}");
+        assert_eq!(jobs[0].category, "势力", "category 未按内文解析：{jobs:?}");
+        assert_eq!(jobs[0].source_ref, "FACT-99-906", "来源编号未解析：{jobs:?}");
+
+        // 丹药类：既非角色也非地点
+        let t2 = "> - 蚀潮凝元丹（无丹药卡）\n";
+        let jobs2 = extract_card_jobs(t2);
+        assert_eq!(jobs2.len(), 1);
+        assert_eq!(jobs2[0].category, "丹药", "丹药类别未识别：{jobs2:?}");
+
+        // 科技类
+        let t3 = "> - 时空曲率工程（无科技卡）\n";
+        let jobs3 = extract_card_jobs(t3);
+        assert_eq!(jobs3.len(), 1);
+        assert_eq!(jobs3[0].category, "科技", "科技类别未识别：{jobs3:?}");
+
+        // 反例：内文完全没有类别词时 category 应为空（交由调用方兜底，不瞎猜）
+        let t4 = "> - 某个东西（无卡）\n";
+        let jobs4 = extract_card_jobs(t4);
+        assert_eq!(jobs4.len(), 1);
+        assert_eq!(jobs4[0].category, "", "无类别词时不应凭空捏造：{jobs4:?}");
+    }
+
+    // 【2026-10-19 第5轮回归】source_ref 的两段优先 / 一段兜底 / 号段排除。
+    // 背景：原正则把前缀写成 15 个手写字面量，库内 27 种前缀有 24 种被抓不到；
+    // 改成泛匹配后又发现「只认两段」会丢 CAS-014 这类一段式真卡号，
+    // 而放宽到一段又会把「CHAR-90 这一类」这类号段提及当卡号 → 三种情况都要测。
+    #[test]
+    fn source_ref_handles_new_prefix_one_seg_and_series() {
+        // ① 新前缀两段式（旧正则抓不到的那 24 种之一）
+        let j = extract_card_jobs("> - 联邦科学院（FACT-99-906，无势力卡）\n");
+        assert_eq!(j[0].source_ref, "FACT-99-906", "新前缀两段式未抓到：{j:?}");
+
+        let j = extract_card_jobs("> - 镇脉大阵（ARTS-99-905 同批，无功法卡）\n");
+        assert_eq!(j[0].source_ref, "ARTS-99-905", "ARTS 前缀未抓到：{j:?}");
+
+        // ② 一段式真卡号（旧类别卡，必须保留）
+        let j = extract_card_jobs("> - 某件法宝（CAS-014，无物品卡）\n");
+        assert_eq!(j[0].source_ref, "CAS-014", "一段式真卡号被误丢：{j:?}");
+
+        // ③ 号段提及（一段式 + 紧跟中文）不得当作卡号
+        let j = extract_card_jobs("> - 某某（CHAR-90 这一类，无角色卡）\n");
+        assert_eq!(j[0].source_ref, "", "号段提及被误当卡号：{j:?}");
+
+        let j = extract_card_jobs("> - 某某（EVNT-99 号段，无事件卡）\n");
+        assert_eq!(j[0].source_ref, "", "号段提及被误当卡号：{j:?}");
     }
 }

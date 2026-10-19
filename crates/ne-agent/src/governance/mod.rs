@@ -674,7 +674,7 @@ pub fn library_classify(conn: &Connection, out: Option<&Path>) -> Result<Value> 
 ");
     let mut csv = String::from("source,current_layer,suggest_layer,suggest_tag,chars
 ");
-    for (src, layer, cat, key, title, chars, tags_json, types_json) in rows {
+    for (src, layer, cat, key, title, chars, _tags_json, types_json) in rows {
         let types: Vec<String> = serde_json::from_str(&types_json).unwrap_or_default();
         // 建议层级：路径判定；L4 卡若有专有 type 保持 L4，否则若在 _规范 下建议 GUARD。
         let mut suggest = layer.clone();
@@ -755,20 +755,72 @@ pub fn library_export_layer(conn: &Connection, lib_root: &Path, out_dir: &Path, 
     let layers = layer_health(conn)?;
     let ltm: Vec<&LayerEntry> = layers.iter().filter(|e| set.as_ref().map(|s| s.contains(&e.layer)).unwrap_or(true)).collect();
     // L4 卡索引
+    // 【第1轮修复 A-04】原实现只查 `library_index`，而该表**没有 content 列**，
+    // 导致导出的 L4 卡片只有元数据（category/key/chars/title），**正文完全丢失**，
+    // 导出包根本无法用于离线审阅或迁移。同时 `lib_root` 参数被完全忽略。
+    // 现改为 JOIN `materials` 取正文与 stale 标记；materials 缺失时回退只导元数据。
     let mut l4 = Vec::new();
+    let mut l4_body_missing = 0usize;
     if set.as_ref().map(|s| s.contains("L4")).unwrap_or(true) {
-        if let Ok(mut st) = conn.prepare("SELECT category,key,source,chars,title,types,tags,dirty FROM library_index WHERE layer='L4' ORDER BY category,key") {
-            if let Ok(it) = st.query_map([], |r| Ok(json!({
-                "category": r.get::<_,Option<String>>(0)?,
-                "key": r.get::<_,String>(1)?,
-                "source": r.get::<_,Option<String>>(2)?,
-                "chars": r.get::<_,i64>(3)?,
-                "title": r.get::<_,Option<String>>(4)?,
-                "types": r.get::<_,Option<String>>(5)?,
-                "tags": r.get::<_,Option<String>>(6)?,
-                "dirty": r.get::<_,i64>(7)?,
-            }))) {
-                for x in it.filter_map(|v| v.ok()) { l4.push(x); }
+        let has_materials = conn
+            .prepare("SELECT content FROM materials LIMIT 0")
+            .is_ok();
+        if has_materials {
+            if let Ok(mut st) = conn.prepare(
+                "SELECT i.category, i.key, i.source, i.chars, i.title, i.types, i.tags, i.dirty, \
+                        m.content, COALESCE(m.stale,0) \
+                 FROM library_index i \
+                 LEFT JOIN materials m ON m.code = i.key \
+                 WHERE i.layer='L4' ORDER BY i.category, i.key",
+            ) {
+                if let Ok(it) = st.query_map([], |r| {
+                    Ok(json!({
+                        "category": r.get::<_,Option<String>>(0)?,
+                        "key": r.get::<_,String>(1)?,
+                        "source": r.get::<_,Option<String>>(2)?,
+                        "chars": r.get::<_,i64>(3)?,
+                        "title": r.get::<_,Option<String>>(4)?,
+                        "types": r.get::<_,Option<String>>(5)?,
+                        "tags": r.get::<_,Option<String>>(6)?,
+                        "dirty": r.get::<_,i64>(7)?,
+                        "content": r.get::<_,Option<String>>(8)?,
+                        "stale": r.get::<_,i64>(9)?,
+                    }))
+                }) {
+                    for x in it.filter_map(|v| v.ok()) {
+                        if x["content"].is_null() { l4_body_missing += 1; }
+                        l4.push(x);
+                    }
+                }
+            }
+        } else {
+            // 无 materials 表（纯索引库）：退化为只导元数据，并如实标注
+            if let Ok(mut st) = conn.prepare("SELECT category,key,source,chars,title,types,tags,dirty FROM library_index WHERE layer='L4' ORDER BY category,key") {
+                if let Ok(it) = st.query_map([], |r| Ok(json!({
+                    "category": r.get::<_,Option<String>>(0)?,
+                    "key": r.get::<_,String>(1)?,
+                    "source": r.get::<_,Option<String>>(2)?,
+                    "chars": r.get::<_,i64>(3)?,
+                    "title": r.get::<_,Option<String>>(4)?,
+                    "types": r.get::<_,Option<String>>(5)?,
+                    "tags": r.get::<_,Option<String>>(6)?,
+                    "dirty": r.get::<_,i64>(7)?,
+                }))) {
+                    for x in it.filter_map(|v| v.ok()) { l4.push(x); }
+                }
+            }
+        }
+    }
+    // 磁盘兜底：materials 里也取不到正文时，尝试从 lib_root 的 source 路径读
+    if l4_body_missing > 0 {
+        for c in l4.iter_mut() {
+            if !c["content"].is_null() { continue; }
+            if let Some(src) = c["source"].as_str() {
+                let p = lib_root.join(src);
+                if let Ok(t) = std::fs::read_to_string(&p) {
+                    c["content"] = json!(t);
+                    c["content_from_disk"] = json!(true);
+                }
             }
         }
     }
@@ -798,7 +850,7 @@ pub fn library_export_layer(conn: &Connection, lib_root: &Path, out_dir: &Path, 
 }
 
 /// 导出全部生效 L0~L4 条目为 JSON + Markdown 包（写文件，不动库）。
-pub fn library_export(conn: &Connection, lib_root: &Path, out_dir: &Path) -> Result<Value> {
+pub fn library_export(conn: &Connection, _lib_root: &Path, out_dir: &Path) -> Result<Value> {
     std::fs::create_dir_all(out_dir)?;
     let layers = layer_health(conn)?;
     let json_path = out_dir.join("L0-L4_export.json");
@@ -810,11 +862,52 @@ pub fn library_export(conn: &Connection, lib_root: &Path, out_dir: &Path) -> Res
             if e.notes.is_empty() { String::new() } else { format!("（{}）", e.notes.join("；")) }));
     }
     // L4 索引
+    // 【第1轮修复 A-05】同 A-04：原 MD 导出只有 category/key/chars，正文与 stale 全丢。
+    // 现 JOIN materials 取正文，并在 Markdown 里保留（stale 卡显式标注）。
     md.push_str("## L4 卡片索引（library_index）\n\n");
-    if let Ok(mut st) = conn.prepare("SELECT category,key,source,chars,dirty FROM library_index WHERE layer='L4' ORDER BY category,key") {
-        if let Ok(it) = st.query_map([], |r| Ok((r.get::<_,Option<String>>(0)?, r.get::<_,String>(1)?, r.get::<_,Option<String>>(2)?, r.get::<_,i64>(3)?, r.get::<_,i64>(4)?))) {
-            for x in it.filter_map(|v| v.ok()) {
-                md.push_str(&format!("- {} / {}（{} 字）{}\n", x.0.unwrap_or_default(), x.1, x.3, if x.4==1 {" ⚠脏"} else {""}));
+    let has_materials = conn.prepare("SELECT content FROM materials LIMIT 0").is_ok();
+    if has_materials {
+        if let Ok(mut st) = conn.prepare(
+            "SELECT i.category, i.key, i.source, i.chars, i.dirty, m.content, COALESCE(m.stale,0) \
+             FROM library_index i LEFT JOIN materials m ON m.code = i.key \
+             WHERE i.layer='L4' ORDER BY i.category, i.key",
+        ) {
+            if let Ok(it) = st.query_map([], |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, Option<String>>(5)?,
+                    r.get::<_, i64>(6)?,
+                ))
+            }) {
+                for x in it.filter_map(|v| v.ok()) {
+                    md.push_str(&format!(
+                        "- {} / {}（{} 字）{}{}\n",
+                        x.0.unwrap_or_default(),
+                        x.1,
+                        x.3,
+                        if x.4 == 1 { " ⚠脏" } else { "" },
+                        if x.6 == 1 { " ⛔废弃(stale)" } else { "" }
+                    ));
+                    if let Some(body) = x.5 {
+                        if !body.trim().is_empty() {
+                            md.push_str("\n```\n");
+                            md.push_str(&body);
+                            md.push_str("\n```\n\n");
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        if let Ok(mut st) = conn.prepare("SELECT category,key,source,chars,dirty FROM library_index WHERE layer='L4' ORDER BY category,key") {
+            if let Ok(it) = st.query_map([], |r| Ok((r.get::<_,Option<String>>(0)?, r.get::<_,String>(1)?, r.get::<_,Option<String>>(2)?, r.get::<_,i64>(3)?, r.get::<_,i64>(4)?))) {
+                for x in it.filter_map(|v| v.ok()) {
+                    md.push_str(&format!("- {} / {}（{} 字）{}\n", x.0.unwrap_or_default(), x.1, x.3, if x.4==1 {" ⚠脏"} else {""}));
+                }
             }
         }
     }
@@ -906,7 +999,7 @@ pub fn risk_list(conn: &Connection, unresolved_only: bool) -> Result<Value> {
 // ────────────────────────────────── 5. lib-checkpoint
 
 /// 里程碑快照：checkpoint + 导出 L0~L4 清单 + 章节索引（**不自动执行**）。
-pub fn lib_checkpoint(conn: &Connection, lib_root: &Path, out_root: &Path) -> Result<Value> {
+pub fn lib_checkpoint(conn: &Connection, _lib_root: &Path, out_root: &Path) -> Result<Value> {
     let ts = chrono_like_now();
     let dir = out_root.join(format!("checkpoint_{ts}"));
     std::fs::create_dir_all(&dir)?;

@@ -802,7 +802,7 @@ pub fn make_ctx_for_test_unlocked<'a>(
     let mut h = make_ctx_for_test(
         store, session, cfg, llm, work_root, prompt_dir, enabled, pinned, approver,
     );
-    h.llm_transport = Some(std::sync::Arc::new(|p, msgs| ne_engine::llm::call(p, msgs)));
+    h.llm_transport = Some(std::sync::Arc::new(ne_engine::llm::call));
     h
 }
 

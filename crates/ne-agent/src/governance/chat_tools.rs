@@ -23,7 +23,7 @@
 //! 子进程意外死亡、僵尸进程、stdio 缓冲死锁）。聊天的提问频率本来就不高。
 
 use anyhow::{anyhow, Result};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 use crate::mcp::McpConnection;

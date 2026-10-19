@@ -59,7 +59,7 @@ pub fn scan_library_snap(
     dry_run: bool,
     all_layers: bool,
     since: Option<&str>,
-    since_snap: Option<&str>,
+    _since_snap: Option<&str>,
 ) -> Result<Value> {
     let conn = gov(cfg)?;
     let (since_ts, since_note) = match since {

@@ -70,7 +70,7 @@ pub fn job_persist(conn: &Connection, job: &SemanticJob, meta: Option<&Value>) -
     let meta_s = meta
         .map(|m| m.to_string())
         .unwrap_or_else(|| "{}".to_string());
-    let ts = now_ts();
+    let _ts = now_ts();
     conn.execute(
         "INSERT INTO task_jobs(id,kind,slice_n,slice_m,volume,probe_path,state,created_at,updated_at,meta_json)
          VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?8,?9)

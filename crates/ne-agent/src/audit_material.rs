@@ -135,10 +135,16 @@ pub fn audit_chapter(lib_root: &Path, volume: &str, chapter: u32) -> Result<Chap
 
     checks.push(Check {
         item: "L4 资料库（materials 表 → select_materials）".into(),
-        status: if mats.is_empty() {
-            if seg.card_refs.is_empty() { Status::Empty } else { Status::Empty }
-        } else {
+        // 【第1轮修复 A-01】原代码 if/else 两支都返回 Status::Empty，属死分支：
+        // 细纲明确引用了 card_refs、却一张都没选入（或因 stale 全被拦、或引用全错），
+        // 这种情况既不是 Hit 也不是"合理空"，必须报 NotQueried（通路没走通）才能暴露。
+        // 原写法会把整条注入链路的真实故障静默掩盖成"正常无数据"。
+        status: if !mats.is_empty() {
             Status::Hit
+        } else if seg.card_refs.is_empty() {
+            Status::Empty       // 本章确实不需要资料卡：合理空
+        } else {
+            Status::NotQueried  // 引用了却全丢：异常，必须暴露
         },
         evidence: format!(
             "细纲引用 {} 个代号 → 选入 {} 张；缺失 {} 个{:?}",

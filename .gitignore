@@ -49,3 +49,41 @@ docs/ref_taixu_harness_notes.md
 docs/ref_omp_notes.md
 # 太墟 App 工作流安装器（操作第三方 App 内部 Room DB）
 workflows/install_taixu_workflows.py
+
+# ══════════════════════════════════════════════════════════════
+# 2026-10-19 仓库卫生：剥离数据库、小说资料卡与本地备份
+# ══════════════════════════════════════════════════════════════
+# 数据库（含真实业务数据/角色状态，绝不入库）
+novel.db
+novel.db-wal
+novel.db-shm
+*.sqlite
+*.sqlite3
+# 资料库卡片正典数据（02_资料库 下全部 .md 为小说资产，不是源码）
+02_资料库/
+**/02_资料库/
+# 冷备份目录（本地快照，不入版本库）
+09_冷备份/
+# 敏感凭据（保留模板，禁止提交实际值）
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.keystore
+*.jks
+secrets/
+.netrc
+.git-credentials
+# 临时/缓存
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+.cache/
+.tmp/
+# 允许入库前端打包产物（开箱即用）
+!frontend/dist/
+!frontend/dist/**

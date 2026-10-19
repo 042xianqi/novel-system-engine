@@ -543,6 +543,21 @@ pub fn failure_stats(conn: &Connection, days: i64) -> Result<Value> {
     }))
 }
 
+/// 任务是否存在（按 id）。
+///
+/// 【第1轮修复 B-01】新增。原 `dispatch_executor` 不看 id 是否存在就启动执行器，
+/// 实测 `POST /api/tasks/nonexistent-id/dispatch` 会返回 `dispatched:true`，
+/// 前端误判为成功。派发前必须先确认目标任务存在。
+pub fn task_exists(conn: &Connection, id: &str) -> Result<bool> {
+    ensure_tables(conn)?;
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM webui_task WHERE id=?1",
+        params![id],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
 /// 终止未运行任务（pending → canceled）。
 pub fn cancel(conn: &Connection, id: &str) -> Result<Value> {
     ensure_tables(conn)?;

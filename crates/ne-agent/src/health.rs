@@ -15,7 +15,6 @@
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
-use serde_json::Value;
 use std::path::Path;
 
 use ne_engine::chapter::ChapterCtx;

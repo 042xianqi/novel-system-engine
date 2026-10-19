@@ -23,7 +23,7 @@ use crate::governance::governed_call::ne_agent_gov_call;
 use std::path::{Path, PathBuf};
 
 use crate::outline_parse::{grab, split_chapters, Chunk};
-use ne_engine::llm::{self, LlmParams, Message};
+use ne_engine::llm::{LlmParams, Message};
 
 pub const BEAT_SIZE: usize = 5;
 
@@ -214,6 +214,21 @@ fn validate(chs: &[Chunk], first_no: u32) -> (bool, Vec<String>) {
 
 // ───────────────────────────── 主流程
 
+/// 卡号形态（`CHAR-99-001` / 孤立 `CHAR`）。
+///
+/// C-09：原先写在 `nb.lines().any(|l| …)` 的闭包里，等于**每行正文编译两次正则**，
+/// 而清洗循环带 3 次重试、每卷上百章，热路径上白烧上万次编译。提到 `OnceLock`。
+fn card_code_re() -> &'static regex::Regex {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r"\b[A-Z]{2,6}(-\d+)?\b").expect("卡号正则必须可编译"))
+}
+
+/// 剔除卡号后残留的裸英文词（≥4 字母）。
+fn latin_word_re() -> &'static regex::Regex {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r"[A-Za-z]{4,}").expect("英文词正则必须可编译"))
+}
+
 pub struct RebuildOpts {
     pub volume: String,
     pub only_beat: Option<usize>,
@@ -360,7 +375,10 @@ fn chapter_has_design(body: &str) -> bool {
 
 /// 抽全文中的卡号（`[A-Z]{2,6}-\d+`），用于校验清洗后未丢引用。
 fn card_codes(text: &str) -> std::collections::BTreeSet<String> {
-    let re = regex::Regex::new(r"\b[A-Z]{2,6}-\d+(?:-\d+)*\b").unwrap();
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(r"\b[A-Z]{2,6}-\d+(?:-\d+)*\b").expect("卡号抽取正则必须可编译")
+    });
     re.find_iter(text).map(|m| m.as_str().to_string()).collect()
 }
 
@@ -431,9 +449,9 @@ pub fn sanitize(lib_root: &Path, llm: &LlmParams, opts: &SanitizeOpts) -> Result
             });
             let latin_word = nb.lines().any(|l| {
                 // 先剔卡号（含未带号的卡类前缀，如孤立 CHAR）；残余裸英文词才算污染。
-                let card_re = regex::Regex::new(r"\b[A-Z]{2,6}(-\d+)?\b").unwrap();
+                let card_re = card_code_re();
                 let stripped = card_re.replace_all(l, "");
-                regex::Regex::new(r"[A-Za-z]{4,}").unwrap().is_match(&stripped)
+                latin_word_re().is_match(&stripped)
             });
             if chapter_has_design(&nb) {
                 errs = vec!["仍含设计层词".into()];

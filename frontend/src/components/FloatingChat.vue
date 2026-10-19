@@ -8,16 +8,18 @@
 // ── 为什么是「悬浮卡片」而不是新页面 ──────────────────────
 // 用户明确要求：信息展示要用悬浮卡片，不要页面跳转。
 // 这里用毛玻璃卡片 + 背景遮罩，关掉后底下的视图位置原封不动。
-import { ref, computed, nextTick, watch } from 'vue'
+import { ref, computed, nextTick, watch, onUnmounted } from 'vue'
 import { chat, toast } from '../store.js'
-import { useChat } from '../composables/useChat.js'
+import { useChat, stopChatTyping } from '../composables/useChat.js'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
 })
 const emit = defineEmits(['close'])
-
 const { send } = useChat()
+
+// 【R12】悬浮窗关闭/卸载时停掉逐字动画，防孤儿定时器继续写屏。
+onUnmounted(() => { stopChatTyping() })
 const text = ref('')
 const listEl = ref(null)
 const inputEl = ref(null)

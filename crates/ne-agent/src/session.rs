@@ -151,11 +151,42 @@ pub struct CompactionRow {
     pub created_at: i64,
 }
 
+/// 会话时间戳（毫秒）——**进程内严格单调递增**。
+///
+/// # 为什么不能直接用系统时钟
+///
+/// 原来直接返回 `Duration::as_millis()`。问题：同一毫秒内连做两次
+/// `append()`/`create_session()`，两次 `updated_at` 完全相同，而
+/// `latest_session()` 按 `ORDER BY updated_at DESC, rowid DESC` 排，
+/// 于是排序完全退化成「谁 rowid 大谁赢」，与「谁最近被更新」脱钩。
+///
+/// 后果不是只在测试里：真实场景下「连续两轮对话」「批量建卡」「连开两个
+/// 子会话」都可能在同毫秒内完成，`--resume` 就会恢复到**错误的会话**。
+/// 实测：`cargo test --all` 全量并发跑时 `latest_session_orders_by_update`
+/// 偶发失败（单独跑 5 次全过）——典型的同毫秒竞争。
+///
+/// # 修法
+///
+/// 维护一个进程级 `AtomicI64` 上界：取 `max(系统时钟, 上次返回值 + 1)`。
+/// 既保留「接近真实时间」的语义，又保证**任意两次调用必不相等**。
+/// 跨进程不保证单调（不同进程各有计数器），但会话库本身是单进程独占写入的，
+/// 不构成问题。
 pub fn now_ms() -> i64 {
-    std::time::SystemTime::now()
+    use std::sync::atomic::{AtomicI64, Ordering};
+    static LAST: AtomicI64 = AtomicI64::new(0);
+    let sys = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+        .unwrap_or(0);
+    // CAS 循环：保证返回值严格大于上一次返回值
+    let mut prev = LAST.load(Ordering::Relaxed);
+    loop {
+        let next = if sys > prev { sys } else { prev + 1 };
+        match LAST.compare_exchange_weak(prev, next, Ordering::SeqCst, Ordering::Relaxed) {
+            Ok(_) => return next,
+            Err(actual) => prev = actual,
+        }
+    }
 }
 
 /// 生成会话 id（时间戳 + 进程内计数，无外部依赖）。

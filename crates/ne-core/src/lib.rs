@@ -349,7 +349,13 @@ pub fn find_card_refs(text: &str) -> Vec<String> {
 
 /// 抓"在场："行里的人物名（顿号/逗号/、分隔，去掉卡编号）。
 pub fn find_in_chapter(text: &str) -> Vec<String> {
-    let re = regex::Regex::new(r"在场[：:].*?([^\n]+)").unwrap();
+    // 【2026-10-19 第5轮】提到 OnceLock：原实现每次调用都编译正则，
+    // 而本函数对每章细纲块调 1 次，10 卷 × 每卷上百块 → 上千次重复编译。
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(r"在场[：:].*?([^\n]+)").expect("在场行正则编译失败")
+    });
     let mut out = Vec::new();
     for cap in re.captures_iter(text) {
         let line = cap.get(1).map(|m| m.as_str()).unwrap_or("");

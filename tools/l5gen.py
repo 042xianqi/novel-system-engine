@@ -29,6 +29,18 @@ ENDPOINT = os.environ.get(
     'NOVEL_LLM_ENDPOINT', 'http://127.0.0.1:8788/v1/chat/completions')
 MODEL = os.environ.get('NOVEL_LLM_MODEL', 'deepseek-v4.1-flash')
 KEY = os.environ.get('NOVEL_LLM_KEY', '')  # 本地网关可留空
+# 【2026-10-18 调参】实测 8788 网关 workbuddy/deepseek-v4.1-flash：
+#   context_window=1000000 / max_output_tokens=384000
+# 原值 max_tokens=32768 只用掉 8.5%，按总指挥指令放开。
+# 【第2轮修正 C-11】原注释写「本机网关仅在 stream=true 时才下发 reasoning，
+#   非流式一律丢弃」——该结论与实测不符。
+#   实测（2026-10-18，非流式 POST /v1/chat/completions）：
+#     response.choices[0].message 中**确实返回了 reasoning_content 字段**，
+#     形如 {"role":"assistant","content":"可用","reasoning_content":"我们需要回答…"}。
+#   因此 enable_thinking / reasoning_effort 在非流式下也是有效的，不是死参数。
+MAX_TOKENS = int(os.environ.get('NOVEL_MAX_TOKENS', '32768'))
+ENABLE_THINKING = os.environ.get('NOVEL_THINKING', '1') == '1'
+REASONING_EFFORT = os.environ.get('NOVEL_REASONING_EFFORT', 'high')
 
 
 class Mcp:
@@ -106,9 +118,26 @@ def build_messages(packet, chapter, style_text, scene_note=''):
     return [{'role': 'system', 'content': style_text}, {'role': 'user', 'content': user}]
 
 
-def call_llm(messages, max_tokens=32768, temperature=0.8, retries=3):
-    body = json.dumps({'model': MODEL, 'messages': messages,
-                       'max_tokens': max_tokens, 'temperature': temperature}).encode()
+def call_llm(messages, max_tokens=None, temperature=0.8, retries=3):
+    """调 LLM。max_tokens 默认取 MAX_TOKENS（可用 NOVEL_MAX_TOKENS 覆盖）。
+    实测：workbuddy/deepseek-v4.1-flash ctx=1,000,000 / max_output=384,000。
+    思考：本机网关 8788 的**非流式**响应 message 里**确实带 reasoning_content**
+    （2026-10-19 复测 2 次，keys=['role','content','reasoning_content']，各有 100/175 字思考）。
+    此前「非流式丢弃 reasoning」的结论来自读代码注释，属误判，已纠正。
+    因此 enable_thinking / reasoning_effort 对非流式同样生效，不是死参数。
+    """
+    mt = max_tokens if max_tokens is not None else MAX_TOKENS
+    payload = {
+        'model': MODEL,
+        'messages': messages,
+        'max_tokens': mt,
+        'temperature': temperature,
+    }
+    if ENABLE_THINKING:
+        payload['enable_thinking'] = True
+        if REASONING_EFFORT:
+            payload['reasoning_effort'] = REASONING_EFFORT
+    body = json.dumps(payload).encode()
     for i in range(retries):
         try:
             req = urllib.request.Request(ENDPOINT, data=body, headers={

@@ -227,6 +227,18 @@ pub fn run(conn: &Connection, lib_root: &Path, fix: bool, older_than_days: u64) 
         "ok": rgs["ok"] == true,
         "detail": rgs,
     }));
+    // ⑫b 索引-实盘一致性（第 2 轮新增）：library_index 指向的文件是否存在。
+    //
+    // 实测：874 条索引里 **136 条指向不存在的 md**（X 层 115 + L4 层 21）。
+    // 这直接导致 `graph build` 报 `unreadable=136`、`inject` 读不到卡正文、
+    // 而自检从来不看这一项 → 一直是「全绿但半瞎」。
+    // 这里只**报数**不自动删索引（删索引会丢废弃卡的追踪线索）。
+    let idx_check = index_vs_disk_check(conn, lib_root);
+    items.push(json!({
+        "name": "index_vs_disk",
+        "ok": idx_check["missing"].as_i64().unwrap_or(0) == 0,
+        "detail": idx_check,
+    }));
 
     // ⑬ 沙盘推演（第 15 批）：sandbox_run/sandbox_step 结构 + 步骤数一致性（只读）
     let sbs = super::sandbox::table_check(conn).unwrap_or(json!({"ok": false, "error": "检查失败"}));
@@ -291,6 +303,56 @@ pub fn run(conn: &Connection, lib_root: &Path, fix: bool, older_than_days: u64) 
         "toolchain_epoch": 17,
         "note": "自检只读为主；--fix 仅创建缺失目录，绝不 ALTER 表/删任务/改资料库。",
     }))
+}
+
+/// 索引 vs 实盘一致性（只读）：`library_index.source` 指向的 md 是否真实存在。
+///
+/// 为什么必须单独查：
+/// `library_index` 有 `source` 列，但**从来没有任何自检去核对文件是否还在**。
+/// 实测 874 条索引里 136 条指向不存在的文件（X 层 115 条是废弃卡的死索引，
+/// L4 层 21 条是历史改名后没更新 source 的孤儿索引）。
+/// 后果：graph build 报 unreadable=136、inject 读卡正文拿空、体检却一片绿。
+///
+/// 判据与 `rel_graph::build` 完全一致（都用 `lib_root.join(source)` + `is_file`），
+/// 否则两个模块会各说各话。
+fn index_vs_disk_check(conn: &Connection, lib_root: &Path) -> Value {
+    let mut total = 0i64;
+    let mut missing_by_layer: std::collections::BTreeMap<String, i64> = Default::default();
+    let mut samples: Vec<Value> = Vec::new();
+    let mut missing = 0i64;
+    let st = conn.prepare("SELECT key,layer,IFNULL(source,'') FROM library_index");
+    let Ok(mut st) = st else {
+        return json!({"ok": false, "error": "library_index 不可读"});
+    };
+    let rows = st.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+    });
+    let Ok(rows) = rows else {
+        return json!({"ok": false, "error": "library_index 查询失败"});
+    };
+    for row in rows.flatten() {
+        let (key, layer, source) = row;
+        total += 1;
+        if source.is_empty() {
+            *missing_by_layer.entry(format!("{layer}:no_source")).or_insert(0) += 1;
+            missing += 1;
+            continue;
+        }
+        if !lib_root.join(&source).is_file() {
+            *missing_by_layer.entry(layer.clone()).or_insert(0) += 1;
+            missing += 1;
+            if samples.len() < 10 {
+                samples.push(json!({"key": key, "layer": layer, "source": source}));
+            }
+        }
+    }
+    json!({
+        "total": total,
+        "missing": missing,
+        "by_layer": missing_by_layer,
+        "samples": samples,
+        "note": "X 层缺失是废弃卡死索引（可留）；L4 层缺失是历史改名未回写 source（应修）",
+    })
 }
 
 /// 长期 Pending（> `hours` 小时）任务清单。

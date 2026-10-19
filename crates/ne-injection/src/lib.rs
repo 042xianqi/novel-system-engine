@@ -209,7 +209,18 @@ impl<'a> CardSource<'a> {
     }
 
     /// 取一张卡的正文：先磁盘，再 DB（含旧编号兜底）。都取不到返回 None。
+    ///
+    /// 【第2轮修复 D1-02b】原实现「磁盘优先」且不看 stale：
+    /// 实测 02_资料库 下 1049 个 md 文件里，有 31 个属于 stale=1 的废弃卡，
+    /// 这些卡会从磁盘被直接读出、完全绕过 DB 的 stale 标记。
+    /// 现在先做 stale 闸门：只要 DB 里该 code（或 new_code）标记 stale=1，
+    /// 无论磁盘有没有文件，一律返回 None。
     fn load(&self, code: &str) -> Option<String> {
+        if let Some(con) = self.db.as_ref() {
+            if is_stale(con, code) {
+                return None;
+            }
+        }
         if let Some(p) = locate_card(self.lib_root, code) {
             if let Ok(body) = std::fs::read_to_string(&p) {
                 return Some(body);
@@ -223,6 +234,9 @@ impl<'a> CardSource<'a> {
         // ② 旧编号兜底：renumber_map.old_code = code → new_code
         if let Some(new) = self.renum.get(code) {
             if new != code {
+                if is_stale(con, new) {
+                    return None;
+                }
                 if let Some(b) = query_card(con, new) {
                     return Some(b);
                 }
@@ -233,24 +247,71 @@ impl<'a> CardSource<'a> {
     }
 }
 
-/// `materials.code = code` 的非空正文。
-fn query_card(con: &rusqlite::Connection, code: &str) -> Option<String> {
+/// 该 code（按 code 或 new_code 命中）是否被标记为 stale=1。
+///
+/// 【第2轮回归修复】第一版直接 `SELECT COALESCE(stale,0)`，但最小测试库
+/// （`CREATE TABLE materials(code,name,content,new_code)`）根本没有 stale 列，
+/// 查询报错被 unwrap_or(false) 吞掉前先命中了 `.ok()` 分支 → 变成"查不到"，
+/// 导致所有卡都被判为非 stale 之外的行为异常（实测 test card_source_falls_back_to_db 失败）。
+/// 现改为：先探测 stale 列是否存在，不存在则该库视为"无 stale 概念"，一律 false。
+fn is_stale(con: &rusqlite::Connection, code: &str) -> bool {
+    let has_stale_col = con
+        .prepare("SELECT stale FROM materials LIMIT 0")
+        .is_ok();
+    if !has_stale_col {
+        return false;
+    }
     con.query_row(
-        "SELECT content FROM materials WHERE code = ?1 AND content IS NOT NULL AND trim(content) <> '' LIMIT 1",
+        "SELECT COALESCE(stale, 0) FROM materials WHERE code = ?1 OR new_code = ?1 LIMIT 1",
         [code],
-        |r| r.get::<_, String>(0),
+        |r| r.get::<_, i64>(0),
     )
-    .ok()
+    .map(|v| v != 0)
+    .unwrap_or(false)
+}
+
+/// `materials.code = code` 的非空正文。
+///
+/// 【第2轮修复 D1-02】原 SQL 未过滤 `stale`，导致 148 张已判定废弃的卡
+/// （写作模板 / 旧星际支线 / 越界关系卡等，见 `stale_reason`）
+/// 仍会被注入正文 prompt，污染生成。
+/// 现按库结构动态加 `COALESCE(stale,0)=0`：有 stale 列才过滤，
+/// 没有（最小测试库）则退化为原语义，避免把测试库打挂。
+fn query_card(con: &rusqlite::Connection, code: &str) -> Option<String> {
+    let stale_guard = if has_stale_column(con) {
+        " AND COALESCE(stale, 0) = 0"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "SELECT content FROM materials \
+         WHERE code = ?1 AND content IS NOT NULL AND trim(content) <> ''{} \
+         LIMIT 1",
+        stale_guard
+    );
+    con.query_row(&sql, [code], |r| r.get::<_, String>(0)).ok()
 }
 
 /// `materials.new_code = code` 的非空正文（兼容 code 列仍是旧值的行）。
+/// 【第2轮修复 D1-02】同上，动态过滤 stale。
 fn query_card_by_new_code(con: &rusqlite::Connection, code: &str) -> Option<String> {
-    con.query_row(
-        "SELECT content FROM materials WHERE new_code = ?1 AND content IS NOT NULL AND trim(content) <> '' LIMIT 1",
-        [code],
-        |r| r.get::<_, String>(0),
-    )
-    .ok()
+    let stale_guard = if has_stale_column(con) {
+        " AND COALESCE(stale, 0) = 0"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "SELECT content FROM materials \
+         WHERE new_code = ?1 AND content IS NOT NULL AND trim(content) <> ''{} \
+         LIMIT 1",
+        stale_guard
+    );
+    con.query_row(&sql, [code], |r| r.get::<_, String>(0)).ok()
+}
+
+/// `materials` 表是否有 `stale` 列（最小测试库没有）。
+fn has_stale_column(con: &rusqlite::Connection) -> bool {
+    con.prepare("SELECT stale FROM materials LIMIT 0").is_ok()
 }
 
 /// 按编号在 02_资料库 各子类里找卡文件（编号在文件名里，如 EVT-99-005.md）。
@@ -523,6 +584,78 @@ mod tests {
         ch.card_refs = vec!["PILL-99-001".into()];
         let pkt = build_injection_db(&ch, &tmp.join("02_资料库"), Some(&db), &tmp.join("04_正文"), "卷01", 0, &[], &[]);
         assert!(pkt.materials[0].content.contains("磁盘正文"), "磁盘应优先：{}", pkt.materials[0].content);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    // ── 第2轮新增：stale 闸门回归测试 ─────────────────────────
+    /// 造一个**带 stale 列**的最小库：PILL-99-001 正常，PILL-99-002 标记废弃。
+    fn make_db_with_stale(path: &std::path::Path) {
+        let con = rusqlite::Connection::open(path).unwrap();
+        con.execute_batch(
+            "CREATE TABLE materials(code TEXT, name TEXT, content TEXT, new_code TEXT, stale INTEGER);
+             CREATE TABLE renumber_map(old_code TEXT, new_code TEXT);",
+        )
+        .unwrap();
+        con.execute(
+            "INSERT INTO materials(code,name,content,stale) VALUES \
+             ('PILL-99-001','谐振髓核','# PILL-99-001\n正常正文。',0),\
+             ('PILL-99-002','废弃丹药','# PILL-99-002\n这段是废弃内容，绝不该进 prompt。',1)",
+            [],
+        )
+        .unwrap();
+    }
+
+    /// stale=1 的卡在 DB 回退路径必须取不到。
+    #[test]
+    fn stale_card_is_blocked_from_db() {
+        let tmp = std::env::temp_dir().join(format!("ne_inj_stale_db_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        let db = tmp.join("novel.db");
+        make_db_with_stale(&db);
+        let empty_lib = tmp.join("02_资料库");
+        fs::create_dir_all(&empty_lib).unwrap();
+
+        let mut ch = ChapterOutline::default();
+        ch.number = 2;
+        ch.card_refs = vec!["PILL-99-001".into(), "PILL-99-002".into()];
+        let pkt = build_injection_db(&ch, &empty_lib, Some(&db), &tmp.join("04_正文"), "卷01", 0, &[], &[]);
+
+        let codes: Vec<&str> = pkt.materials.iter().map(|m| m.code.as_str()).collect();
+        assert!(codes.contains(&"PILL-99-001"), "正常卡应注入，实得 {:?}", codes);
+        assert!(!codes.contains(&"PILL-99-002"), "stale 卡绝不能注入，实得 {:?}", codes);
+        assert!(
+            pkt.missing_refs.iter().any(|m| m == "PILL-99-002"),
+            "stale 卡应如实进 missing_refs 而不是静默丢弃：{:?}",
+            pkt.missing_refs
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// stale=1 的卡即使在磁盘上有文件，也必须被拦住（磁盘优先路径的旁路）。
+    #[test]
+    fn stale_card_is_blocked_even_when_on_disk() {
+        let tmp = std::env::temp_dir().join(format!("ne_inj_stale_disk_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("02_资料库/丹药")).unwrap();
+        fs::write(
+            tmp.join("02_资料库/丹药/PILL-99-002.md"),
+            "# PILL-99-002 废弃丹药\n## 摘要\n- x\n- y\n- z\n\n磁盘上的废弃正文。",
+        )
+        .unwrap();
+        let db = tmp.join("novel.db");
+        make_db_with_stale(&db);
+
+        let mut ch = ChapterOutline::default();
+        ch.number = 2;
+        ch.card_refs = vec!["PILL-99-002".into()];
+        let pkt = build_injection_db(&ch, &tmp.join("02_资料库"), Some(&db), &tmp.join("04_正文"), "卷01", 0, &[], &[]);
+
+        assert!(
+            pkt.materials.is_empty(),
+            "stale 卡即使磁盘存在也不得注入，实得 {:?}",
+            pkt.materials.iter().map(|m| &m.code).collect::<Vec<_>>()
+        );
         let _ = fs::remove_dir_all(&tmp);
     }
 }

@@ -92,18 +92,33 @@ export function installRipple(root = document) {
     host.classList.add('ripple-ready')
   }
 
-  root.addEventListener(
-    'pointerdown',
-    (e) => {
-      const t = e.target
-      if (!t || typeof t.closest !== 'function') return
-      const host = t.closest(SELECTOR)
-      if (!host) return
-      if (host.disabled || host.getAttribute('aria-disabled') === 'true') return
-      ensureReady(host)
-      spawnRipple(host, e.clientX, e.clientY)
-    },
-    // 捕获阶段：确保即使标签内部 stopPropagation 也能收到
-    { capture: true, passive: true }
-  )
+// ── 幂等 + 可卸载 ────────────────────────────────────────────
+  // 【R12】原实现对 root 挂捕获监听后既不幂等也不移除：
+  //   · installRipple() 被调两次就会叠两条监听 → 一次点击生成两层涟漪；
+  //   · 模块级常驻影响虽低，但缺 remove 就等于把「谁装的、谁能卸」的契约丢了，
+  //     热重载（vite HMR）时会越叠越多。
+  //   现在排除已挂载情况，并提供 uninstallRipple。
+  if (root.__rippleInstalled) return
+
+  const handler = (e) => {
+    const t = e.target
+    if (!t || typeof t.closest !== 'function') return
+    const host = t.closest(SELECTOR)
+    if (!host) return
+    if (host.disabled || host.getAttribute('aria-disabled') === 'true') return
+    ensureReady(host)
+    spawnRipple(host, e.clientX, e.clientY)
+  }
+  // 捕获阶段：确保即使标签内部 stopPropagation 也能收到
+  const opts = { capture: true, passive: true }
+  root.addEventListener('pointerdown', handler, opts)
+  root.__rippleInstalled = handler
+}
+
+/** 卸载全局涟漪监听（热重载 / 单测隔离用）。 */
+export function uninstallRipple(root = document) {
+  const handler = root && root.__rippleInstalled
+  if (!handler) return
+  root.removeEventListener('pointerdown', handler, { capture: true })
+  root.__rippleInstalled = null
 }

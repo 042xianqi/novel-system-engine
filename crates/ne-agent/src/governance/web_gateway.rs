@@ -214,6 +214,14 @@ impl Resp {
             body: serde_json::to_vec_pretty(v).unwrap_or_else(|_| b"{}".to_vec()),
         }
     }
+    /// 指定状态码的 JSON 响应（U-04：任务不存在应返 404，不能 200 带 error 字段）。
+    fn json_status(code: u16, v: &Value) -> Self {
+        Resp {
+            status: code,
+            ctype: "application/json; charset=utf-8",
+            body: serde_json::to_vec_pretty(v).unwrap_or_else(|_| b"{}".to_vec()),
+        }
+    }
     fn html(s: &str) -> Self {
         Resp { status: 200, ctype: "text/html; charset=utf-8", body: s.as_bytes().to_vec() }
     }
@@ -670,14 +678,37 @@ fn route_dyn(
         }
 
         // ══════ P3：系统自检（非高危，UI 可直接调用）
-        ("system", 3) if segs[2] == "self-check" && method == "POST" => {
-            let fix = serde_json::from_str::<Value>(body.trim()).ok()
-                .and_then(|v| v["fix"].as_bool()).unwrap_or(false);
+        // 【第1轮修复 B-02】原实现只接受 POST，而前端 `api.system.check()` 用 GET，
+        // 实测 GET /api/system/self-check → 404，前端自检按钮点了没反应。
+        // 现在 GET/POST 都接受；GET 等价于 fix=false（只体检不改库）。
+        ("system", 3) if segs[2] == "self-check" && (method == "GET" || method == "POST") => {
+            let fix = if method == "GET" {
+                false
+            } else {
+                serde_json::from_str::<Value>(body.trim()).ok()
+                    .and_then(|v| v["fix"].as_bool()).unwrap_or(false)
+            };
             super::self_check::run(conn, lib_root, fix, 30)
         }
+        // 【第1轮修复 B-03】`unlocked` 字段名极易误读：
+        // 它表示「语义门控 gate_l1 && gate_l2」，与真实 LLM 文件锁毫无关系。
+        // 实测该字段恒为 false，而 /api/system/llm-lock 同时报 exists=true，
+        // 两个接口看起来互相矛盾（用户会以为"锁没生效"）。
+        // 现改名 `semantic_gate_unlocked`，并保留 `unlocked` 作兼容字段但加注说明。
         ("system", 3) if segs[2] == "gate" && method == "GET" => {
             let (l1, l2) = super::task_store::gate_state();
-            Ok(json!({"gate_l1": l1, "gate_l2": l2, "unlocked": l1 && l2}))
+            let file_lock = std::path::Path::new("/sdcard/wogov_real_llm.allow").exists();
+            Ok(json!({
+                "gate_l1": l1,
+                "gate_l2": l2,
+                // 语义检视通路（world-gov），与出网授权无关
+                "semantic_gate_unlocked": l1 && l2,
+                // 真实 LLM 出网文件锁（这才是日常说的"解锁"）
+                "llm_file_lock_unlocked": file_lock,
+                // 兼容旧前端：语义含义，勿当作出网授权
+                "unlocked": l1 && l2,
+                "_note": "unlocked=语义门控；出网授权请看 llm_file_lock_unlocked",
+            }))
         }
         // ══════ 真实 LLM 授权锁（面板开关 · 2026-10-17）══════
         // 这是**文件锁** `/sdcard/wogov_real_llm.allow` 的面板视图，与上面
@@ -730,14 +761,14 @@ fn route_dyn(
         // POST → 接受明文 api_key 写入；传空或传掩码 = 保留原值（防误覆盖）
         ("config", 3) if segs[2] == "model" => match method {
             "GET" => super::model_config::read(lib_root)
-                .map(|v| Ok(v))
+                .map(Ok)
                 .unwrap_or_else(|e| Ok(json!({
                     "ok": false,
                     "error": e.to_string(),
                     "hint": "检查 .neagent/models.yml 是否存在且格式正确",
                 }))),
             "POST" | "PUT" => super::model_config::write(conn, lib_root, body)
-                .map(|v| Ok(v))
+                .map(Ok)
                 .unwrap_or_else(|e| Ok(json!({
                     "ok": false,
                     "error": e.to_string(),
@@ -797,6 +828,17 @@ fn route_dyn(
             let lim = serde_json::from_str::<Value>(body.trim()).ok()
                 .and_then(|v| v["limit"].as_u64())
                 .unwrap_or(1) as u32;
+            // 【第1轮修复 B-01】原实现不校验任务是否存在：
+            // 实测 POST /api/tasks/nonexistent-id/dispatch 返回
+            //   {"dispatched": true, "lock_token": "..."}
+            // 前端会误以为派发成功，实际什么都没派——连执行器都被拉起来了。
+            // 现在先查任务，不存在则明确报错，不启动执行器。
+            let task_id = segs[2].to_string();
+            let exists = super::task_store::task_exists(conn, &task_id).unwrap_or(false);
+            if !exists {
+                // route_dyn 返回 Option<Resp>，用 Resp::bad 构造错误响应
+                return Some(Resp::bad(&format!("任务不存在：{task_id}（未启动执行器）")));
+            }
             let _ = super::category_store::log_op(conn, "task.dispatch", segs[2],
                 &format!("limit={lim}"), "");
             super::task_store::dispatch_executor(lib_root, lim)
@@ -817,12 +859,31 @@ fn route_dyn(
         ("tasks", 3) => {
             let tid = segs[2];
             match method {
-                "GET" => super::task_store::result(conn, tid),
+                // 【第2轮修复 U-04】原实现直接把 `task_store::result()` 的错误当成
+                // JSON body 返回，HTTP 状态仍是 200 → 前端 `if (r.ok)` 永远为真，
+                // 「任务不存在」被当成一次成功的查询，展示成空白详情。
+                // 现在先判存在性，不存在返回 404；存在仍走原逻辑。
+                "GET" => {
+                    if !super::task_store::task_exists(conn, tid).unwrap_or(false) {
+                        return Some(Resp::json_status(
+                            404,
+                            &json!({"ok": false, "error": format!("任务不存在：{tid}"), "id": tid}),
+                        ));
+                    }
+                    super::task_store::result(conn, tid)
+                }
                 "DELETE" => super::task_store::cancel(conn, tid),
                 _ => return Some(Resp::bad("tasks: GET / POST(submit) / DELETE")),
             }
         },
         ("tasks", 4) if segs[3] == "result" && method == "GET" => {
+            // 同上：/result 子路径也要 404 语义，不能 200 带 error 字段。
+            if !super::task_store::task_exists(conn, segs[2]).unwrap_or(false) {
+                return Some(Resp::json_status(
+                    404,
+                    &json!({"ok": false, "error": format!("任务不存在：{}", segs[2]), "id": segs[2]}),
+                ));
+            }
             super::task_store::result(conn, segs[2])
         }
         // 结果回写（2026-10-17 · 路径A）：执行方（ToolPkg/MCP）执行完调用
@@ -1086,7 +1147,14 @@ fn sse_task_stream(stream: &mut TcpStream) {
     let _ = stream.flush();
 
     // 首帧：立刻告诉前端「连上了」，避免它以为失败而重连
-    let hello = "data: {\"type\":\"hello\",\"data\":{\"subscribers\":0}}\n\n";
+    // 【R12 修复】原为硬编码 `"subscribers":0` —— 看起来像实时监控数字，
+    //   实际永远恒为 0，排障时会误判成「订阅者全没了」。
+    //   现在接真实计数（订阅者已在上面 subscribe() 注册，故此处含当前连接自身）。
+    let n_subs = super::task_events::subscriber_count();
+    let hello = format!(
+        "data: {{\"type\":\"hello\",\"data\":{{\"subscribers\":{}}}}}\n\n",
+        n_subs
+    );
     if stream.write_all(hello.as_bytes()).is_err() {
         return;
     }

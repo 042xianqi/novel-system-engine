@@ -1,5 +1,5 @@
 <script setup>
-// CardBrowser.vue —— 卡片视图（L4）：搜索 + 分类 Chip 筛选 + 浏览 + 新建 + 详情 + 编辑 + 删除
+// CardBrowser.vue —— 资料库（L4）「网格化小方块」相册视图（2026-10-20 视觉改版）
 //
 // 数据来源（未改动，端点和字段与 useSystem.js 已核对一致）：
 //   GET /api/library/index?layer=L4&limit=2000
@@ -11,17 +11,21 @@
 // 取数与分页：全部复用 useSystem.js 的 loadCards / pagedCards / filteredCards /
 // cardCategoryCounts / loadCardDetail / closeCardDetail，本组件不新开任何请求。
 //
-// ── 本轮：卡片规范对齐「方案 C」（裁定见 docs/UI-设计方案提案.md §三/§四）──
-// ① 卡片外层 .cy-card（1px 细边框、无阴影，阴影已全局禁用）；
-//    标题 .cy-card-title（20px/650，一行截断），编号前缀一律剥掉。
-// ② 摘要 .cy-card-summary（14px，两行截断）。
-// ③ 徽章行 .cy-badges + .cy-badge（11px 主色）：依次 所属文明 / 分类 / 字数。
-// ④ 内部编号（ARTS-99-902 这类）用 .cy-key：缩小变灰、默认几乎不可见，
-//    hover / 长按才提亮；标题里若拼接了编号前缀，必须剥掉（见 titleOf）。
-// ⑤ 文明 / 摘要字段多源容错（Operit 正在后端补 civ 与 summary）：
-//    pickCiv / pickSummary 依次尝试多个字段名，取不到就给空串，
-//    此时对应徽章 / 摘要不渲染（v-if 控制，不留空白占位）。
-// ⑥ 保留：搜索框、分类 Chip、分页、编辑 / 删除、以及 <CardDetailDrawer> 引用（未改动）。
+// ── 本轮：改为「网格化小方块」（方案 C 的紧凑变体，裁定见 docs/UI-设计方案提案.md §三/§四）──
+// ① 废掉「一行一个大卡片」：主列表改成相册式网格
+//    `grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 gap-2.5`
+//    —— 手机至少 2 列，方块高度统一（aspect-[4/3] + min-h-[110px]）。
+// ② 方块内容只留三样：大标题（.cy-card-title，15.5px，两行截断）
+//    + 分类小徽章（.cy-badge）+ 字数（贴底）。
+//    **不渲染摘要**（.cy-card-summary）：格子太小放不下，去掉避免噪音。
+// ③ 内容顶部对齐（标题），徽章 / 字数压到底部；内部编号 .cy-key 默认不可见、
+//    hover / 长按 / 键盘聚焦才现（仍是「悬停提亮」，不占视觉）。
+// ④ 保留：搜索框、分类 Chip、分页、编辑 / 删除（编辑收进 hover / 长按的浮层，
+//    删除仍在详情抽屉里做二次确认）、以及 <CardDetailDrawer @saved> 契约（未改动）。
+// ⑤ 文明（civ）字段的多源容错函数保留但本轮不在方块里渲染（格子只留三样）；
+//    pickCiv / pickSummary 继续保留，供抽屉与后续「摘要字段上线」时复用。
+// ⑥ 颜色一律走语义 token（bg-surface-card-2 / text-content-sec / border-line /
+//    bg-primary/12 …），无任何硬编码色值；动效只动 transform / opacity。
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { systemData, pushLog, toast } from '../../store.js'
 import {
@@ -135,6 +139,8 @@ function titleOf(c) {
  * ⚠ 只接受**字符串**取值：绝不读 `item.civ.title` 这类深层路径，
  *   避免后端某字段是对象时 `.title` 为 undefined 而报错；
  *   对象 / 数字 / null 一律按「取不到」处理 → 返回空串。
+ * 【本轮】网格小方块只留「标题 / 分类徽章 / 字数」三样，故不在方块里渲染；
+ *   函数保留，供抽屉或后续「摘要字段上线」时复用。
  * TODO(后端): civ/summary 字段上线后自动渲染
  */
 function pickCiv(item) {
@@ -148,6 +154,8 @@ function pickCiv(item) {
  *   item.summary → item.one_liner → item.descr → item.note。
  * 同样只接受字符串，取不到返回空串（UI 不渲染这一行，不占位、不误导）。
  * 注：列表接口当前不返回正文，为拿摘要而对 700+ 张卡逐个回源不可接受，故不再做正文兜底。
+ * 【本轮】格子放不下摘要（会挤爆 4:3 小方块），方块内**不再渲染**；
+ *   函数保留，供抽屉或后续复用。
  * TODO(后端): civ/summary 字段上线后自动渲染
  */
 function pickSummary(item) {
@@ -208,7 +216,7 @@ function closeDetail() {
 // ── 操作按钮的显隐：桌面 hover / 移动长按 ────────────────────────
 // revealedKey：移动端长按后要露出操作按钮的那张卡。
 // CSS 里 `@media (hover:hover)` 负责桌面 hover 显隐；这里只处理长按。
-// 编号（.cy-key）也用同一套显隐：默认很淡，hover / 长按 / 聚焦时提亮。
+// 编号（.cy-key）也用同一套显隐：默认不可见，hover / 长按 / 聚焦时才现。
 const revealedKey = ref('')
 let pressTimer = null
 let suppressClick = false
@@ -442,14 +450,15 @@ onBeforeUnmount(() => {
       class="mx-3 mt-2 rounded-md px-3 py-2 text-[11px] bg-danger-soft text-danger break-all"
     >{{ s.err }}</div>
 
-    <!-- ── 卡片网格 ── -->
+    <!-- ── 资料库网格：相册式小方块（手机 ≥2 列 / 中屏 3 列）── -->
     <div class="flex-1 min-h-0 overflow-y-auto px-3 pt-3 pb-24">
-      <div class="card-grid">
+      <div class="card-grid grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
         <div
           v-for="c in page.slice"
           :key="c.key"
           :data-card-key="c.key"
-          class="cy-card card-item relative flex flex-col cursor-pointer select-none outline-none"
+          class="cy-card card-item relative flex flex-col overflow-hidden cursor-pointer
+                 select-none outline-none"
           :class="{
             'reveal': revealedKey === c.key,
             'ring-2 ring-primary/60': highlightKey === c.key,
@@ -465,41 +474,37 @@ onBeforeUnmount(() => {
           @pointercancel="onCardPointerUp"
           @contextmenu.prevent="revealedKey = c.key"
         >
-          <!-- ① 大标题（.cy-card-title：20px/650，一行截断）+ 状态点 -->
-          <div class="flex items-start gap-2">
-            <h3 class="cy-card-title flex-1 min-w-0">{{ titleOf(c) }}</h3>
+          <!-- ① 大标题：两行截断、15.5px（格子小，字号相应收），内容顶部对齐 -->
+          <h3 class="cy-card-title tile-title">{{ titleOf(c) }}</h3>
+
+          <!-- 状态点（笔记状态 / 待同步）：右上角，不占行、不挤压标题 -->
+          <span class="absolute top-1.5 right-1.5 flex items-center gap-1">
+            <span
+              v-if="c.dirty"
+              class="w-1.5 h-1.5 rounded-full bg-warning"
+              title="待同步"
+            />
             <span
               v-if="dot(c.note_status)"
-              class="mt-1.5 shrink-0 w-1.5 h-1.5 rounded-full"
+              class="w-1.5 h-1.5 rounded-full"
               :class="dot(c.note_status)"
               title="笔记状态"
             />
-            <span
-              v-if="c.dirty"
-              class="mt-1.5 shrink-0 w-1.5 h-1.5 rounded-full bg-warning"
-              title="待同步"
-            />
+          </span>
+
+          <!-- ② + ③ 底部：分类小徽章（左） + 字数（右）──
+               摘要（.cy-card-summary）本轮**不渲染**：格子放不下 -->
+          <div class="mt-auto pt-2 flex items-center justify-between gap-1.5 min-w-0">
+            <span v-if="c.category" class="cy-badge tile-badge truncate">{{ c.category }}</span>
+            <span v-else class="shrink-0" aria-hidden="true"></span>
+            <span class="tile-chars shrink-0">{{ c.chars || 0 }} 字</span>
           </div>
 
-          <!-- ② 摘要（.cy-card-summary：14px，两行截断）
-               后端 civ/summary 字段上线后自动渲染；取不到则不渲染（v-if，不占位） -->
-          <p v-if="pickSummary(c)" class="cy-card-summary">{{ pickSummary(c) }}</p>
+          <!-- ④ 内部编号 .cy-key：默认不可见，hover / 长按 / 键盘聚焦才现（见全局样式与下方 scoped 规则） -->
+          <span class="cy-key tile-key truncate">{{ c.key }}</span>
 
-          <!-- ③ 徽章行（.cy-badges + .cy-badge，11px 主色）：依次 所属文明 / 分类 / 字数
-               文明为新补字段（多源容错），取不到该徽章不渲染；分类同理；字数始终有值 -->
-          <div class="cy-badges">
-            <span v-if="pickCiv(c)" class="cy-badge">{{ pickCiv(c) }}</span>
-            <span v-if="c.category" class="cy-badge">{{ c.category }}</span>
-            <span class="cy-badge">{{ c.chars || 0 }} 字</span>
-          </div>
-
-          <!-- ④ 内部编号：.cy-key（缩小变灰、默认几乎不可见，hover / 长按才提亮，见全局样式） -->
-          <div class="mt-auto pt-3 flex items-center">
-            <span class="cy-key truncate">{{ c.key }}</span>
-          </div>
-
-          <!-- 操作按钮：仅 hover（桌面）/ 长按（移动端）出现 -->
-          <div class="card-actions absolute right-2 top-2 flex items-center gap-1.5">
+          <!-- 操作按钮：仅 hover（桌面）/ 长按（移动端）/ 焦点时浮出（整块半透明浮层，不挤压布局） -->
+          <div class="card-actions absolute inset-0 flex items-center justify-center gap-1.5">
             <button
               class="act text-primary bg-surface-card border border-primary/30 active:scale-95"
               @click.stop="viewCard(c)"
@@ -562,9 +567,8 @@ onBeforeUnmount(() => {
       @click="openCreate"
     >+</button>
 
-    <!-- ══════ 详情抽屉（2026-10-20：由内联底部抽屉改为主子任务交付的
-         右侧大抽屉组件 CardDetailDrawer；自带遮罩/Esc/点击关闭，故不再套
-         外层 Transition 或 v-if） ══════ -->
+    <!-- ══════ 详情抽屉：点子块 → 右侧全屏大抽屉（CardDetailDrawer 自带遮罩/Esc/点击关闭，
+         故不再套外层 Transition 或 v-if）。@saved 契约保持不变。 ══════ -->
     <CardDetailDrawer @saved="onSaved" />
 
     <!-- ══════ 编辑器（全屏浮层）══════ -->
@@ -582,37 +586,75 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-/* ── 网格：手机 1 列 / 中屏(≥640px) 2 列 / 宽屏(≥1024px) 3 列 ──
-   卡片间距 12px（= Tailwind gap-3）*/
+/* ── 网格：手机 ≥2 列（grid grid-cols-2） / ≥768px 3 列（md:grid-cols-3） ──
+   方块间距 10px（= Tailwind gap-2.5）。这里同时保留一份 scoped 兜底规则，
+   与工具类声明完全一致的断点，即使 Tailwind 构建异常也不会退回「一行一个大卡」。 */
 .card-grid {
   display: grid;
-  gap: 12px;
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
 }
-@media (min-width: 640px) {
-  .card-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-@media (min-width: 1024px) {
+@media (min-width: 768px) {
   .card-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
-/* ── 卡片容器：视觉（边框 / 背景 / 内距 / 圆角）全部交给全局 .cy-card，
-   这里只补布局（弹性列 + 最小高度），以及 hover / 长按时的「操作按钮」显隐钩子。 */
+/* ── 小方块：视觉（边框 / 背景 / 圆角）继续用全局 .cy-card，
+   这里只做「小方块」所需的覆盖：更紧的内距 + 统一高度 + 顶部对齐。
+   高度统一：min-h-[110px] + aspect-[4/3]（手机 2 列时约 118~125px 高）。 */
 .card-item {
-  min-height: 128px;
+  min-height: 110px;
+  aspect-ratio: 4 / 3;
+  padding: 10px;
+  border-radius: 9px;
 }
 
-/* 内部编号提亮：全局 .cy-key 已覆盖 hover / :active；
-   键盘聚焦（focus-within）与移动端长按（.reveal）在这里补齐，
-   与「默认几乎不可见、hover / 长按才提亮」一致。 */
-.card-item:focus-within .cy-key { opacity: 1; }
-.card-item.reveal .cy-key {
+/* 标题：15.5px、两行截断（覆盖全局 .cy-card-title 的 20px / 一行截断） */
+.card-item .tile-title {
+  font-size: 15.5px;
+  line-height: 1.35;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+/* 分类小徽章：比全局 11px 徽章再小一档（格子小，徽章跟着收） */
+.card-item .tile-badge {
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 5px;
+  max-width: 68%;
+}
+
+/* 字数：贴底右侧，弱化到次要文字 */
+.tile-chars {
+  font-size: 10px;
+  line-height: 1.2;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: rgb(var(--fg-dim-rgb, 154 154 165) / 0.85);
+}
+
+/* ── 内部编号：默认**不可见**，hover / 长按 / 键盘聚焦才现（只动 opacity）──
+   放在方块底部一行；用 opacity 隐藏 → 不产生任何布局位移。 */
+.card-item .tile-key {
+  opacity: 0;
+  margin-top: 4px;
+  display: block;
+}
+@media (hover: hover) {
+  .card-item:hover .tile-key {
+    opacity: 1;
+    color: rgb(var(--primary-rgb) / 0.8);
+  }
+}
+.card-item:active .tile-key,
+.card-item:focus-within .tile-key,
+.card-item.reveal .tile-key {
   opacity: 1;
-  color: rgb(var(--primary-rgb) / 0.85);
+  color: rgb(var(--primary-rgb) / 0.8);
 }
 
 /* ── Chip：只做按压 transform；选中态靠瞬时换色（不对颜色做过渡）── */
@@ -623,11 +665,14 @@ onBeforeUnmount(() => {
   transform: scale(0.95);
 }
 
-/* ── 操作按钮：默认不占视觉 ── */
+/* ── 操作按钮（查看 / 编辑）：默认不占视觉，hover / 长按 / 焦点时浮出 ──
+   整块半透明浮层：不挤压方块布局，只动 opacity + transform。 */
 .card-actions {
   opacity: 0;
-  transform: translateY(-2px);
+  transform: scale(0.96);
   pointer-events: none;
+  background: rgb(var(--bg-elev-rgb, 23 24 29) / 0.82);
+  backdrop-filter: blur(3px) saturate(1.2);
   transition:
     opacity 180ms ease,
     transform 180ms ease;
@@ -635,7 +680,7 @@ onBeforeUnmount(() => {
 .act {
   font-size: 11px;
   line-height: 1;
-  padding: 4px 8px;
+  padding: 5px 9px;
   border-radius: 7px;
   transition: transform 150ms ease;
 }
@@ -668,26 +713,5 @@ onBeforeUnmount(() => {
   .cy-key {
     transition: none;
   }
-}
-
-/* 抽屉滑入动画（transform/opacity，符合 DESIGN-v2 动效约束） */
-.drawer-enter-active,
-.drawer-leave-active {
-  transition:
-    transform 240ms cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 240ms ease;
-}
-.drawer-enter-from,
-.drawer-leave-to {
-  transform: translateY(100%);
-  opacity: 0;
-}
-.fade-enter-active,
-.fade-leave-active {
-  transition: opacity 200ms ease;
-}
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
 }
 </style>

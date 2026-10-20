@@ -30,6 +30,35 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 //   ② 其它页面（任务/卡片/大纲/星图）从此完全不背这个包
 // 用 Promise 缓存保证并发调用只加载一次。
 import { pushLog } from '../../store.js'
+// 顶层路由 / 子页跳转（指标卡点击导航用；nav.js 零业务依赖）
+import { goTab, goPane } from '../../nav.js'
+
+// ── 实体 kind → 中文 ──
+// 环形图（标签/tooltip/图例）与任何展示 kind 的地方统一走 kindZh()。
+// 映射不到时回退原串，绝不显示 undefined。
+const KIND_ZH = {
+  CHAR: '角色',
+  LOCA: '地点',
+  FACT: '势力',
+  CIVI: '文明',
+  TECH: '技术',
+  CLTR: '文化',
+  POWR: '力量体系',
+  SYSX: '系统规则',
+  ARTS: '物品',
+  EVNT: '事件',
+  ITEM: '条目',
+  FORE: '伏笔',
+  GEAR: '装备',
+  TIME: '时间',
+  WEIR: '异象',
+  XREA: '未知区域',
+}
+function kindZh(k) {
+  const s = stripId(k)
+  if (!s) return ''
+  return KIND_ZH[s.toUpperCase()] || s
+}
 
 let _ec = null
 let _ecPromise = null
@@ -87,19 +116,49 @@ const cats = ref([]) // [{name,members}] 降序 Top12
 const civCore = ref([])
 const kinds = ref([]) // [{name,value}] 实体类型计数
 const recent = ref([]) // [{key,name,stateLabel,dot,time}]
+// 系统状态区块（③.5）：全部复用本轮已取到的数据，不新增请求
+//   llm  ← /api/tasks/active.llm_unlocked
+//   exec ← /api/tasks/active.executor_alive
+//   size ← /api/system/status.storage.bytes
+//   cards← /api/stats.total
+// 字段缺失一律显示「—」，不显示 undefined。
+const sysStatus = ref({
+  llm: '—',
+  llmTone: 'text-content-sec',
+  exec: '—',
+  execTone: 'text-content-sec',
+  size: '—',
+  sizeTone: 'text-content-sec',
+  cards: '—',
+})
 
 const metrics = computed(() => [
-  { label: '总卡数', value: stats.value.totalCards, tone: 'text-primary' },
-  { label: '实体关系数', value: stats.value.edges, tone: 'text-content' },
+  {
+    label: '总卡数',
+    value: stats.value.totalCards,
+    tone: 'text-primary',
+    go: () => {
+      goTab('system')
+      goPane('cards')
+    },
+  },
+  {
+    label: '实体关系数',
+    value: stats.value.edges,
+    tone: 'text-content',
+    go: () => goPane('graph'),
+  },
   {
     label: '未完成任务',
     value: stats.value.unfinished,
     tone: stats.value.unfinished > 0 ? 'text-warning' : 'text-content',
+    go: () => goPane('tasks'),
   },
   {
     label: '系统红灯数',
     value: stats.value.red,
     tone: stats.value.red > 0 ? 'text-danger' : 'text-success',
+    go: () => goPane('stats'),
   },
 ])
 
@@ -118,6 +177,18 @@ async function getJSON(path) {
   const r = await fetch(path, { headers: { Accept: 'application/json' } })
   if (!r.ok) throw new Error(`HTTP ${r.status} ${path}`)
   return r.json()
+}
+
+// 字节 → 人类可读（缺失/非法一律「—」，不显示 undefined）
+function fmtBytes(n) {
+  const v = Number(n)
+  if (!Number.isFinite(v) || v < 0) return '—'
+  if (v < 1024) return `${v} B`
+  const kb = v / 1024
+  if (kb < 1024) return `${kb.toFixed(1)} KB`
+  const mb = kb / 1024
+  if (mb < 1024) return `${mb.toFixed(1)} MB`
+  return `${(mb / 1024).toFixed(2)} GB`
 }
 
 // ── 主题色：全部读 CSS 变量（皮肤切换零组件改动）──
@@ -249,7 +320,8 @@ async function load() {
     stats.value.edges = Number(cnt.edges ?? (Array.isArray(g.edges) ? g.edges.length : 0)) || 0
     const tally = new Map()
     for (const n of Array.isArray(g.nodes) ? g.nodes : []) {
-      const k = stripId(n?.kind) || 'UNKN'
+      // kind 先汉化再聚合：环形图标签/tooltip/图例统一中文
+      const k = kindZh(n?.kind) || 'UNKN'
       tally.set(k, (tally.get(k) || 0) + 1)
     }
     kinds.value = [...tally.entries()]
@@ -305,6 +377,40 @@ async function load() {
         time: fmtTs(ts),
       }
     })
+
+  // ③.5 系统状态区块 —— 全部复用上面已取到的数据，不新增请求
+  const TONE_OK = 'text-success'
+  const TONE_BAD = 'text-danger'
+  const TONE_NA = 'text-content-sec'
+  const s = sysStatus.value
+  // LLM 授权锁 + 执行器存活：同源于 /api/tasks/active
+  if (actR.status === 'fulfilled' && actR.value && typeof actR.value === 'object') {
+    const a = actR.value
+    if (typeof a.llm_unlocked === 'boolean') {
+      s.llm = a.llm_unlocked ? '已解锁' : '已锁定'
+      s.llmTone = a.llm_unlocked ? TONE_OK : TONE_BAD
+    }
+    if (typeof a.executor_alive === 'boolean') {
+      s.exec = a.executor_alive ? '在线' : '离线'
+      s.execTone = a.executor_alive ? TONE_OK : TONE_BAD
+    }
+  }
+  // 数据库占用：/api/system/status.storage
+  if (sysR.status === 'fulfilled' && sysR.value && typeof sysR.value === 'object') {
+    const stg = sysR.value.storage
+    if (stg && Number.isFinite(Number(stg.bytes))) {
+      s.size = fmtBytes(stg.bytes) + (stg.truncated ? '+' : '')
+      s.sizeTone = TONE_OK
+    }
+  }
+  // 库卡数：/api/stats.total（与①同源，权威口径）
+  if (statsR.status === 'fulfilled' && statsR.value && typeof statsR.value === 'object') {
+    const tot = Number(statsR.value.total)
+    if (Number.isFinite(tot)) {
+      s.cards = String(tot)
+    }
+  }
+  void TONE_NA
 
   if (bad.length) {
     err.value = `部分数据未取到：${bad.join(' / ')}（其余仍按已取到的真实数据显示）`
@@ -476,12 +582,18 @@ onBeforeUnmount(() => {
 
     <!-- 内容区自己滚，禁止页面级滚动条 -->
     <div class="flex-1 min-w-0 overflow-y-auto">
-      <!-- ① 4 个指标卡 -->
+      <!-- ① 4 个指标卡（可点击跳转，键盘可达） -->
       <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
         <div
           v-for="m in metrics"
           :key="m.label"
-          class="glass card-cyber rounded-[var(--r-md)] px-3 py-2.5 min-w-0"
+          role="button"
+          tabindex="0"
+          :aria-label="`${m.label}：${m.value}，点击跳转`"
+          class="glass card-cyber rounded-[var(--r-md)] px-3 py-2.5 min-w-0 cursor-pointer select-none outline-none transition-[transform,opacity] duration-150 ease-out hover:opacity-90 active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-primary/50 motion-reduce:transition-none"
+          @click="m.go && m.go()"
+          @keydown.enter.prevent="m.go && m.go()"
+          @keydown.space.prevent="m.go && m.go()"
         >
           <div class="text-[22px] leading-none font-semibold tabular-nums" :class="m.tone">
             {{ m.value }}
@@ -507,6 +619,40 @@ onBeforeUnmount(() => {
             <span class="text-[10px] text-content-sec">{{ kinds.length }} 类</span>
           </div>
           <div ref="pieEl" class="h-[220px] w-full"></div>
+        </div>
+      </div>
+
+      <!-- ③.5 系统状态（复用本轮已取数据，缺失显示 —） -->
+      <div class="mt-3 grid grid-cols-2 md:grid-cols-4 gap-2">
+        <div class="glass card-cyber rounded-[var(--r-md)] px-3 py-2.5 min-w-0">
+          <div class="text-[11px] text-content-sec truncate">LLM 授权锁</div>
+          <div class="mt-1 text-[16px] leading-none font-semibold truncate" :class="sysStatus.llmTone">
+            {{ sysStatus.llm }}
+          </div>
+        </div>
+        <div class="glass card-cyber rounded-[var(--r-md)] px-3 py-2.5 min-w-0">
+          <div class="text-[11px] text-content-sec truncate">执行器</div>
+          <div
+            class="mt-1 text-[16px] leading-none font-semibold truncate"
+            :class="sysStatus.execTone"
+          >
+            {{ sysStatus.exec }}
+          </div>
+        </div>
+        <div class="glass card-cyber rounded-[var(--r-md)] px-3 py-2.5 min-w-0">
+          <div class="text-[11px] text-content-sec truncate">数据库大小</div>
+          <div
+            class="mt-1 text-[16px] leading-none font-semibold truncate tabular-nums"
+            :class="sysStatus.sizeTone"
+          >
+            {{ sysStatus.size }}
+          </div>
+        </div>
+        <div class="glass card-cyber rounded-[var(--r-md)] px-3 py-2.5 min-w-0">
+          <div class="text-[11px] text-content-sec truncate">库卡数</div>
+          <div class="mt-1 text-[16px] leading-none font-semibold truncate tabular-nums text-content">
+            {{ sysStatus.cards }}
+          </div>
         </div>
       </div>
 

@@ -1,32 +1,30 @@
 <script setup>
-// SideNav.vue —— 全局导航壳（同一套组件、两种形态）
+// SideNav.vue —— 全局导航壳（同一份 ITEMS，两种形态）
 //
 // ══════════════════════════════════════════════════════════
-// 形态
+// 形态（2026-10-20 第二轮修正：针对手机 WebView 专门重做）
 // ══════════════════════════════════════════════════════════
-//   ≥768px（md）：左侧固定侧边栏，w-[196px]，常驻（shell 不滚动，主区自己滚）
-//   <768px      ：收成底部 Dock，h-[52px]，padding-bottom 吃 env(safe-area-inset-bottom)
+//   ≥768px（md）：左侧固定侧边栏 w-[196px]，常驻，列出全部入口。
+//   <768px      ：底部只保留 **3 个** 主入口（工作台 / 对话 / 设置），
+//                 其余全部功能（任务/大纲/卡片/星图/统计）收进左上角
+//                 **汉堡 → 左侧滑出抽屉**。
 //
-// 两种形态由同一份 ITEMS 渲染，只有外壳类名不同 —— 不会出现「两套导航」。
+// 为什么这样改（第一轮的错误）：
+//   最初把移动端做成「6 个 Tab 的底部 Dock」。总指挥在 Operit 侧边栏
+//   （手机窄屏 WebView）验收时明确指出：底部塞 6 个图标太挤、上方内容更拥挤。
+//   现按「3 个主入口 + 抽屉装长尾」的移动端范式重做：
+//     · 底部 = 高频三件事，尺寸够大、点得到
+//     · 长尾 = 按需滑出，主界面完整让给内容
 //
-// ══════════════════════════════════════════════════════════
-// 状态来源：src/nav.js（**本组件零自有路由状态**）
-// ══════════════════════════════════════════════════════════
-// 导航条目直接由 nav.js 的 PANES（任务/大纲/卡片/星图/统计，顺序与图标同源）
-// 加「设置」tab 派生，高亮由 (nav.tab, nav.pane) 映射而来：
-//   nav.tab==='settings' → 高亮「设置」
-//   nav.tab==='system'   → 高亮 nav.pane 对应项
-// 点击只调 nav.js 的 goTab()/goPane()（幂等纯函数），不写第二份路由状态，
-// 因此侧边栏桥接（sideBridge → goTab/goPane）切页时高亮必然同步。
-//
-// nav.js **无需扩展字段**：现有 TABS/PANES/tab/pane 已能完整表达新导航，
-// 故本次未改动 nav.js（详见交付说明）。
-import { computed } from 'vue'
-import { nav, goTab, goPane, PANES } from '../nav.js'
+// 状态来源：src/nav.js（**本组件零自有路由状态**）。
+// 高亮映射：(nav.tab, nav.pane) → 侧栏项；nav.floatChat → 「对话」高亮。
+import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
+import { nav, goTab, goPane, toggleFloatChat, PANES } from '../nav.js'
 
 // 侧栏文案比看板标题更短（196px 宽度下「任务看板」会挤）
 const SHORT_LABEL = { tasks: '任务' }
 
+// 侧栏 / 抽屉里的**全部**入口
 const ITEMS = [
   ...PANES.map((p) => ({
     key: `pane:${p.key}`,
@@ -38,10 +36,23 @@ const ITEMS = [
   { key: 'settings', label: '设置', icon: '⚙', tab: 'settings', pane: null },
 ]
 
+// 移动端底部：只留 3 个高频入口
+const MOBILE_MAIN = [
+  { key: 'workbench', label: '工作台', icon: '▦' },
+  { key: 'chat', label: '对话', icon: '💬' },
+  { key: 'settings', label: '设置', icon: '⚙' },
+]
+
 const activeKey = computed(() => {
   if (nav.tab === 'settings') return 'settings'
   if (nav.tab === 'system') return `pane:${nav.pane}`
-  return '' // 对话已收进抽屉，主区无「对话页」，故不高亮任何侧栏项
+  return '' // 对话在抽屉里，主区无「对话页」，故不高亮侧栏项
+})
+
+const mobileActiveKey = computed(() => {
+  if (nav.floatChat) return 'chat'
+  if (nav.tab === 'settings') return 'settings'
+  return 'workbench' // 其余情况都属于工作台
 })
 
 function pick(it) {
@@ -51,25 +62,46 @@ function pick(it) {
   } else {
     goTab(it.tab)
   }
+  close()
 }
+
+function pickMobile(m) {
+  if (m.key === 'chat') {
+    toggleFloatChat(true)
+  } else if (m.key === 'settings') {
+    goTab('settings')
+  } else {
+    goTab('system') // 工作台
+  }
+}
+
+// ── 移动端抽屉开关（仅 <768px 用；桌面侧栏常驻，与此无关） ──
+const open = ref(false)
+function toggle() {
+  open.value = !open.value
+}
+function close() {
+  open.value = false
+}
+function onKey(e) {
+  if (e.key === 'Escape') close()
+}
+onMounted(() => window.addEventListener('keydown', onKey))
+onUnmounted(() => window.removeEventListener('keydown', onKey))
+watch(() => [nav.tab, nav.pane], close)
 </script>
 
 <template>
-  <!-- ════════ 形态 A：≥768px 左侧固定侧边栏 ════════ -->
+  <!-- ════════ 形态 A：≥768px 左侧固定侧栏 ════════ -->
   <aside
+    class="hidden md:flex shrink-0 flex-col w-[196px] glass border-r border-line"
     aria-label="主导航"
-    class="hidden md:flex md:flex-col w-[196px] shrink-0 h-full glass border-r border-line relative z-20"
   >
-    <!-- 品牌位（纯文字，不做大色块） -->
     <div class="h-[52px] shrink-0 flex items-center gap-2 px-4">
       <span class="w-1.5 h-1.5 rounded-full bg-primary" aria-hidden="true" />
       <span class="text-[12px] tracking-wide text-content-sec truncate">残响之河</span>
     </div>
-
-    <div class="px-4 pb-1 shrink-0 text-[10px] tracking-wider text-content-sec/70">
-      工作台
-    </div>
-
+    <div class="px-4 pb-1 shrink-0 text-[10px] tracking-wider text-content-sec/70">工作台</div>
     <nav class="flex-1 min-h-0 overflow-y-auto px-2 py-1 flex flex-col gap-0.5">
       <button
         v-for="it in ITEMS"
@@ -77,53 +109,130 @@ function pick(it) {
         type="button"
         class="relative flex items-center gap-2.5 w-full h-9 pl-3.5 pr-2 rounded-lg text-left
                transition-transform active:scale-[0.98]"
-        :class="activeKey === it.key ? 'bg-primary/12 text-primary' : 'text-content-sec hover:text-content'"
+        :class="activeKey === it.key ? 'bg-primary/12 text-primary' : 'text-content-sec'"
         :aria-current="activeKey === it.key ? 'page' : undefined"
-        :title="it.label"
         @click="pick(it)"
       >
-        <!-- 左侧高亮条：只动 opacity（合成器属性） -->
         <span
           class="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-full bg-primary pointer-events-none
                  transition-opacity duration-200"
           :class="activeKey === it.key ? 'opacity-100' : 'opacity-0'"
           aria-hidden="true"
         />
-        <span
-          class="w-4 text-center leading-none text-[14px] transition-transform duration-200"
-          :class="activeKey === it.key ? 'scale-[1.12]' : ''"
-          aria-hidden="true"
-        >{{ it.icon }}</span>
-        <span class="text-[12.5px] leading-none truncate">{{ it.label }}</span>
+        <span class="w-4 text-center leading-none text-[14px]" aria-hidden="true">{{ it.icon }}</span>
+        <span class="text-[13px] leading-none truncate">{{ it.label }}</span>
       </button>
     </nav>
   </aside>
 
-  <!-- ════════ 形态 B：<768px 底部 Dock（保留 safe-area） ════════ -->
-  <nav
-    aria-label="主导航"
-    class="md:hidden fixed bottom-0 left-0 right-0 z-30 glass border-t border-line"
-    style="padding-bottom: env(safe-area-inset-bottom, 0px)"
+  <!-- ════════ 形态 B：<768px 汉堡 + 左侧抽屉 + 底部三入口 ════════ -->
+  <button
+    type="button"
+    class="md:hidden fixed top-2 left-2 z-[60] w-9 h-9 rounded-lg glass-strong
+           flex items-center justify-center text-[15px] leading-none
+           transition-transform active:scale-[0.94]"
+    :aria-expanded="open"
+    aria-controls="side-drawer"
+    aria-label="打开导航"
+    @click="toggle"
   >
-    <div class="flex items-stretch h-[52px]">
-      <button
-        v-for="it in ITEMS"
-        :key="it.key"
-        type="button"
-        class="flex-1 min-w-0 flex flex-col items-center justify-center gap-0.5
-               transition-transform active:scale-[0.96]"
-        :class="activeKey === it.key ? 'text-primary' : 'text-content-sec'"
-        :aria-current="activeKey === it.key ? 'page' : undefined"
-        :aria-label="it.label"
-        @click="pick(it)"
-      >
-        <span
-          class="leading-none text-[15px] transition-transform duration-200"
-          :class="activeKey === it.key ? 'scale-[1.14]' : ''"
-          aria-hidden="true"
-        >{{ it.icon }}</span>
-        <span class="text-[10px] leading-none truncate max-w-full px-0.5">{{ it.label }}</span>
-      </button>
-    </div>
+    <span aria-hidden="true">{{ open ? '✕' : '☰' }}</span>
+  </button>
+
+  <!-- 层级：汉堡 z-60 > 抽屉 z-50 > 遮罩 z-40。
+       汉堡必须在最上：否则抽屉打开时遮罩(z-40，DOM 更靠后)会盖住它，
+       导致「打开后点不到汉堡关闭」——实测踩过。 -->
+  <Transition name="nav-mask">
+    <div
+      v-if="open"
+      class="md:hidden fixed inset-0 z-40 bg-black/50"
+      @click="close"
+      aria-hidden="true"
+    />
+  </Transition>
+
+  <Transition name="nav-drawer">
+    <aside
+      v-if="open"
+      id="side-drawer"
+      role="dialog"
+      aria-label="全部功能"
+      class="md:hidden fixed top-0 left-0 bottom-0 z-50 w-[250px] glass-strong
+             border-r border-line flex flex-col"
+      style="padding-bottom: env(safe-area-inset-bottom, 0px)"
+    >
+      <div class="h-[52px] shrink-0 flex items-center gap-2 px-4">
+        <span class="w-1.5 h-1.5 rounded-full bg-primary" aria-hidden="true" />
+        <span class="text-[12px] tracking-wide text-content-sec truncate">残响之河</span>
+      </div>
+      <div class="px-4 pb-1 shrink-0 text-[10px] tracking-wider text-content-sec/70">
+        全部功能
+      </div>
+      <nav class="flex-1 min-h-0 overflow-y-auto px-2 py-1 flex flex-col gap-0.5">
+        <button
+          v-for="it in ITEMS"
+          :key="it.key"
+          type="button"
+          class="relative flex items-center gap-2.5 w-full h-11 pl-3.5 pr-2 rounded-lg text-left
+                 transition-transform active:scale-[0.98]"
+          :class="activeKey === it.key ? 'bg-primary/12 text-primary' : 'text-content-sec'"
+          :aria-current="activeKey === it.key ? 'page' : undefined"
+          @click="pick(it)"
+        >
+          <span
+            class="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-full bg-primary pointer-events-none
+                   transition-opacity duration-200"
+            :class="activeKey === it.key ? 'opacity-100' : 'opacity-0'"
+            aria-hidden="true"
+          />
+          <span class="w-4 text-center leading-none text-[15px]" aria-hidden="true">{{ it.icon }}</span>
+          <span class="text-[13px] leading-none truncate">{{ it.label }}</span>
+        </button>
+      </nav>
+    </aside>
+  </Transition>
+
+  <!-- 底部三入口：工作台 / 对话 / 设置
+       ⚠️ 必须 fixed：App 壳是**横向 flex**（侧栏 | 主区），若此栏留在文档流里
+       就会变成「横向 flex 的一个子项」，实测宽度被压到 72px、三个图标挤在左边。
+       fixed + inset-x-0 让它脱离该 flex，真正横贯整屏。 -->
+  <nav
+    class="md:hidden fixed inset-x-0 bottom-0 z-30 h-[56px] glass border-t border-line flex items-stretch"
+    style="padding-bottom: env(safe-area-inset-bottom, 0px)"
+    aria-label="主入口"
+  >
+    <button
+      v-for="m in MOBILE_MAIN"
+      :key="m.key"
+      type="button"
+      class="flex-1 flex flex-col items-center justify-center gap-0.5
+             transition-transform active:scale-[0.96]"
+      :class="mobileActiveKey === m.key ? 'text-primary' : 'text-content-sec'"
+      :aria-current="mobileActiveKey === m.key ? 'page' : undefined"
+      @click="pickMobile(m)"
+    >
+      <span class="text-[16px] leading-none" aria-hidden="true">{{ m.icon }}</span>
+      <span class="text-[10px] leading-none">{{ m.label }}</span>
+    </button>
   </nav>
 </template>
+
+<style scoped>
+/* 只动 transform / opacity（合成器属性） */
+.nav-drawer-enter-active,
+.nav-drawer-leave-active {
+  transition: transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.nav-drawer-enter-from,
+.nav-drawer-leave-to {
+  transform: translateX(-100%);
+}
+.nav-mask-enter-active,
+.nav-mask-leave-active {
+  transition: opacity 200ms ease;
+}
+.nav-mask-enter-from,
+.nav-mask-leave-to {
+  opacity: 0;
+}
+</style>

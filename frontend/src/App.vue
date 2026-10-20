@@ -250,9 +250,10 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-/* ── 主区底部让位给移动端 Dock（含 safe-area） ── */
+/* ── 主区：移动端底部让位给「3 入口」底栏（56px + safe-area） ──
+   ≥768px 无底栏，归零。 */
 .shell-main {
-  padding-bottom: calc(52px + env(safe-area-inset-bottom, 0px));
+  padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px));
 }
 @media (min-width: 768px) {
   .shell-main {
@@ -260,9 +261,9 @@ onUnmounted(() => {
   }
 }
 
-/* ── 悬浮球定位：移动端抬到 Dock 之上，桌面贴右下 ── */
+/* ── 悬浮球：移动端抬到底栏之上；桌面贴右下 ── */
 .chat-fab {
-  bottom: calc(52px + env(safe-area-inset-bottom, 0px) + 12px);
+  bottom: calc(56px + env(safe-area-inset-bottom, 0px) + 14px);
 }
 @media (min-width: 768px) {
   .chat-fab {

@@ -44,6 +44,12 @@ const s = ref({
 
 // 筛选：空数组 = 不筛（全部类型）
 const selKinds = ref([])
+// 核心节点过滤（2026-10-20）：总指挥在手机窄屏验收时指出「284 个点+369 条线
+// 像一团乱线、没有重点」。故默认只看**度数≥3 的枢纽节点**（骨架），
+// 需要全量时点「全部节点」。
+// 度数按**全量图**统计（不按过滤后的子图），否则筛掉大类后会误判核心。
+const CORE_DEG = 3
+const coreOnly = ref(true)
 const vstat = ref({ nodes: 0, edges: 0 })
 const physDone = ref(true)
 const progress = ref(100)
@@ -146,10 +152,29 @@ function clearKinds() {
   selKinds.value = []
 }
 
+/// 切换「只看核心节点」。切换会重新布局并重启收敛（与 kind 筛选同路径）。
+function toggleCoreOnly() {
+  coreOnly.value = !coreOnly.value
+  if (s.value.loaded) rebuildView(true)
+}
+
 // ── 视图重建：筛选后在子图上重新布局（需求②）──
+/// 全量图上的度数（用于核心节点判定）。每次 rebuild 重算，规模 284 可忽略。
+function degreeMap() {
+  const d = new Map()
+  for (const n of s.value.nodes) d.set(n.k, 0)
+  for (const e of s.value.edges) {
+    if (d.has(e.s)) d.set(e.s, d.get(e.s) + 1)
+    if (d.has(e.d)) d.set(e.d, d.get(e.d) + 1)
+  }
+  return d
+}
+
 function rebuildView(relayout) {
   const keep = selKinds.value.length ? new Set(selKinds.value) : null
-  view.nodes = keep ? s.value.nodes.filter((n) => keep.has(n.kind)) : s.value.nodes.slice()
+  const deg = coreOnly.value ? degreeMap() : null
+  const pass = (n) => (!keep || keep.has(n.kind)) && (!deg || (deg.get(n.k) || 0) >= CORE_DEG)
+  view.nodes = s.value.nodes.filter(pass)
   const visK = new Set(view.nodes.map((n) => n.k))
   view.edges = s.value.edges.filter((e) => visK.has(e.s) && visK.has(e.d))
   vstat.value = { nodes: view.nodes.length, edges: view.edges.length }
@@ -723,6 +748,16 @@ onBeforeUnmount(() => {
               @click="clearKinds"
             >
               全部 {{ s.count.nodes }}
+            </button>
+            <!-- 核心/全量开关：窄屏默认只看骨架，避免 284 点糊成乱线 -->
+            <button
+              class="shrink-0 rounded border px-2 py-0.5 text-[10.5px] transition-colors"
+              :class="coreOnly ? 'border-acc/40 bg-acc/15 text-acc' : 'border-line text-fg-dim hover:text-fg'"
+              :aria-pressed="coreOnly"
+              :title="coreOnly ? '当前：只看度数≥3 的核心节点' : '当前：全部节点'"
+              @click="toggleCoreOnly"
+            >
+              {{ coreOnly ? '核心 ≥3' : '全量' }}
             </button>
             <button
               v-for="kd in kinds"

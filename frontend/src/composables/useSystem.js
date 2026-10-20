@@ -86,7 +86,11 @@ export async function loadTaskBoard(force = false) {
       blocked:
         (act.totals?.blocked ?? 0) +
         (act.totals?.failed ?? 0) +
-        (act.totals?.rejected ?? 0),
+        (act.totals?.rejected ?? 0) +
+        // 【2026-10-20 注入 Operit 逻辑】partial（部分完成）也必须计入 blocked，
+        // 否则「16 条 failed 里 13 条其实是部分成功」那批会被漏掉，
+        // 看板数量与真实不符。
+        (act.totals?.partial ?? 0),
       done: act.totals?.done ?? 0,
       rejected: act.totals?.rejected ?? 0,
       executorAlive: !!act.executor_alive,
@@ -113,7 +117,9 @@ export function groupTasks(items) {
     if (st === 'pending') g.pending.push(t)
     else if (st === 'running') g.running.push(t)
     else if (st === 'done') g.done.push(t)
-    else if (st === 'blocked' || st === 'rejected' || st === 'failed') g.blocked.push(t)
+    // 【2026-10-20 注入 Operit 逻辑】partial 必须进 blocked 分组：
+    // TaskBoard 只渲染这 5 组，落进 other 组就等于**完全不显示**（实测踩过）。
+    else if (st === 'blocked' || st === 'rejected' || st === 'failed' || st === 'partial') g.blocked.push(t)
     else g.other.push(t)
   }
   return g

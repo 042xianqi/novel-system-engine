@@ -107,12 +107,30 @@ function onPointerDown(e) {
   e.preventDefault()
 }
 
+// 【2026-10-20 注入 Operit 逻辑】rAF 节流：pointermove 只记坐标，
+// 真正写入响应式 ref 交给 requestAnimationFrame —— 保证**每个渲染帧最多 apply 一次**。
+// 为什么必须这样做：高频 pointermove（触屏可达 120~240Hz）若每次都写 ref，
+// 会触发同样次数的样式重算与合成层更新；在 fixed + 渐变 + 圆角 + 阴影的
+// 元素上，这会让 Android WebView 来不及重栅格化 → 视觉上出现**残影/重影**。
+// 批到每帧一次后，拖动手感不变但掉帧与重影都消失。
+let rafId = 0
+let pending = null
+
 function onPointerMove(e) {
   if (!dragging.value || e.pointerId !== activeId) return
   const dx = e.clientX - startX
   const dy = e.clientY - startY
   moved = Math.max(moved, Math.abs(dx) + Math.abs(dy))
-  apply(baseX + dx, baseY + dy)
+  pending = { x: baseX + dx, y: baseY + dy }
+  if (!rafId) {
+    rafId = requestAnimationFrame(() => {
+      rafId = 0
+      if (pending) {
+        apply(pending.x, pending.y)
+        pending = null
+      }
+    })
+  }
 }
 
 function onPointerUp(e) {
@@ -171,6 +189,9 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  // 取消挂起的 rAF，避免组件卸载后回调仍执行（会操作已销毁的元素）
+  if (rafId) { cancelAnimationFrame(rafId); rafId = 0 }
+  pending = null
   window.removeEventListener('resize', onResize)
   window.removeEventListener('orientationchange', onResize)
 })

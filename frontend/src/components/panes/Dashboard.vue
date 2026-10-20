@@ -83,6 +83,8 @@ const err = ref('')
 const updatedAt = ref('')
 const stats = ref({ totalCards: 0, edges: 0, unfinished: 0, red: 0 })
 const cats = ref([]) // [{name,members}] 降序 Top12
+// 12 个文明的核心规模（来自 /api/stats.by_civ_core；后端未就绪时为空数组）
+const civCore = ref([])
 const kinds = ref([]) // [{name,value}] 实体类型计数
 const recent = ref([]) // [{key,name,stateLabel,dot,time}]
 
@@ -196,7 +198,8 @@ function paletteFor(n) {
 async function load() {
   loading.value = true
   err.value = ''
-  const [catsR, graphR, actR, listR, sysR] = await Promise.allSettled([
+  const [statsR, catsR, graphR, actR, listR, sysR] = await Promise.allSettled([
+    getJSON('/api/stats'),
     getJSON('/api/library/categories'),
     getJSON('/api/graph/entity'),
     getJSON('/api/tasks/active'),
@@ -206,13 +209,34 @@ async function load() {
   const bad = []
 
   // ① 总卡数 + 分类柱状图
-  if (catsR.status === 'fulfilled') {
+  // 【2026-10-20 注入 Operit 逻辑】口径必须优先读 /api/stats：
+  //   /api/library/categories 的 members 是**陈旧**的（实测总 636，
+  //   而真实 861；势力 4 vs 真 55、力量体系 21 vs 真 71 —— 柱子严重误导）。
+  //   /api/stats 才是权威口径，categories 仅作回退（宁可偏小也不白屏）。
+  if (statsR.status === 'fulfilled' && statsR.value && typeof statsR.value === 'object') {
+    const st = statsR.value
+    stats.value.totalCards = Number(st.total) || 0
+    const arr = Array.isArray(st.by_category) ? st.by_category : []
+    if (arr.length) {
+      cats.value = arr
+        .map((c) => ({
+          name: stripId(c?.name || c?.category || c?.key) || '未命名',
+          members: Number(c?.count ?? c?.members) || 0,
+        }))
+        .sort((a, b) => b.members - a.members)
+        .slice(0, 12)
+    }
+    // 12 个文明的核心规模（总指挥要的"按文明分布"正解）
+    const civ = Array.isArray(st.by_civ_core) ? st.by_civ_core : []
+    if (civ.length) civCore.value = civ.slice(0, 12)
+  } else if (catsR.status === 'fulfilled') {
     const all = Array.isArray(catsR.value?.categories) ? catsR.value.categories : []
     stats.value.totalCards = all.reduce((n, c) => n + (Number(c?.members) || 0), 0)
     cats.value = all
       .map((c) => ({ name: stripId(c?.name) || '未命名', members: Number(c?.members) || 0 }))
       .sort((a, b) => b.members - a.members)
       .slice(0, 12)
+    bad.push('stats 回退到 categories（数值可能偏小）')
   } else {
     bad.push('分类')
   }

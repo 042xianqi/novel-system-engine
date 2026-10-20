@@ -338,9 +338,9 @@ onMounted(reload)
                 label="名称"
                 placeholder="例：本地网关 / deepseek 官方"
                 required
-                :disabled="form.mode === 'edit'"
+                :aria-describedby="form.mode === 'edit' ? 'name-rename-hint' : undefined"
                 :error="!!formErr.name"
-                :msg="formErr.name || (form.mode === 'edit' ? '名称是唯一标识，编辑时不可改' : '')"
+                :msg="formErr.name || ''"
               />
 
               <!-- BaseURL -->

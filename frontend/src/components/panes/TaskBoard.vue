@@ -932,7 +932,7 @@ watch(() => dispatching.value, (v) => { if (!v) schedulePoll() })
           v-for="t in visList(sec)"
           :key="t.id"
           v-memo="memoKey(t)"
-          class="glass rounded-md overflow-hidden"
+          class="glass card-cyber overflow-hidden"
         >
           <button
             class="w-full text-left px-3 py-2 flex items-center gap-2 active:bg-ink-700/40"

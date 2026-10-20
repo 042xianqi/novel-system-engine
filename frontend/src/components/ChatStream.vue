@@ -169,7 +169,7 @@ async function doUnlock() {
         v-for="m in chat.messages"
         :key="m.id"
         v-memo="[m.text, m.typing, m.plan, m.needsUnlock]"
-        class="flex animate-fade-in"
+        class="flex bubble-in"
         :class="m.role === 'user' ? 'justify-end' : 'justify-start'"
       >
         <!-- 机器人气泡 -->
@@ -181,7 +181,7 @@ async function doUnlock() {
             🌊
           </div>
           <div class="min-w-0">
-            <div class="glass rounded-xl rounded-tl-sm px-3.5 py-2.5 shadow-1">
+            <div class="glass card-cyber rounded-xl rounded-tl-sm px-3.5 py-2.5 shadow-1">
               <!-- 思考中 -->
               <div v-if="m.typing && !m.text" class="flex items-center gap-1.5 py-0.5">
                 <span
@@ -245,10 +245,12 @@ async function doUnlock() {
 
         <!-- 用户气泡 -->
         <div v-else class="max-w-[85%]">
+          <!-- 颜色改走皮肤变量（bubble-user）：
+               原先硬编码 #1e4a6d→#2b6690，在「霞橙/空紫」等皮肤下与主色冲突，
+               看起来像从别的主题里抠来的。现在跟随 --primary 自动适配。 -->
           <div
-            class="rounded-xl rounded-tr-sm px-3.5 py-2.5 text-[14.5px] leading-relaxed
-                   whitespace-pre-wrap break-words shadow-1"
-            style="background: linear-gradient(135deg, #1e4a6d, #2b6690); color: #e6f2fb"
+            class="bubble-user rounded-xl rounded-tr-sm px-3.5 py-2.5 text-[14.5px] leading-relaxed
+                   whitespace-pre-wrap break-words"
           >{{ m.text }}</div>
         </div>
       </div>

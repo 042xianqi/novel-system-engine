@@ -921,3 +921,91 @@ html[data-skin='mohei'] body {
     transition-duration: 0.01ms !important;
   }
 }
+/* ══════════════════════════════════════════════════════════════
+   流式打字机光标（2026-10-20 补）
+   ══════════════════════════════════════════════════════════════
+   ChatStream.vue:200 早就写了 :class="{ caret: m.typing }"，但全项目
+   没有一处定义 .caret —— 于是「流式输出时光标闪烁」这个效果从未生效。
+   这里用 ::after 伪元素画竖线，避免污染正文文本节点（复制/选取不受影响）。
+   颜色走 --primary，随皮肤自动变。 */
+.caret::after {
+  content: '';
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: rgb(var(--primary-rgb));
+  box-shadow: 0 0 6px rgb(var(--primary-rgb) / 0.85);
+  animation: caretBlink 1.05s steps(2, start) infinite;
+}
+@keyframes caretBlink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   赛博质感增强层（夜墨/玄青皮肤下的霓虹与景深）
+   ══════════════════════════════════════════════════════════════
+   原则：只做「可选增强」，浅色皮肤完全不受影响（用 [data-skin] 限定），
+   且全部走 CSS 变量，不硬编码颜色。 */
+
+/* ① 毛玻璃加一点内高光，让它像"一块玻璃"而不是"半透明色块" */
+html[data-skin='mohei'] .glass,
+html[data-skin='xuanqing'] .glass,
+html[data-skin='mohei'] .glass-strong,
+html[data-skin='xuanqing'] .glass-strong {
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.06),
+    0 8px 28px -12px rgb(0 0 0 / 0.65);
+}
+
+/* ② 悬浮窗：外发光描边 + 悬浮时轻微上浮，强化"悬浮"的空间感 */
+html[data-skin='mohei'] .glass-strong {
+  border-color: rgb(var(--primary-rgb) / 0.18);
+}
+.glass-strong:hover {
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.08),
+    0 12px 36px -12px rgb(0 0 0 / 0.7),
+    0 0 0 1px rgb(var(--primary-rgb) / 0.16);
+}
+
+/* ③ 卡片：hover 抬升 + 主色辉光（看板卡片用） */
+.card-cyber {
+  border-radius: 14px;
+  transition:
+    transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 260ms ease;
+}
+.card-cyber:hover {
+  transform: translateY(-2px);
+  border-color: rgb(var(--primary-rgb) / 0.32);
+  box-shadow:
+    0 10px 30px -14px rgb(0 0 0 / 0.75),
+    0 0 0 1px rgb(var(--primary-rgb) / 0.22),
+    0 0 22px -6px rgb(var(--primary-rgb) / 0.28);
+}
+
+/* ④ 聊天气泡渐入：入场时轻微上移 + 缩放，比单纯透明淡入更有"落下来"的重量 */
+@keyframes bubbleIn {
+  from { opacity: 0; transform: translateY(6px) scale(0.985); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.bubble-in {
+  animation: bubbleIn 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* ⑤ 用户气泡：主色渐变（区分于 bot 的中性玻璃） */
+.bubble-user {
+  background: linear-gradient(
+    135deg,
+    rgb(var(--primary-rgb) / 0.92),
+    rgb(var(--primary-rgb) / 0.72)
+  );
+  color: rgb(var(--on-primary-rgb));
+  box-shadow:
+    0 6px 20px -10px rgb(var(--primary-rgb) / 0.6),
+    inset 0 1px 0 rgb(255 255 255 / 0.18);
+}

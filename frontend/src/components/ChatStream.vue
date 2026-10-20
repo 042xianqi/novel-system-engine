@@ -5,12 +5,24 @@
 //   · 只负责「渲染」+「自动滚到底」
 //   · 不发请求（发消息在 Composer → useChat）
 //   · 不改状态（只读 store.chat）
+//
+// 【v2 重构要点】
+//   1. AI 消息正文走 <MarkdownBlock>（marked + 白名单净化），
+//      支持 标题/粗体/行内代码/代码块/有序无序列表/链接/引用/表格。
+//   2. 代码块自带语言角标 + 复制按钮（MarkdownBlock 内部实现）。
+//   3. 流式中（m.typing）在正文尾部挂 <span class="caret"></span> 光标。
+//      注意：光标用独立的 span，不再像旧代码那样把 .caret 挂在整块容器上
+//      —— 挂在容器上会让光标出现在气泡右下角、与正文末字脱节。
+//   4. 用户气泡右（.bubble-user）、AI 气泡左，入场沿用 .bubble-in。
+//   5. 保留：@quick 快捷指令事件、plan 步骤徽章、needsUnlock 解锁入口、
+//      「引用来源」展示（见下方 citation 相关代码）。
 
 import { ref, watch, nextTick, onMounted } from 'vue'
 import { chat } from '../store.js'
 import { LockAPI } from '../api.js'
 import { toast } from '../store.js'
 import { useChat } from '../composables/useChat.js'
+import MarkdownBlock from './MarkdownBlock.vue'
 
 // 只取 loadMore：滚到顶部时补更早的记录。
 // 注意不要在 ChatStream 里调 useChat().send —— 发消息是 Composer 的职责。
@@ -87,17 +99,53 @@ function planShort(p) {
   return s.length > 14 ? s.slice(0, 14) + '…' : s
 }
 
-async function scrollToBottom(force = false) {
+// ── 引用来源（citations） ──
+//
+// 【字段核对结论】现网 useChat.js / store.js 里**没有** sources 字段：
+//   后端 ChatReply 提供的是 {reply, matched, plan, task_ids, needs_unlock,
+//   hint, tool_used, tool_result, ...}；旧 ChatStream 展示的「命中 8 张卡」
+//   这类来源信息，实际是被压进 plan 徽章里的。
+//   所以这里做了两件事，互不冲突：
+//     a) plan 徽章照旧保留（这就是当前唯一的「来源」展示）；
+//     b) 增加一个**向前兼容**的来源渲染：若某条消息带 m.sources /
+//        m.citations（数组），就渲染成一行可点击的来源 chip；
+//        没有该字段时完全不渲染，行为跟旧版一致。
+const CITE_MAX = 6
+
+/** 把一条来源归一化成 {label, url} */
+function normCite(c) {
+  if (c == null) return null
+  if (typeof c === 'string') return { label: c, url: '' }
+  const label = c.title || c.name || c.label || c.id || c.key || c.source || ''
+  const url = c.url || c.href || c.link || ''
+  if (!label && !url) return null
+  return { label: label || url, url }
+}
+
+function citesOf(m) {
+  const raw = m && (m.sources || m.citations)
+  if (!Array.isArray(raw) || !raw.length) return []
+  return raw.map(normCite).filter(Boolean)
+}
+
+// 来源链接只允许 http(s)，其余（如卡号）渲染成不可点 chip
+function citeHref(url) {
+  const u = String(url || '').trim()
+  return /^https?:/i.test(u) ? u : ''
+}
+
+function scrollToBottom(force = false) {
   if (!force && !stick) return
-  await nextTick()
-  const el = scroller.value
-  if (el) el.scrollTop = el.scrollHeight
+  nextTick(() => {
+    const el = scroller.value
+    if (el) el.scrollTop = el.scrollHeight
+  })
 }
 
 // 新消息 / 打字机文字变化都可能需要跟进
 watch(() => chat.messages.length, () => scrollToBottom())
 watch(
-  () => chat.messages.map((m) => m.text.length).join(','),
+  () => chat.messages.map((m) => (m.text || '').length).join(','),
   () => scrollToBottom()
 )
 onMounted(() => scrollToBottom(true))
@@ -153,7 +201,7 @@ async function doUnlock() {
           v-for="q in QUICK"
           :key="q.text"
           class="glass rounded-lg px-3.5 py-3 text-left
-                 transition-all duration-200 ease-ease
+                 transition-transform duration-200 ease-ease
                  hover:scale-[1.025] hover:shadow-2 active:scale-[0.985]"
           @click="emit('quick', q.fill)"
         >
@@ -168,11 +216,11 @@ async function doUnlock() {
       <div
         v-for="m in chat.messages"
         :key="m.id"
-        v-memo="[m.text, m.typing, m.plan, m.needsUnlock]"
+        v-memo="[m.text, m.typing, m.plan, m.needsUnlock, m.sources]"
         class="flex bubble-in"
         :class="m.role === 'user' ? 'justify-end' : 'justify-start'"
       >
-        <!-- 机器人气泡 -->
+        <!-- 机器人气泡（左） -->
         <div v-if="m.role === 'bot'" class="flex gap-2.5 max-w-[88%]">
           <div
             class="shrink-0 w-7 h-7 mt-0.5 rounded-full glass
@@ -182,7 +230,7 @@ async function doUnlock() {
           </div>
           <div class="min-w-0">
             <div class="glass card-cyber rounded-xl rounded-tl-sm px-3.5 py-2.5 shadow-1">
-              <!-- 思考中 -->
+              <!-- 思考中：还没收到第一个字 -->
               <div v-if="m.typing && !m.text" class="flex items-center gap-1.5 py-0.5">
                 <span
                   v-for="i in 3"
@@ -193,12 +241,11 @@ async function doUnlock() {
                 <span class="ml-1 text-[12px] text-fg-dim">思考中</span>
               </div>
 
-              <!-- 正文 -->
-              <div
-                v-else
-                class="text-[14.5px] leading-relaxed whitespace-pre-wrap break-words"
-                :class="{ caret: m.typing }"
-              >{{ m.text }}</div>
+              <!-- 正文：Markdown 渲染 + 流式光标 -->
+              <div v-else class="text-[14.5px] leading-relaxed break-words">
+                <MarkdownBlock :source="m.text" />
+                <span v-if="m.typing" class="caret"></span>
+              </div>
 
               <!-- 计划步骤：渲染成小徽章，不占正文 -->
               <!--
@@ -226,6 +273,32 @@ async function doUnlock() {
                 </span>
               </div>
 
+              <!-- 引用来源：仅当消息带 sources/citations 时渲染（向前兼容） -->
+              <div v-if="citesOf(m).length" class="mt-2">
+                <div class="text-[10px] uppercase tracking-wider text-fg-dim/60 mb-1">
+                  引用来源
+                </div>
+                <div class="flex flex-wrap items-center gap-1.5">
+                  <component
+                    :is="citeHref(c.url) ? 'a' : 'span'"
+                    v-for="(c, i) in citesOf(m).slice(0, CITE_MAX)"
+                    :key="i"
+                    class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded
+                           bg-primary/10 border border-primary/20
+                           text-[10.5px] text-primary/85
+                           max-w-[220px] truncate"
+                    :href="citeHref(c.url) || undefined"
+                    :target="citeHref(c.url) ? '_blank' : undefined"
+                    :rel="citeHref(c.url) ? 'noopener noreferrer' : undefined"
+                    :title="c.url || c.label"
+                  >🔗 {{ c.label }}</component>
+                  <span
+                    v-if="citesOf(m).length > CITE_MAX"
+                    class="text-[10.5px] text-fg-dim/60"
+                  >+{{ citesOf(m).length - CITE_MAX }}</span>
+                </div>
+              </div>
+
               <!-- 需要解锁提示 -->
               <div
                 v-if="m.needsUnlock"
@@ -243,11 +316,9 @@ async function doUnlock() {
           </div>
         </div>
 
-        <!-- 用户气泡 -->
+        <!-- 用户气泡（右） -->
         <div v-else class="max-w-[85%]">
-          <!-- 颜色改走皮肤变量（bubble-user）：
-               原先硬编码 #1e4a6d→#2b6690，在「霞橙/空紫」等皮肤下与主色冲突，
-               看起来像从别的主题里抠来的。现在跟随 --primary 自动适配。 -->
+          <!-- 颜色改走皮肤变量（bubble-user）：跟随 --primary 自动适配 -->
           <div
             class="bubble-user rounded-xl rounded-tr-sm px-3.5 py-2.5 text-[14.5px] leading-relaxed
                    whitespace-pre-wrap break-words"

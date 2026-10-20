@@ -1,104 +1,284 @@
 <script setup>
-// OutlineTree.vue —— 大纲视图（L0-L3，可折叠）
+// OutlineTree.vue —— 大纲视图（L0→L5 折叠树 / Tree View）
 //
-// 数据来源：/api/layers/{L}/items + /api/pipeline/funnel
-//   · funnel 给「每层 done / pending」徽章
-//   · layers 给每层的条目（细纲每卷一条、总纲一条…）
+// ══════════════════════════════════════════════════════════
+// 数据来源（**完全沿用原有加载链路，未新增任何端点**）：
+//   · loadOutline()      → systemData.outline.levels
+//        levels[i] = { id, name, items[], count, err, status, done, file }
+//        items[j]  = { layer, key, title, chars, source, dirty }
+//        （/api/layers/{L}/items?limit=200 + /api/pipeline/funnel，见 useSystem.js）
+//   · loadOutlineItem(L,key) → { content, chars }
+//        （/api/layers/{L}/item/{key}，点开看正文时按需拉）
 //
-// 交互：
-//   · 层头点击折叠/展开（状态在 store.systemData.outline.expanded，切页不丢）
-//   · 条目点击展开看正文（按需拉 /api/layers/{L}/item/{key}，拉过就缓存）
-//   · 顶部显示漏斗进度 6/7 与下一步提示
-//
-// 为什么层顺序是 L0.5→L1x→L1→L2→L3→L0：
-//   这是**创作时的逆向漏斗顺序**（从最上游的整本概括往下收敛），
-//   和数据库里的字典序不同，界面按创作顺序排才好用。
-import { computed, onMounted, ref } from 'vue'
+// 与旧版的差异（只改「怎么看」，不改「读什么」）：
+//   ① 层头手风琴 → 真正的折叠树：三角 ▸/▾、缩进层级、1px 垂直引导线
+//   ② 层按 L0→L5 阶梯升序排布，字号/透明度/色深随层级递减 → 一眼可辨
+//   ③ 新增「全部展开 / 全部折叠」
+//   ④ 条目正文：行内懒加载展开（点击节点即展开/收起），保留原来的半屏悬浮卡片
+//   ⑤ 折叠的分支用 v-if 不渲染，展开树的可见行也只在 rows 里 —— 大树不卡
+// ══════════════════════════════════════════════════════════
+import { computed, onMounted, reactive, ref } from 'vue'
 import { systemData, pushLog } from '../../store.js'
-import {
-  loadOutline,
-  toggleOutlineLevel,
-  loadOutlineItem,
-} from '../../composables/useSystem.js'
+import { loadOutline, loadOutlineItem } from '../../composables/useSystem.js'
 
 const s = systemData.outline
 const busy = ref(false)
 
-// ── 悬浮卡片状态 ──
-//   openKey      '' 表示无卡片；形如 "L3:卷01" 表示当前打开的条目
-//   openItemData 卡片头部要显示的条目元数据（key/title/chars）
-//   openLoading  正文拉取中
-//   openErr      拉取失败原因
-//   openContent  正文
-// 抽出独立 ref 而非塞进 itemBody 字典：卡片同一时刻只显示一条，
-// 用字典只会留下永不回收的内存垃圾。
-const openKey = ref('')
-const openItemData = ref(null)
-const openLoading = ref(false)
-const openErr = ref('')
-const openContent = ref('')
+// ── 展开态 ──
+//   沿用 store 里的 s.expanded（切页不丢），id 规则见下：
+//     ROOT             根节点
+//     L:L3             层节点
+//     I:L3:卷01        条目节点
+//   isOpen 带默认值兜底：第一次进来（s.expanded 里没有这些 key）时
+//   根 + 所有层默认展开、条目默认收起，首屏立刻有结构可看。
+function isOpen(id) {
+  const v = s.expanded[id]
+  if (v === undefined) return id === ROOT_ID || id.startsWith('L:')
+  return !!v
+}
+function toggleNode(id) {
+  s.expanded[id] = !isOpen(id)
+}
 
-const levels = computed(() => s.levels || [])
+// ══ L0 → L5 阶梯 ══
+// rank 决定 ① 同级排序 ② 缩进 / 字号 / 色深的递减档位。
+// 后端若新增层（或出现未登记 id），rank 兜底到最末，样式按最深档位走，不崩。
+const ROOT_ID = 'ROOT'
+const LADDER = ['L0', 'L0.5', 'L1', 'L1x', 'L2', 'L3', 'L4', 'L5']
+function rankOf(id) {
+  const i = LADDER.indexOf(String(id).toUpperCase())
+  return i < 0 ? LADDER.length : i
+}
 
-/** 每层头部状态徽章 */
+// 每档的字号 / 透明度 / 文字色（全部写成静态字面量，Tailwind 能扫到 class）
+const RANK_STYLE = [
+  { fs: '13px', op: 1, cls: 'text-fg' }, // L0
+  { fs: '12.5px', op: 0.94, cls: 'text-fg' }, // L0.5
+  { fs: '12px', op: 0.88, cls: 'text-fg' }, // L1
+  { fs: '11.8px', op: 0.82, cls: 'text-fg-dim' }, // L1x
+  { fs: '11.6px', op: 0.78, cls: 'text-fg-dim' }, // L2
+  { fs: '11.4px', op: 0.74, cls: 'text-fg-dim' }, // L3
+  { fs: '11.2px', op: 0.7, cls: 'text-fg-dim' }, // L4
+  { fs: '11px', op: 0.66, cls: 'text-fg-dim' }, // L5
+]
+const RANK_FALLBACK = { fs: '11px', op: 0.6, cls: 'text-fg-dim' }
+// 层编号徽章的主色档位：越靠上游越亮，越往下游越淡
+const RANK_ACC = [
+  'text-acc',
+  'text-acc',
+  'text-acc',
+  'text-fg',
+  'text-fg-dim',
+  'text-fg-dim',
+  'text-fg-dim',
+  'text-fg-dim',
+]
+const RANK_ACC_FALLBACK = 'text-fg-dim'
+
+// 缩进：每层 14px；同级层之间再按 rank 微推 4px，让 L0→L5 呈阶梯下潜
+const INDENT = 14
+const RANK_STEP = 4
+function rankOffset(rank) {
+  return rank > 0 ? rank * RANK_STEP : 0
+}
+function styleOf(rank) {
+  return RANK_STYLE[rank] || RANK_FALLBACK
+}
+function accOf(rank) {
+  return RANK_ACC[rank] || RANK_ACC_FALLBACK
+}
+
+/** 每层头部状态徽章（沿用旧版逻辑与文案） */
 function badge(L) {
   if (L.err) return { t: '读取失败', c: 'text-bad bg-bad/12 border-bad/25' }
   if (L.done) return { t: '已完成', c: 'text-ok bg-ok/12 border-ok/25' }
   const st = String(L.status || '')
   if (st.startsWith('chapters')) {
-    return { t: st.replace('chapters_', '章节 '), c: 'text-warn bg-warn/12 border-warn/25' }
+    return {
+      t: st.replace('chapters_', '章节 '),
+      c: 'text-warn bg-warn/12 border-warn/25',
+    }
   }
   if (st) return { t: st, c: 'text-fg-dim bg-ink-600/40 border-ink-600' }
   return { t: '未开始', c: 'text-fg-dim bg-ink-600/40 border-ink-600' }
 }
 
-function isOpen(id) {
-  return !!s.expanded[id]
+function fmtK(n) {
+  if (!n) return '0'
+  return n >= 10000 ? (n / 10000).toFixed(1) + '万' : String(n)
 }
 
-/** 打开条目悬浮卡片：点同一条则收起，点别的条则换内容 */
-async function toggleItem(L, it) {
-  const k = `${L.id}:${it.key}`
-  if (openKey.value === k) {
-    closeItem()
-    return
+// ══════════════════════════════════════════════════════
+// 树：根 → 层（L0→L5 升序）→ 条目
+// ══════════════════════════════════════════════════════
+const tree = computed(() => {
+  const layers = [...(s.levels || [])].sort(
+    (a, b) => rankOf(a.id) - rankOf(b.id)
+  )
+  return layers.map((L) => {
+    const rank = rankOf(L.id)
+    const items = (L.items || []).map((it) => ({
+      id: `I:${L.id}:${it.key}`,
+      kind: 'item',
+      layer: L.id,
+      rank,
+      key: it.key,
+      // 既有字段：title / chars / source（dirty 仅作角标，缺失也不影响）
+      label: it.title || '（无标题）',
+      chars: it.chars || 0,
+      meta: fmtK(it.chars) + ' 字',
+      source: it.source || '',
+      dirty: !!it.dirty,
+      expandable: true, // 见下方：点击行内懒加载展开正文
+    }))
+    return {
+      id: `L:${L.id}`,
+      kind: 'layer',
+      layer: L.id,
+      rank,
+      code: L.id,
+      label: L.name,
+      badge: badge(L),
+      count: L.count ?? items.length,
+      err: L.err || '',
+      expandable: items.length > 0,
+      children: items,
+    }
+  })
+})
+
+const rootNode = computed(() => ({
+  id: ROOT_ID,
+  kind: 'root',
+  rank: -1,
+  label: '全书大纲树',
+  code: 'L0→L5',
+  count: (s.levels || []).length,
+  expandable: tree.value.length > 0,
+  children: tree.value,
+}))
+
+/**
+ * 拍平成「可见行」。折叠分支直接不进数组 → DOM 里根本不存在，
+ * 所以 600+ 条 L4 也不会有渲染压力（折叠时只渲染可见的几十行）。
+ * guides[i] = 第 i 层祖先是否需要画那根 1px 竖线（不是最后一个兄弟就要续线）。
+ */
+const rows = computed(() => {
+  const out = []
+  const walk = (node, depth, guides, isLast) => {
+    out.push({
+      ...node,
+      depth,
+      guides,
+      pad: depth * INDENT + rankOffset(node.rank),
+    })
+    if (!isOpen(node.id)) return
+    const kids = node.children || []
+    if (!kids.length) return
+    // 根是主干，永远续线；其余节点只有「后面还有兄弟」时才续线
+    const line = depth === 0 ? true : !isLast
+    const childGuides = [...guides, line]
+    kids.forEach((c, i) =>
+      walk(c, depth + 1, childGuides, i === kids.length - 1)
+    )
   }
-  openKey.value = k
-  openItemData.value = { key: it.key, title: it.title, chars: it.chars }
-  openContent.value = ''
-  openErr.value = ''
-  openLoading.value = true
+  walk(rootNode.value, 0, [], true)
+  return out
+})
+
+function rowStyle(row) {
+  const st = styleOf(row.rank)
+  return {
+    paddingLeft: row.pad + 'px',
+    fontSize: st.fs,
+    opacity: st.op,
+  }
+}
+function guideStyle(row, i) {
+  return { left: i * INDENT + rankOffset(row.rank) + 'px' }
+}
+
+// ── 全部展开 / 全部折叠 ──
+const allIds = computed(() => {
+  const ids = [ROOT_ID]
+  for (const L of tree.value) {
+    ids.push(L.id)
+    for (const it of L.children) ids.push(it.id)
+  }
+  return ids
+})
+function expandAll() {
+  for (const id of allIds.value) s.expanded[id] = true
+}
+function collapseAll() {
+  for (const id of allIds.value) s.expanded[id] = false
+  // 根保持展开，否则整棵树会「消失」，用户找不到入口
+  s.expanded[ROOT_ID] = true
+}
+
+// ══════════════════════════════════════════════════════
+// 条目正文：懒加载 + 缓存（行内展开 & 半屏卡片共用同一份数据）
+//   detail[id] = { loading, err, content, chars }
+// ══════════════════════════════════════════════════════
+const detail = reactive({})
+function detailOf(id) {
+  return detail[id] || null
+}
+async function ensureDetail(L, row) {
+  const id = row.id
+  if (detail[id] && !detail[id].err) return
+  detail[id] = { loading: true, err: '', content: '', chars: row.chars }
   try {
-    const r = await loadOutlineItem(L.id, it.key)
-    openContent.value = r.content || ''
-    // 后端可能给出更准的字数，优先用它
-    if (r.chars != null) openItemData.value = { ...openItemData.value, chars: r.chars }
+    const r = await loadOutlineItem(L, row.key)
+    detail[id] = {
+      loading: false,
+      err: '',
+      content: r.content || '',
+      chars: r.chars ?? row.chars,
+    }
   } catch (e) {
-    openErr.value = String((e && e.message) || e)
-  } finally {
-    openLoading.value = false
+    detail[id] = {
+      loading: false,
+      err: String((e && e.message) || e),
+      content: '',
+      chars: row.chars,
+    }
   }
 }
 
-/** 关闭卡片并清空正文，避免下次打开闪现上一份内容 */
-function closeItem() {
-  openKey.value = ''
-  openItemData.value = null
-  openLoading.value = false
-  openErr.value = ''
-  openContent.value = ''
+/** 点击节点行：层/根 → 展收子树；条目 → 展收正文（懒加载）*/
+function onRowClick(row) {
+  if (!row.expandable) return
+  toggleNode(row.id)
+  if (row.kind === 'item' && isOpen(row.id)) ensureDetail(row.layer, row)
 }
+
+/** 键盘可达性：Enter / Space 等价点击 */
+function onRowKey(e, row) {
+  if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+    e.preventDefault()
+    onRowClick(row)
+  }
+}
+
+// ── 半屏悬浮卡片（保留旧版交互：大段正文用卡片看更舒服）──
+const sheetRow = ref(null)
+async function openSheet(row) {
+  sheetRow.value = row
+  await ensureDetail(row.layer, row)
+}
+function closeSheet() {
+  sheetRow.value = null
+}
+const sheetData = computed(() =>
+  sheetRow.value ? detailOf(sheetRow.value.id) : null
+)
 
 async function reload() {
   busy.value = true
   await loadOutline(true)
   busy.value = false
   pushLog('大纲已刷新', 'info')
-}
-
-function fmtK(n) {
-  if (!n) return '0'
-  return n >= 10000 ? (n / 10000).toFixed(1) + '万' : String(n)
 }
 
 onMounted(() => loadOutline())
@@ -117,235 +297,396 @@ onMounted(() => loadOutline())
           class="ml-auto text-[11px] text-fg-dim active:scale-95 disabled:opacity-40"
           :disabled="busy"
           @click="reload"
-        >{{ busy ? '刷新中…' : '刷新' }}</button>
+        >
+          {{ busy ? '刷新中…' : '刷新' }}
+        </button>
       </div>
-      <!-- 进度条 -->
+      <!-- 进度条（宽度变化是 paint，非 transform，但只在数据刷新时发生一次，可接受） -->
       <div class="h-1 rounded-full bg-ink-600 overflow-hidden">
         <div
           class="h-full bg-gradient-to-r from-acc to-ok transition-all duration-500"
           :style="{
             width:
-              s.funnelDone && levels.length
+              s.funnelDone && (s.levels || []).length
                 ? Math.min(100, (s.funnelDone / 7) * 100) + '%'
                 : '0%',
           }"
         />
       </div>
       <div class="text-[10px] text-fg-dim/70 leading-relaxed">
-        L4 资料 → L3 细纲 → L2 分卷 → L1x 宏大对抗 → L1 总纲 → L0 概括，最后顺向写 L5 正文
+        L0 概括 → L1 总纲 → L2 分卷 → L3 细纲 → L4 资料 → L5 正文；越往上游越抽象
       </div>
     </div>
 
     <div
       v-if="s.err"
       class="rounded-md px-3 py-2 text-[11px] bg-bad/10 text-bad break-all"
-    >{{ s.err }}</div>
-
-    <!-- ── 每一层（手风琴）── -->
-    <div
-      v-for="L in levels"
-      :key="L.id"
-      class="glass rounded-md overflow-hidden card-lift"
     >
-      <!-- 层头：点击折叠/展开 -->
-      <button
-        class="acc-head w-full flex items-center gap-2 px-3 py-2.5"
-        :aria-expanded="isOpen(L.id) ? 'true' : 'false'"
-        @click="toggleOutlineLevel(L.id)"
-      >
-        <span class="font-mono text-[11px] text-acc w-9 shrink-0">{{ L.id }}</span>
-        <span class="text-[12px] text-fg shrink-0">{{ L.name }}</span>
-        <span
-          class="shrink-0 text-[10px] px-1.5 py-0.5 rounded-sm border"
-          :class="badge(L).c"
-        >{{ badge(L).t }}</span>
-        <span class="ml-auto shrink-0 text-[10px] text-fg-dim font-mono">
-          {{ L.count }} 条
-        </span>
-        <!-- 手风琴箭头：展开时旋转 180°（规范要求的动效） -->
-        <svg
-          class="acc-arrow shrink-0"
-          :class="isOpen(L.id) ? 'open' : ''"
-          viewBox="0 0 24 24"
-          aria-hidden="true"
-        >
-          <path d="m6 9 6 6 6-6" />
-        </svg>
-      </button>
+      {{ s.err }}
+    </div>
 
-      <!-- 层内容 -->
-      <div v-if="isOpen(L.id)" class="border-t border-ink-600/60">
-        <div v-if="L.err" class="px-3 py-2 text-[11px] text-bad break-all">
-          {{ L.err }}
-        </div>
-        <div
-          v-else-if="!L.items.length"
-          class="px-3 py-3 text-[11px] text-fg-dim/70"
-        >该层暂无条目</div>
-
+    <!-- ── 树工具条：全部展开 / 全部折叠 ── -->
+    <div class="flex items-center gap-2">
+      <span class="text-[11px] text-fg-dim">大纲树</span>
+      <span class="text-[10px] text-fg-dim/60 font-mono">
+        {{ rows.length }} 行可见
+      </span>
+      <div class="ml-auto flex items-center gap-1.5">
         <button
-          v-for="it in L.items"
-          :key="it.key"
-          class="w-full text-left px-3 py-2 border-b border-ink-600/40 last:border-0
-                 active:bg-ink-700/30"
-          @click="toggleItem(L, it)"
+          class="ot-tool"
+          type="button"
+          @click="expandAll"
         >
-          <div class="flex items-center gap-2">
-            <span class="font-mono text-[10.5px] text-fg-dim shrink-0">
-              {{ it.key }}
-            </span>
-            <span class="flex-1 min-w-0 text-[11.5px] text-fg truncate">
-              {{ it.title || '（无标题）' }}
-            </span>
-            <span class="shrink-0 text-[10px] text-fg-dim/70 font-mono">
-              {{ fmtK(it.chars) }} 字
-            </span>
-            <span class="shrink-0 text-[10px] text-fg-dim">
-              {{ openKey === L.id + ':' + it.key ? '▴' : '▾' }}
-            </span>
-          </div>
-
-          <!-- 来源路径 -->
-          <div
-            v-if="it.source"
-            class="mt-0.5 text-[10px] text-fg-dim/50 font-mono truncate"
-          >{{ it.source }}</div>
-          <!-- 条目正文：改成「悬浮卡片」而非行内展开 -->
+          全部展开
+        </button>
+        <button
+          class="ot-tool"
+          type="button"
+          @click="collapseAll"
+        >
+          全部折叠
         </button>
       </div>
     </div>
 
-    <!-- ══════ 大纲条目悬浮卡片（半屏抽屉）══════
-         用户要求：点某卷某章要弹悬浮卡片展示章纲，不要覆盖整个侧栏。
-         这里用底部上滑的半屏卡片 + 毛玻璃遮罩；关掉后列表位置原封不动。 -->
-    <Teleport to="body">
-      <Transition name="ol-card">
-        <div v-if="openKey" class="fixed inset-0 z-[56]">
-          <!-- 遮罩 -->
-          <div
-            class="ol-mask absolute inset-0 bg-black/45 backdrop-blur-[2px]"
-            @click="closeItem"
+    <!-- ══ 树本体 ══
+         role=tree：折叠树的标准无障碍语义；每行是 treeitem + aria-level/expanded。 -->
+    <div class="glass rounded-md py-1 ot-tree" role="tree" aria-label="大纲树">
+      <!-- 加载骨架 -->
+      <div v-if="s.loading && !rows.length" class="px-3 py-3 space-y-2">
+        <div class="skl" style="width: 58%; height: 12px" />
+        <div class="skl" style="width: 82%; height: 10px" />
+        <div class="skl" style="width: 70%; height: 10px" />
+      </div>
+
+      <template v-for="row in rows" :key="row.id">
+        <!-- ── 一行节点 ── -->
+        <div
+          class="ot-row relative"
+          :class="[
+            row.kind === 'root' ? 'ot-row-root' : '',
+            row.kind === 'layer' ? 'ot-row-layer' : '',
+            'ot-' + row.kind,
+          ]"
+          :style="rowStyle(row)"
+          role="treeitem"
+          :aria-level="row.depth + 1"
+          :aria-expanded="row.expandable ? isOpen(row.id) : undefined"
+          tabindex="0"
+          @click="onRowClick(row)"
+          @keydown="onRowKey($event, row)"
+        >
+          <!-- 垂直引导线：父级到子级 1px 竖线，每个祖先层一根 -->
+          <span
+            v-for="(g, i) in row.guides"
+            v-show="g"
+            :key="'g' + i"
+            class="ot-guide"
+            :style="guideStyle(row, i)"
+            aria-hidden="true"
           />
-          <!-- 悬浮卡片 -->
+
+          <!-- 三角展开箭头：▸ 旋转 90° 变 ▾（只动 transform） -->
+          <span
+            class="ot-tri"
+            :class="isOpen(row.id) ? 'open' : ''"
+            aria-hidden="true"
+          >▸</span>
+
+          <!-- ── 根节点 ── -->
+          <template v-if="row.kind === 'root'">
+            <span class="font-semibold text-fg shrink-0">📖 全书大纲树</span>
+            <span class="shrink-0 text-[10px] font-mono text-fg-dim/70">
+              {{ row.code }}
+            </span>
+            <span class="ml-auto shrink-0 text-[10px] text-fg-dim font-mono">
+              {{ row.count }} 层
+            </span>
+          </template>
+
+          <!-- ── 层节点 ── -->
+          <template v-else-if="row.kind === 'layer'">
+            <span
+              class="shrink-0 font-mono text-[11px] font-semibold w-9"
+              :class="accOf(row.rank)"
+            >{{ row.code }}</span>
+            <span class="shrink-0 truncate">{{ row.label }}</span>
+            <span
+              class="shrink-0 text-[10px] px-1.5 py-0.5 rounded-sm border"
+              :class="row.badge.c"
+            >{{ row.badge.t }}</span>
+            <span class="ml-auto shrink-0 text-[10px] text-fg-dim font-mono">
+              {{ row.count }} 条
+            </span>
+          </template>
+
+          <!-- ── 条目节点 ── -->
+          <template v-else>
+            <span class="shrink-0 font-mono text-[10.5px] text-fg-dim/90">
+              {{ row.key }}
+            </span>
+            <span class="flex-1 min-w-0 text-fg truncate">{{ row.label }}</span>
+            <span
+              v-if="row.dirty"
+              class="shrink-0 text-[9.5px] px-1 rounded-sm border text-warn bg-warn/12 border-warn/25"
+            >脏</span>
+            <span class="shrink-0 text-[10px] text-fg-dim/70 font-mono">
+              {{ row.meta }}
+            </span>
+            <!-- 大段正文改到卡片看；stop 避免同时触发展收 -->
+            <button
+              class="ot-open shrink-0"
+              type="button"
+              title="在卡片中打开"
+              aria-label="在卡片中打开"
+              @click.stop="openSheet(row)"
+            >⤢</button>
+          </template>
+
+          <!-- 层读取失败 -->
+          <span
+            v-if="row.kind === 'layer' && row.err"
+            class="ml-2 shrink-0 text-[10px] text-bad truncate"
+          >{{ row.err }}</span>
+        </div>
+
+        <!-- ── 条目展开后的正文（懒加载，独立一行，缩进 + 引导线下方）── -->
+        <div
+          v-if="row.kind === 'item' && isOpen(row.id)"
+          class="ot-body"
+          :style="{ paddingLeft: (row.depth + 1) * INDENT + rankOffset(row.rank) + 'px' }"
+        >
+          <div v-if="!detailOf(row.id) || detailOf(row.id).loading" class="text-fg-dim">
+            读取中…
+          </div>
+          <div v-else-if="detailOf(row.id).err" class="text-bad break-all">
+            {{ detailOf(row.id).err }}
+          </div>
           <div
-            class="ol-sheet absolute left-2 right-2 bottom-2 max-h-[74vh]
+            v-else-if="!detailOf(row.id).content"
+            class="text-fg-dim/70"
+          >（空）</div>
+          <pre
+            v-else
+            class="ot-content"
+          >{{ detailOf(row.id).content }}</pre>
+          <div
+            v-if="row.source"
+            class="mt-1 text-[10px] text-fg-dim/45 font-mono truncate"
+          >{{ row.source }}</div>
+        </div>
+      </template>
+
+      <div
+        v-if="!s.loading && rows.length <= 1"
+        class="px-3 py-3 text-[11px] text-fg-dim/70"
+      >暂无大纲数据</div>
+    </div>
+
+    <!-- ══════ 条目悬浮卡片（半屏抽屉，沿用旧版交互）══════ -->
+    <Teleport to="body">
+      <Transition name="ot-card">
+        <div v-if="sheetRow" class="fixed inset-0 z-[56]">
+          <div
+            class="ot-mask absolute inset-0 bg-black/45 backdrop-blur-[2px]"
+            @click="closeSheet"
+          />
+          <div
+            class="ot-sheet absolute left-2 right-2 bottom-2 max-h-[74vh]
                    glass-strong rounded-2xl overflow-hidden flex flex-col
                    shadow-[0_18px_60px_rgba(0,0,0,.55)] ring-1 ring-white/10"
           >
-            <!-- 头部：编号 + 标题 + 字数 + 关闭 -->
-            <div class="shrink-0 flex items-center gap-2 px-3.5 py-2.5
-                        border-b border-ink-600/60">
+            <div
+              class="shrink-0 flex items-center gap-2 px-3.5 py-2.5
+                     border-b border-ink-600/60"
+            >
               <span class="font-mono text-[11px] text-acc shrink-0">
-                {{ openItemData?.key || '' }}
+                {{ sheetRow.key }}
               </span>
-              <span class="flex-1 min-w-0 text-[12.5px] font-semibold text-fg truncate">
-                {{ openItemData?.title || '（无标题）' }}
-              </span>
+              <span
+                class="flex-1 min-w-0 text-[12.5px] font-semibold text-fg truncate"
+              >{{ sheetRow.label }}</span>
               <span class="shrink-0 text-[10px] text-fg-dim/70 font-mono">
-                {{ fmtK(openItemData?.chars || 0) }} 字
+                {{ fmtK(sheetData?.chars || 0) }} 字
               </span>
               <button
                 class="shrink-0 w-7 h-7 rounded-lg bg-ink-700/70 text-fg-dim
                        flex items-center justify-center text-[15px] active:scale-95
                        transition-transform"
-                @click="closeItem"
+                @click="closeSheet"
                 aria-label="关闭"
               >✕</button>
             </div>
-            <!-- 正文 -->
             <div class="flex-1 min-h-0 overflow-y-auto px-3.5 py-3">
-              <div v-if="openLoading" class="text-[11.5px] text-fg-dim">读取中…</div>
-              <div v-else-if="openErr" class="text-[11.5px] text-bad break-all">
-                {{ openErr }}
+              <div v-if="!sheetData || sheetData.loading" class="text-[11.5px] text-fg-dim">
+                读取中…
               </div>
-              <pre
-                v-else
-                class="text-[11px] text-fg/88 leading-relaxed whitespace-pre-wrap
-                       break-words font-mono"
-              >{{ openContent }}</pre>
+              <div v-else-if="sheetData.err" class="text-[11.5px] text-bad break-all">
+                {{ sheetData.err }}
+              </div>
+              <div v-else-if="!sheetData.content" class="text-[11.5px] text-fg-dim/70">
+                （空）
+              </div>
+              <pre v-else class="ot-content">{{ sheetData.content }}</pre>
+              <div
+                v-if="sheetRow.source"
+                class="mt-2 text-[10px] text-fg-dim/45 font-mono break-all"
+              >{{ sheetRow.source }}</div>
             </div>
           </div>
         </div>
       </Transition>
     </Teleport>
-
-
-    <!-- 首屏加载：用骨架屏而不是转圈/纯文字。
-         骨架的条块形状尽量贴近真实列表（层头 + 三条条目），
-         这样真实数据填进来时视觉是"接上"的，不会跳一下。 -->
-    <div v-if="s.loading && !levels.length" class="space-y-3">
-      <div v-for="i in 4" :key="i" class="glass rounded-md px-3 py-3 space-y-2">
-        <div class="flex items-center gap-2">
-          <span class="skl" style="width: 30px; height: 12px" />
-          <span class="skl" style="width: 96px; height: 12px" />
-          <span class="skl ml-auto" style="width: 40px; height: 12px" />
-        </div>
-        <div class="skl" style="width: 100%; height: 10px" />
-        <div class="skl" style="width: 72%; height: 10px" />
-      </div>
-    </div>
-    <div class="h-2" />
   </div>
 </template>
 
-<style>
-/* ── 手风琴层头：悬停/按下反馈 ── */
-.acc-head {
-  transition: background-color var(--dur-2) var(--ease-io);
+<style scoped>
+/* ── 行：只做 background 过渡（无需合成层，不会掉帧） ── */
+.ot-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 12px;
+  min-height: 30px;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background-color var(--dur-2, 200ms) var(--ease-io, ease);
 }
-.acc-head:hover {
+.ot-row:hover {
   background: rgb(var(--card-2-rgb) / 0.6);
 }
-.acc-head:active {
-  background: rgb(var(--card-2-rgb) / 0.9);
+.ot-row:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+.ot-row-root {
+  font-weight: 600;
+  cursor: default;
+}
+.ot-row-layer {
+  font-weight: 500;
 }
 
-/* ── 手风琴箭头：展开时 180° 旋转（规范动效）──
-   用 transform 而非旋转字符，因为它走合成器，不掉帧。
-   spring 曲线让"翻开"有一点点过冲，手感更实。 */
-.acc-arrow {
-  width: 14px;
-  height: 14px;
-  stroke: var(--text-disabled);
-  fill: none;
-  stroke-width: 2.2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  transition: transform var(--dur-3) var(--ease-spring),
-    stroke var(--dur-2) var(--ease-io);
-}
-.acc-arrow.open {
-  transform: rotate(180deg);
-  stroke: var(--primary);
+/* ── 垂直引导线：父级 → 子级 1px 竖线（用分隔线色，随皮肤走）── */
+.ot-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--divider, rgb(var(--divider-rgb) / 1));
+  pointer-events: none;
 }
 
-/* ── 大纲条目悬浮卡片：底部上滑 + 毛玻璃遮罩淡入 ──
-   与 App.vue 的 .ball-pop / FloatingChat 共用同一条缓动曲线
-   cubic-bezier(.22, 1.4, .36, 1)，保证全局「弹跳手感」一致。
-   只在 enter/leave 期间挂 transition，静默期零开销。 */
-.ol-card-enter-active .ol-mask,
-.ol-card-leave-active .ol-mask {
+/* ── 三角箭头：▸ 展开时旋转 90° 变 ▾。只动 transform，走合成器 ── */
+.ot-tri {
+  display: inline-block;
+  width: 12px;
+  flex: 0 0 12px;
+  text-align: center;
+  color: var(--text-disabled, rgb(var(--text-sec-rgb) / 1));
+  transition: transform var(--dur-3, 300ms) var(--ease-io, ease),
+    opacity var(--dur-2, 200ms) var(--ease-io, ease);
+  will-change: transform;
+}
+.ot-tri.open {
+  transform: rotate(90deg);
+}
+.ot-row:hover .ot-tri,
+.ot-row:focus-visible .ot-tri {
+  color: var(--primary);
+}
+
+/* ── 工具条按钮 ── */
+.ot-tool {
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 6px;
+  color: var(--text-sec, rgb(var(--text-sec-rgb) / 1));
+  background: rgb(var(--card-2-rgb) / 0.7);
+  border: 1px solid rgb(var(--border-rgb) / 0.9);
+  transition: transform var(--dur-1, 100ms) var(--ease-io, ease),
+    color var(--dur-2, 200ms) var(--ease-io, ease);
+}
+.ot-tool:active {
+  transform: scale(0.95);
+}
+.ot-tool:hover {
+  color: var(--primary);
+}
+
+/* ── 条目行内的「打开卡片」按钮：hover / 聚焦才现身（opacity 过渡）── */
+.ot-open {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-sec, rgb(var(--text-sec-rgb) / 1));
+  background: rgb(var(--card-2-rgb) / 0.8);
+  opacity: 0;
+  transition: opacity var(--dur-2, 200ms) var(--ease-io, ease),
+    transform var(--dur-1, 100ms) var(--ease-io, ease);
+}
+.ot-row:hover .ot-open,
+.ot-row:focus-within .ot-open,
+.ot-open:focus-visible {
+  opacity: 1;
+}
+.ot-open:active {
+  transform: scale(0.92);
+}
+
+/* ── 条目正文（行内展开）：懒加载，限高滚动，长文不撑爆侧栏 ── */
+.ot-body {
+  padding-right: 12px;
+  padding-top: 2px;
+  padding-bottom: 8px;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.ot-content {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow-y: auto;
+  color: var(--text-sec, rgb(var(--text-sec-rgb) / 1));
+  font-family: inherit;
+}
+
+/* ── 悬浮卡片：底部上滑 + 遮罩淡入（只用 transform / opacity）── */
+.ot-card-enter-active .ot-mask,
+.ot-card-leave-active .ot-mask {
   transition: opacity 220ms ease;
 }
-.ol-card-enter-active .ol-sheet {
-  transition: transform 320ms cubic-bezier(.22, 1.4, .36, 1),
+.ot-card-enter-active .ot-sheet {
+  transition: transform 320ms cubic-bezier(0.22, 1.4, 0.36, 1),
     opacity 200ms ease;
 }
-.ol-card-leave-active .ol-sheet {
-  transition: transform 200ms cubic-bezier(.4, 0, 1, 1), opacity 170ms ease;
+.ot-card-leave-active .ot-sheet {
+  transition: transform 200ms cubic-bezier(0.4, 0, 1, 1), opacity 170ms ease;
 }
-.ol-card-enter-from .ol-mask,
-.ol-card-leave-to .ol-mask {
+.ot-card-enter-from .ot-mask,
+.ot-card-leave-to .ot-mask {
   opacity: 0;
 }
-.ol-card-enter-from .ol-sheet,
-.ol-card-leave-to .ol-sheet {
+.ot-card-enter-from .ot-sheet,
+.ot-card-leave-to .ot-sheet {
   opacity: 0;
   transform: translate3d(0, 100%, 0) scale(0.98);
 }
-/* 底部安全区：卡片贴住屏幕底部时别被手势条压住 */
-.ol-sheet {
+.ot-sheet {
   padding-bottom: env(safe-area-inset-bottom, 0px);
   will-change: transform;
+}
+
+/* ── 骨架屏 ── */
+.skl {
+  border-radius: 4px;
+  background: rgb(var(--divider-rgb) / 0.8);
 }
 </style>

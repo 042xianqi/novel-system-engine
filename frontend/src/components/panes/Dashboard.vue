@@ -29,7 +29,7 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 //   ① 首屏渲染不再被 520KB 解析阻塞（并行拉取，先出骨架与指标卡）
 //   ② 其它页面（任务/卡片/大纲/星图）从此完全不背这个包
 // 用 Promise 缓存保证并发调用只加载一次。
-import { pushLog } from '../../store.js'
+import { pushLog, systemData } from '../../store.js'
 // 顶层路由 / 子页跳转（指标卡点击导航用；nav.js 零业务依赖）
 import { goTab, goPane } from '../../nav.js'
 
@@ -532,6 +532,20 @@ onMounted(async () => {
     const ec = await ensureEcharts()
     if (barEl.value) barChart = ec.init(barEl.value)
     if (pieEl.value) pieChart = ec.init(pieEl.value)
+    // 【点击环形图区域 → 跳转资料库该分类】
+    // 复用 CardBrowser 的筛选入参：systemData.cards.filterCategory
+    // （CardBrowser:346 有 watch 监听它，设值后卡片列表自动筛选）
+    // 注意用中文名：环形图 data.name 已过 kindZh()，而 CardBrowser 的分类
+    // Chip 用的也是中文分类名，两边口径一致才能命中。
+    if (pieChart) {
+      pieChart.on('click', (params) => {
+        const cat = String(params?.name || '').trim()
+        if (!cat) return
+        systemData.cards.filterCategory = cat
+        goTab('system')
+        goPane('cards')
+      })
+    }
     renderCharts()
   } catch (e) {
     pushLog(`图表库加载失败（指标卡与列表不受影响）：${e && e.message ? e.message : e}`, 'warn')

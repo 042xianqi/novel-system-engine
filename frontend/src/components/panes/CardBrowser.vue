@@ -13,7 +13,7 @@
 //
 // ── 本轮：改为「网格化小方块」（方案 C 的紧凑变体，裁定见 docs/UI-设计方案提案.md §三/§四）──
 // ① 废掉「一行一个大卡片」：主列表改成相册式网格
-//    `grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 gap-2.5`
+//    `grid grid-cols-2 grid-cols-2 md:grid-cols-4 gap-2.5`
 //    —— 手机至少 2 列，方块高度统一（aspect-[4/3] + min-h-[110px]）。
 // ② 方块内容只留三样：大标题（.cy-card-title，15.5px，两行截断）
 //    + 分类小徽章（.cy-badge）+ 字数（贴底）。
@@ -452,7 +452,7 @@ onBeforeUnmount(() => {
 
     <!-- ── 资料库网格：相册式小方块（手机 ≥2 列 / 中屏 3 列）── -->
     <div class="flex-1 min-h-0 overflow-y-auto px-3 pt-3 pb-24">
-      <div class="card-grid grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
+      <div class="card-grid grid grid-cols-2 grid-cols-2 md:grid-cols-4 gap-2.5">
         <div
           v-for="c in page.slice"
           :key="c.key"
@@ -586,7 +586,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-/* ── 网格：手机 ≥2 列（grid grid-cols-2） / ≥768px 3 列（md:grid-cols-3） ──
+/* ── 网格：手机 ≥2 列（grid grid-cols-2） / ≥768px 3 列（md:grid-cols-4） ──
    方块间距 10px（= Tailwind gap-2.5）。这里同时保留一份 scoped 兜底规则，
    与工具类声明完全一致的断点，即使 Tailwind 构建异常也不会退回「一行一个大卡」。 */
 .card-grid {

@@ -59,18 +59,18 @@ html[data-skin="qinglan"] {
 
 /* ---------- 夜墨 · 深色 · 常驻后台 ---------- */
 html[data-skin="mohei"] {
-  --primary: #6ea0ff;
-  --primary-rgb: 110 160 255;
-  --primary-hover: #85b1ff;
-  --primary-hover-rgb: 133 177 255;
-  --primary-soft: rgba(110,160,255,.16);
-  --primary-soft-rgb: 110 160 255;
-  --primary-soft-hover: rgba(110,160,255,.26);
-  --primary-soft-hover-rgb: 110 160 255;
-  --on-primary: #10131c;
-  --on-primary-rgb: 16 19 28;
-  --bg: #16181f;
-  --bg-rgb: 22 24 31;
+  --primary: #BAC3FF;
+  --primary-rgb: 186 195 255;
+  --primary-hover: #CBD2FF;
+  --primary-hover-rgb: 203 210 255;
+  --primary-soft: rgba(186,195,255,.14);
+  --primary-soft-rgb: 186 195 255;
+  --primary-soft-hover: rgba(186,195,255,.22);
+  --primary-soft-hover-rgb: 186 195 255;
+  --on-primary: #0C2792;
+  --on-primary-rgb: 12 39 146;
+  --bg: #0F1014;
+  --bg-rgb: 15 16 20;
   --card: #21242d;
   --card-rgb: 33 36 45;
   --card-2: #2a2e39;

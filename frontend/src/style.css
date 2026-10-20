@@ -1038,3 +1038,104 @@ body,
   max-width: 100%;
   overflow-x: hidden;
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   方案 C 骨架层（太墟对齐 · 极简暗黑）  2026-10-20
+   总指挥裁定：主色用太墟 M3ExpDarkPrimary #BAC3FF；骨架极简暗黑；
+   无阴影、1px 极细边框、层级靠排版与留白；图标走线性（极客风）。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ① 无阴影：卡片一律"纸片"，靠 1px 边框分层 */
+.card-cyber,
+.glass,
+.glass-strong {
+  box-shadow: none !important;
+}
+.card-cyber:hover {
+  box-shadow: none !important;
+  border-color: rgb(var(--primary-rgb) / 0.34) !important;
+}
+
+/* ② 排版分层（不靠色块，靠字号/字重/灰度） */
+.t-display { font-size: 28px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.1; }
+.t-title   { font-size: 20px; font-weight: 650; letter-spacing: -0.01em; line-height: 1.3; }
+.t-body    { font-size: 14px; font-weight: 400; line-height: 1.7; }
+.t-meta    { font-size: 11px; font-weight: 400; color: rgb(var(--fg-dim-rgb) / 1); }
+
+/* ③ 主色只做"极克制的品牌感"：数值下的 2px 短线，代替色块 */
+.accent-rule {
+  display: block;
+  width: 18px;
+  height: 2px;
+  border-radius: 2px;
+  background: rgb(var(--primary-rgb) / 1);
+}
+
+/* ④ 卡片（方案 C 卡片规范）：
+   大标题 20 → 摘要 14 两行截断 → 徽章行 11px 主色 */
+.cy-card {
+  border: 1px solid rgb(var(--line-rgb, 38 39 46) / 1);
+  border-radius: 10px;
+  background: rgb(var(--bg-elev-rgb, 23 24 29) / 1);
+  padding: 16px;
+  transition: border-color 180ms ease, transform 180ms ease;
+}
+.cy-card:active { transform: scale(0.985); }
+.cy-card-title {
+  font-size: 20px; font-weight: 650; letter-spacing: -0.01em;
+  color: rgb(var(--fg-rgb, 233 233 238) / 1);
+  display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.cy-card-summary {
+  margin-top: 6px; font-size: 14px; line-height: 1.6;
+  color: rgb(var(--fg-dim-rgb, 154 154 165) / 1);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.cy-badges { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px; }
+.cy-badge {
+  font-size: 11px; line-height: 1;
+  padding: 5px 8px; border-radius: 6px;
+  color: rgb(var(--primary-rgb) / 1);
+  background: rgb(var(--primary-rgb) / 0.12);
+  border: 1px solid rgb(var(--primary-rgb) / 0.18);
+}
+/* 内部编号：一律缩小变灰，默认几乎不可见，hover / 长按才提亮 */
+.cy-key {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: rgb(var(--fg-dim-rgb, 154 154 165) / 0.55);
+  opacity: 0.7;
+  transition: opacity 160ms ease;
+}
+.cy-card:hover .cy-key,
+.cy-card:active .cy-key { opacity: 1; color: rgb(var(--primary-rgb) / 0.85); }
+
+/* ⑤ 全屏抽屉（详情 / 大纲共用）：右侧滑出 85vw，桌面封顶 640px */
+.cy-drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 60;
+  width: min(85vw, 640px);
+  display: flex; flex-direction: column;
+  border-left: 1px solid rgb(var(--line-rgb, 38 39 46) / 1);
+  background: rgb(var(--bg-rgb) / 0.96);
+  backdrop-filter: blur(20px) saturate(1.6);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.cy-drawer-md { padding: 20px; font-size: 15px; line-height: 1.85; overflow-y: auto; }
+.cy-drawer-md h1 { font-size: 22px; font-weight: 650; margin: 18px 0 10px; }
+.cy-drawer-md h2 { font-size: 18px; font-weight: 620; margin: 16px 0 8px; }
+.cy-drawer-md h3 { font-size: 15px; font-weight: 600; margin: 14px 0 6px; }
+.cy-drawer-enter-active, .cy-drawer-leave-active {
+  transition: transform 300ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.cy-drawer-enter-from, .cy-drawer-leave-to { transform: translateX(100%); }
+.cy-mask-enter-active, .cy-mask-leave-active { transition: opacity 200ms ease; }
+.cy-mask-enter-from, .cy-mask-leave-to { opacity: 0; }
+
+/* ⑥ 跟随系统：默认深色；系统为浅色时也不刺白（保持暗色骨架，仅提亮一档）
+   裁定原文：「跟随系统，但默认深色」——故浅色下做"提亮版暗色"，
+   而不是切换成白底，避免与太墟暗色主色 #BAC3FF 冲突。 */
+@media (prefers-color-scheme: light) {
+  html[data-skin="mohei"] { --bg: #14151A; --bg-rgb: 20 21 26; }
+}

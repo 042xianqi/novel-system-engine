@@ -11,22 +11,17 @@
 // 取数与分页：全部复用 useSystem.js 的 loadCards / pagedCards / filteredCards /
 // cardCategoryCounts / loadCardDetail / closeCardDetail，本组件不新开任何请求。
 //
-// ── 本轮新增：搜索框 + 分类 Chip 筛选 ─────────────────────────────
-// ① 搜索：子串模糊命中「编号 / 标题 / 分类 / 标签 + 已缓存正文」，输入防抖 200ms
-//    才写回 s.filterKey（否则每敲一个字符都要对 700 张卡重跑过滤 + 分页）。
-//    ⚠ 正文命中只对「详情已被拉取过（s.detail[key].content 有缓存）」的卡生效：
-//      列表接口不返回正文，为搜正文而对 700 张卡逐个回源 = 700 次请求，不可接受。
-//      所以这里不做“全量正文索引”，只吃已有缓存 —— 有意取舍，写在这里而不是偷偷加请求。
-// ② 分类 Chip：**单选**。理由：store 的 s.filterCategory 是单值字符串，
-//    useSystem.filteredCards() 与 cardCategoryCounts() 都按单值实现；
-//    改多选必须动 composable（超出本次写入范围），且会让「每个分类 N 张」的计数语义变模糊。
-//    带「全部 N」入口，一键回到不筛选。
-// ③ 卡片结构：大号粗体标题 → 一行小号彩色 Badge（编号/分类/字数）+ 底部微弱阴影。
-//    Badge 颜色按分类名 hash → 固定色相偏移（hue-rotate 作用在语义 token --primary 上），
-//    不用随机数、不写死颜色，刷新/换皮肤都稳定。
-// ④ 网格：手机 1 列 / 中屏(≥640px) 2 列 / 宽屏(≥1024px) 3 列。
-// ⑤ 动效只动 transform / opacity：无 transition-all；Chip 选中是瞬时换色（不对颜色做过渡），
-//    只保留按压 transform。
+// ── 本轮：卡片规范对齐「方案 C」（裁定见 docs/UI-设计方案提案.md §三/§四）──
+// ① 卡片外层 .cy-card（1px 细边框、无阴影，阴影已全局禁用）；
+//    标题 .cy-card-title（20px/650，一行截断），编号前缀一律剥掉。
+// ② 摘要 .cy-card-summary（14px，两行截断）。
+// ③ 徽章行 .cy-badges + .cy-badge（11px 主色）：依次 所属文明 / 分类 / 字数。
+// ④ 内部编号（ARTS-99-902 这类）用 .cy-key：缩小变灰、默认几乎不可见，
+//    hover / 长按才提亮；标题里若拼接了编号前缀，必须剥掉（见 titleOf）。
+// ⑤ 文明 / 摘要字段多源容错（Operit 正在后端补 civ 与 summary）：
+//    pickCiv / pickSummary 依次尝试多个字段名，取不到就给空串，
+//    此时对应徽章 / 摘要不渲染（v-if 控制，不留空白占位）。
+// ⑥ 保留：搜索框、分类 Chip、分页、编辑 / 删除、以及 <CardDetailDrawer> 引用（未改动）。
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { systemData, pushLog, toast } from '../../store.js'
 import {
@@ -39,6 +34,7 @@ import {
   removeCard,
 } from '../../composables/useSystem.js'
 import CardEditor from './CardEditor.vue'
+import CardDetailDrawer from './CardDetailDrawer.vue'
 
 const s = systemData.cards
 const busy = ref(false)
@@ -56,6 +52,15 @@ const detailOpen = computed(() => !!s.openKey)
 const detail = computed(() => (s.openKey ? s.detail[s.openKey] || {} : {}))
 
 /**
+ * 当前抽屉打开的那张卡在**列表**里的元数据（title/category/tags）。
+ * ⚠ 已核对：详情接口 GET /api/layers/L4/item/{key} 只回 {content, chars}，
+ *   **没有 category/title**。旧代码在抽屉里写 `v-if="detail.category"`，
+ *   永远为 undefined → 抽屉的分类徽章其实从来没显示过（本轮顺手修正：
+ *   改为从列表项 openItem 取真实 category）。
+ */
+const openItem = computed(() => s.items.find((c) => c.key === s.openKey) || {})
+
+/**
  * 新建/保存后要「定位到」的那张卡的 key。
  * L4 已有 700+ 张，按 key 排序后新卡可能落在第 18 页——
  * 只把页码拉回第一页等于让用户自己翻 18 页去找，体验不成立。
@@ -71,6 +76,7 @@ const kw = computed(() => s.filterKey.trim().toLowerCase())
 /**
  * 命中判定：编号 / 标题 / 分类 / 标签 子串模糊匹配，
  * 再叠加「已缓存正文」命中（见文件头 ① 的取舍说明）。
+ * ⚠ 编号虽然默认不显眼，但**仍可被搜索**（key 一直在 hay 里），功能不回退。
  */
 function hit(c, k) {
   const hay = `${c.key || ''} ${c.title || ''} ${c.category || ''} ${(c.tags || []).join(' ')}`
@@ -112,36 +118,52 @@ const activeFilter = computed(() => !!(kw.value || s.filterCategory))
 const CHIP_ON = 'bg-primary/12 text-primary border-primary/30'
 const CHIP_OFF = 'text-content-sec bg-surface-card-2 border-line'
 
-// ── Badge 配色：分类 → 稳定色相偏移 ─────────────────────────────
-// 基准是语义 token `--primary`（随皮肤变），再按分类 hash 做固定角度 hue-rotate。
-// 同一分类 → 同一角度 → 同色；刷新不变；换皮肤仍是该皮肤的主色系，不会突兀。
-// 注意：不使用随机数、不使用写死颜色。
-const CAT_HUE_STEPS = [0, 28, 56, 96, 150, 196, 232, 288] // 8 档色相偏移
-
-/** FNV-1a 字符串 hash（稳定、无随机） */
-function hashStr(str) {
-  let h = 2166136261
-  const s0 = String(str == null ? '' : str)
-  for (let i = 0; i < s0.length; i++) {
-    h ^= s0.charCodeAt(i)
-    h = Math.imul(h, 16777619)
-  }
-  return h >>> 0
-}
-/** 分类 → 固定色相偏移（deg），用于内联 filter */
-function catHue(category) {
-  const k = category || '未分类'
-  return CAT_HUE_STEPS[hashStr(k) % CAT_HUE_STEPS.length]
-}
-function catStyle(category) {
-  return { filter: `hue-rotate(${catHue(category)}deg)` }
-}
-
-/** 卡片大标题：去掉编号前缀，空则占位 */
+// ── 人类语言字段（多源容错）─────────────────────────────────────
+/**
+ * 卡片大标题：去掉编号前缀（"ARTS-99-902｜太玄真经" → "太玄真经"），空则占位。
+ * 编号前缀的多种写法都吃掉：全角/半角竖线、冒号、空格。
+ */
 function titleOf(c) {
-  const t = String(c.title || '').replace(/^[A-Z]+-\d+-\d+[｜|]\s*/, '').trim()
+  const t = String((c && c.title) || '')
+    .replace(/^[A-Z][A-Z0-9]*-\d+-\d+\s*[｜|:：-]?\s*/, '')
+    .trim()
   return t || '（无标题）'
 }
+
+/**
+ * 所属文明 —— 多源容错：依次尝试 item.civ → item.civilization → item.nation → item.civ_name。
+ * ⚠ 只接受**字符串**取值：绝不读 `item.civ.title` 这类深层路径，
+ *   避免后端某字段是对象时 `.title` 为 undefined 而报错；
+ *   对象 / 数字 / null 一律按「取不到」处理 → 返回空串。
+ * TODO(后端): civ/summary 字段上线后自动渲染
+ */
+function pickCiv(item) {
+  if (!item) return ''
+  const v = item.civ ?? item.civilization ?? item.nation ?? item.civ_name
+  return typeof v === 'string' ? v.trim() : ''
+}
+
+/**
+ * 摘要 / 一句话定位 —— 多源容错：依次尝试
+ *   item.summary → item.one_liner → item.descr → item.note。
+ * 同样只接受字符串，取不到返回空串（UI 不渲染这一行，不占位、不误导）。
+ * 注：列表接口当前不返回正文，为拿摘要而对 700+ 张卡逐个回源不可接受，故不再做正文兜底。
+ * TODO(后端): civ/summary 字段上线后自动渲染
+ */
+function pickSummary(item) {
+  if (!item) return ''
+  const v = item.summary ?? item.one_liner ?? item.descr ?? item.note
+  return typeof v === 'string' ? v.trim() : ''
+}
+
+/** 抽屉标题：优先用列表里的标题去前缀，再退回 key */
+const openTitle = computed(() => {
+  const it = openItem.value
+  return it && it.title ? titleOf(it) : s.openKey || '卡片'
+})
+/** 抽屉摘要（同样多源容错，取不到则空） */
+const openSummary = computed(() => pickSummary(openItem.value))
+
 function dot(st) {
   if (st === 'suspect') return 'bg-warning'
   if (st === 'bad') return 'bg-danger'
@@ -186,6 +208,7 @@ function closeDetail() {
 // ── 操作按钮的显隐：桌面 hover / 移动长按 ────────────────────────
 // revealedKey：移动端长按后要露出操作按钮的那张卡。
 // CSS 里 `@media (hover:hover)` 负责桌面 hover 显隐；这里只处理长按。
+// 编号（.cy-key）也用同一套显隐：默认很淡，hover / 长按 / 聚焦时提亮。
 const revealedKey = ref('')
 let pressTimer = null
 let suppressClick = false
@@ -426,14 +449,14 @@ onBeforeUnmount(() => {
           v-for="c in page.slice"
           :key="c.key"
           :data-card-key="c.key"
-          class="glass card-cyber card-item shadow-1 relative flex flex-col gap-2 p-3
-                 cursor-pointer select-none outline-none border border-line/60"
+          class="cy-card card-item relative flex flex-col cursor-pointer select-none outline-none"
           :class="{
             'reveal': revealedKey === c.key,
             'ring-2 ring-primary/60': highlightKey === c.key,
           }"
           tabindex="0"
           role="button"
+          :aria-label="`卡片 ${titleOf(c)}（编号 ${c.key}）`"
           @click="onCardClick(c)"
           @keydown.enter.prevent="viewCard(c)"
           @pointerdown="onCardPointerDown(c)"
@@ -442,42 +465,37 @@ onBeforeUnmount(() => {
           @pointercancel="onCardPointerUp"
           @contextmenu.prevent="revealedKey = c.key"
         >
-          <!-- 大号粗体标题 + 状态点 -->
-          <div class="flex items-start gap-1.5">
-            <h3 class="card-title flex-1 min-w-0 text-content font-bold line-clamp-2">
-              {{ titleOf(c) }}
-            </h3>
+          <!-- ① 大标题（.cy-card-title：20px/650，一行截断）+ 状态点 -->
+          <div class="flex items-start gap-2">
+            <h3 class="cy-card-title flex-1 min-w-0">{{ titleOf(c) }}</h3>
             <span
               v-if="dot(c.note_status)"
-              class="mt-1 shrink-0 w-1.5 h-1.5 rounded-full"
+              class="mt-1.5 shrink-0 w-1.5 h-1.5 rounded-full"
               :class="dot(c.note_status)"
               title="笔记状态"
             />
             <span
               v-if="c.dirty"
-              class="mt-1 shrink-0 w-1.5 h-1.5 rounded-full bg-warning"
+              class="mt-1.5 shrink-0 w-1.5 h-1.5 rounded-full bg-warning"
               title="待同步"
             />
           </div>
 
-          <!-- Badge 行：编号 / 分类 / 字数（编号与分类同色：同分类同色，hash 稳定） -->
-          <div class="flex items-center gap-1.5 flex-wrap">
-            <span
-              class="badge text-primary bg-primary/12 border-primary/30 font-mono"
-              :style="catStyle(c.category)"
-            >{{ c.key }}</span>
-            <span
-              class="badge text-primary bg-primary/12 border-primary/30"
-              :style="catStyle(c.category)"
-            >{{ c.category || '未分类' }}</span>
-            <span class="badge text-content-sec bg-surface-card-2 border-line font-mono">
-              {{ c.chars || 0 }}字
-            </span>
-            <span
-              v-for="t in (c.tags || []).slice(0, 1)"
-              :key="t"
-              class="badge text-content-sec bg-surface-card-2 border-line"
-            >{{ t }}</span>
+          <!-- ② 摘要（.cy-card-summary：14px，两行截断）
+               后端 civ/summary 字段上线后自动渲染；取不到则不渲染（v-if，不占位） -->
+          <p v-if="pickSummary(c)" class="cy-card-summary">{{ pickSummary(c) }}</p>
+
+          <!-- ③ 徽章行（.cy-badges + .cy-badge，11px 主色）：依次 所属文明 / 分类 / 字数
+               文明为新补字段（多源容错），取不到该徽章不渲染；分类同理；字数始终有值 -->
+          <div class="cy-badges">
+            <span v-if="pickCiv(c)" class="cy-badge">{{ pickCiv(c) }}</span>
+            <span v-if="c.category" class="cy-badge">{{ c.category }}</span>
+            <span class="cy-badge">{{ c.chars || 0 }} 字</span>
+          </div>
+
+          <!-- ④ 内部编号：.cy-key（缩小变灰、默认几乎不可见，hover / 长按才提亮，见全局样式） -->
+          <div class="mt-auto pt-3 flex items-center">
+            <span class="cy-key truncate">{{ c.key }}</span>
           </div>
 
           <!-- 操作按钮：仅 hover（桌面）/ 长按（移动端）出现 -->
@@ -544,86 +562,10 @@ onBeforeUnmount(() => {
       @click="openCreate"
     >+</button>
 
-    <!-- ══════ 详情抽屉 ══════ -->
-    <Transition name="drawer">
-      <div
-        v-if="detailOpen"
-        class="absolute inset-x-0 bottom-0 z-30 max-h-[80%] flex flex-col
-               glass-strong rounded-t-xl border-t border-line"
-      >
-        <div class="shrink-0 flex items-center gap-2 px-3 py-2.5 border-b border-line-divider">
-          <span class="font-mono text-[11px] text-primary truncate">{{ s.openKey }}</span>
-          <span v-if="detail.chars" class="text-[10px] text-content-sec font-mono">
-            {{ detail.chars }} 字
-          </span>
-          <span
-            v-if="detail.category"
-            class="badge text-primary bg-primary/12 border-primary/30"
-            :style="catStyle(detail.category)"
-          >{{ detail.category }}</span>
-          <button
-            class="ml-auto shrink-0 text-[11px] px-2 py-1 rounded-sm
-                   bg-primary/12 text-primary border border-primary/25 active:scale-95"
-            @click="openEdit"
-          >编辑</button>
-          <button
-            class="shrink-0 text-[11px] px-2 py-1 rounded-sm
-                   bg-danger-soft text-danger border border-danger/25 active:scale-95"
-            @click="confirmDel = true"
-          >删除</button>
-          <button
-            class="shrink-0 text-[12px] text-content-sec px-1.5 active:scale-95"
-            @click="closeDetail"
-          >✕</button>
-        </div>
-
-        <div class="flex-1 min-h-0 overflow-y-auto px-3 py-2.5">
-          <div v-if="detail.loading" class="text-[11.5px] text-content-sec">读取中…</div>
-          <div v-else-if="detail.err" class="text-[11.5px] text-danger break-all">
-            {{ detail.err }}
-          </div>
-          <pre
-            v-else
-            class="text-[11px] text-content-sec leading-relaxed whitespace-pre-wrap
-                   break-words font-mono"
-          >{{ detail.content }}</pre>
-        </div>
-
-        <!-- 删除二次确认（覆盖在抽屉内，不弹浏览器 confirm） -->
-        <div
-          v-if="confirmDel"
-          class="absolute inset-0 z-40 flex items-center justify-center bg-black/55 px-6"
-        >
-          <div class="glass-strong rounded-lg px-4 py-3 w-full max-w-xs space-y-3">
-            <div class="text-[12.5px] text-content">确认删除这张卡？</div>
-            <div class="text-[11px] text-content-sec leading-relaxed">
-              <span class="font-mono text-primary">{{ s.openKey }}</span>
-              的文件与索引都会移除。后端写前有快照，但删完不会自动恢复。
-            </div>
-            <div class="flex gap-2">
-              <button
-                class="flex-1 rounded-sm py-2 text-[12px] glass text-content-sec active:scale-95"
-                @click="confirmDel = false"
-              >取消</button>
-              <button
-                class="flex-1 rounded-sm py-2 text-[12px] bg-danger-soft text-danger
-                       border border-danger/40 active:scale-95"
-                @click="doDelete"
-              >确认删除</button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </Transition>
-
-    <!-- 抽屉遮罩 -->
-    <Transition name="fade">
-      <div
-        v-if="detailOpen"
-        class="absolute inset-0 z-20 bg-black/40"
-        @click="closeDetail"
-      />
-    </Transition>
+    <!-- ══════ 详情抽屉（2026-10-20：由内联底部抽屉改为主子任务交付的
+         右侧大抽屉组件 CardDetailDrawer；自带遮罩/Esc/点击关闭，故不再套
+         外层 Transition 或 v-if） ══════ -->
+    <CardDetailDrawer @saved="onSaved" />
 
     <!-- ══════ 编辑器（全屏浮层）══════ -->
     <Transition name="pane-left">
@@ -640,10 +582,11 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-/* ── 网格：手机 1 列 / 中屏(≥640px) 2 列 / 宽屏(≥1024px) 3 列 ── */
+/* ── 网格：手机 1 列 / 中屏(≥640px) 2 列 / 宽屏(≥1024px) 3 列 ──
+   卡片间距 12px（= Tailwind gap-3）*/
 .card-grid {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   grid-template-columns: 1fr;
 }
 @media (min-width: 640px) {
@@ -657,34 +600,19 @@ onBeforeUnmount(() => {
   }
 }
 
-/* ── 卡片本体 ──
-   「底部微弱阴影」用 Tailwind 的 shadow-1（→ var(--shadow) token），换皮肤自动跟随，
-   不写死任何颜色；hover 抬升由 .card-cyber 提供（transform + 主色辉光）。 */
+/* ── 卡片容器：视觉（边框 / 背景 / 内距 / 圆角）全部交给全局 .cy-card，
+   这里只补布局（弹性列 + 最小高度），以及 hover / 长按时的「操作按钮」显隐钩子。 */
 .card-item {
-  min-height: 96px;
+  min-height: 128px;
 }
 
-/* 大号粗体标题 */
-.card-title {
-  font-size: 17px;
-  font-weight: 700;
-  line-height: 1.35;
-  word-break: break-word;
-}
-
-/* ── Badge：一行小号彩色标签 ── */
-.badge {
-  display: inline-flex;
-  align-items: center;
-  max-width: 100%;
-  padding: 3px 6px;
-  border-radius: 6px;
-  border: 1px solid transparent;
-  font-size: 10px;
-  line-height: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+/* 内部编号提亮：全局 .cy-key 已覆盖 hover / :active；
+   键盘聚焦（focus-within）与移动端长按（.reveal）在这里补齐，
+   与「默认几乎不可见、hover / 长按才提亮」一致。 */
+.card-item:focus-within .cy-key { opacity: 1; }
+.card-item.reveal .cy-key {
+  opacity: 1;
+  color: rgb(var(--primary-rgb) / 0.85);
 }
 
 /* ── Chip：只做按压 transform；选中态靠瞬时换色（不对颜色做过渡）── */
@@ -736,7 +664,8 @@ onBeforeUnmount(() => {
 @media (prefers-reduced-motion: reduce) {
   .card-actions,
   .act,
-  .chip {
+  .chip,
+  .cy-key {
     transition: none;
   }
 }

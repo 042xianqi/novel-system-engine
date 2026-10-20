@@ -8,26 +8,31 @@
 //        items[j]  = { layer, key, title, chars, source, dirty }
 //        （/api/layers/{L}/items?limit=200 + /api/pipeline/funnel，见 useSystem.js）
 //   · loadOutlineItem(L,key) → { content, chars }
-//        （/api/layers/{L}/item/{key}，点开看正文时按需拉）
+//        （/api/layers/{L}/item/{key}，点开详情时按需拉）
 //   展开态沿用 store 的 s.expanded（切页不丢），未新增任何字段。
 //
-// 本轮（outline2）相对上一版的**小步完善**（不动数据链路）：
-//   ① 引导线定位修正：竖线画在「每一级祖先三角」的列中心（GUIDE_OFFSET），
-//      层级越深越对齐；条数不变（每行 = 祖先数，仍随折叠态变化，全展开时 54 条）。
-//   ② 无障碍补全：role=tree / treeitem + aria-level / aria-expanded /
-//      aria-setsize / aria-posinset；roving tabindex（同一时刻只有 1 个可 Tab 行）。
-//   ③ 键盘导航：Enter/空格 展收（等价点击）、↑↓ 上下移动、→ 展开或进首个子孙、
-//      ← 折叠或回到父级、Home/End 首尾。焦点用元素 Map 精确定位，不用 scrollIntoView 硬拉。
-//   ④ 修掉一处设计契约违规：漏斗进度条原来对「全部属性」做 transition 并动 width，
-//      改为 transform: scaleX()（DESIGN-v2 §3：只准动 transform / opacity）。
-//   ⑤ 颜色改用 DESIGN-v2 §1 语义 token（surface / content / line / primary /
-//      success / warning / danger），与 tailwind.config.js 的语义色一一对应。
-//   ⑥ 折叠分支不进 DOM：可见行由 rows 拍平数组产出（折叠的子树根本不进数组），
-//      条目正文/悬浮卡片一律 v-if —— 600+ 条 L4 折叠时不产生任何节点。
+// 本轮（outline3）相对上一版的改动：
+//   ① 【主改】节点详情改为方案 C 的 **全屏大抽屉**：容器直接用骨架类
+//        .cy-drawer（min(85vw, 640px)，translateX(100%) → 0 / 300ms，
+//        玻璃底 + 1px 左边框已内建），不再自定义宽度与材质。
+//        遮罩 / Esc / 右上角 ✕ 三重关闭；打开时锁 body 背景滚动。
+//   ② 【主改】抽屉正文改用骨架类 .cy-drawer-md（15px / line-height 1.85，
+//        标题 22 / 18 / 15px），Markdown 仍复用 MarkdownBlock.vue
+//        （保留其 marked + 白名单净化的安全链路），字号比上一版更大。
+//        MarkdownBlock 内部用 em 相对字号，故以 .ot-md 的 :deep 覆写钉成 px。
+//   ③ 层节点也能开详情：抽屉里列出该层条目（复用已加载数据，不发新请求），
+//        点条目 → 抽屉内切换到条目正文，带「返回」按钮（栈式导航）。
+//   ④ 详情入口按钮改为「常显」（原实现 hover 才现身，触屏根本点不到），
+//        opacity .5 → hover 1，图标 ⤢ + aria-label。
+//   ⑤ 【修复】条目正文改为在抽屉里看；行内展开（三角）仍保留，点行仍为展收，
+//        因此 DESIGN-v2 §5⑤「点击展收 / 全部展开折叠」完全保持。
+//   ⑥ 保留：折叠树、缩进、垂直引导线、roving tabindex、键盘导航（↑↓←→ Home/End）、
+//        全部展开/折叠、in-row 懒加载正文、漏斗进度条（transform: scaleX）。
 // ══════════════════════════════════════════════════════════
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { systemData, pushLog } from '../../store.js'
 import { loadOutline, loadOutlineItem } from '../../composables/useSystem.js'
+import MarkdownBlock from '../MarkdownBlock.vue'
 
 const s = systemData.outline
 const busy = ref(false)
@@ -281,7 +286,7 @@ function moveFocus(delta) {
 }
 
 // ══════════════════════════════════════════════════════
-// 条目正文：懒加载 + 缓存（行内展开 & 半屏卡片共用同一份数据）
+// 条目正文：懒加载 + 缓存（行内展开 & 右侧抽屉共用同一份数据）
 //   detail[id] = { loading, err, content, chars }
 // ══════════════════════════════════════════════════════
 const detail = reactive({})
@@ -370,18 +375,102 @@ function onRowKey(e, row) {
   }
 }
 
-// ── 半屏悬浮卡片（保留旧版交互：大段正文用卡片看更舒服）──
-const sheetRow = ref(null)
-async function openSheet(row) {
-  sheetRow.value = row
-  await ensureDetail(row.layer, row)
+// ══════════════════════════════════════════════════════
+// 右侧大抽屉 Drawer（原「底部小卡片」的替代）
+//   · 宽度 min(85vw, 560px)；.glass-strong；translateX(100%) → 0
+//   · 遮罩 + Esc + 右上角关闭按钮 + 点遮罩关闭
+//   · 栈式导航：层详情 ⇄ 条目详情（带「返回」）
+// ══════════════════════════════════════════════════════
+const panel = ref(null) // 当前抽屉节点（layer | item）
+const panelStack = ref([]) // 返回栈（打开条目时压入来源层）
+const isDrawerOpen = computed(() => !!panel.value)
+const closeBtn = ref(null)
+let lastFocusedEl = null
+
+function openDetail(row) {
+  if (!row) return
+  lastFocusedEl = typeof document !== 'undefined' ? document.activeElement : null
+  panel.value = row
+  panelStack.value = []
+  if (row.kind === 'item') ensureDetail(row.layer, row)
+  nextTick(() => {
+    const el = closeBtn.value
+    if (el && typeof el.focus === 'function') el.focus()
+  })
 }
-function closeSheet() {
-  sheetRow.value = null
+
+/** 从「层详情」里点条目 → 压栈切到条目详情 */
+function openItemFromLayer(item) {
+  if (!item) return
+  panelStack.value = [...panelStack.value, panel.value]
+  panel.value = item
+  ensureDetail(item.layer, item)
 }
-const sheetData = computed(() =>
-  sheetRow.value ? detailOf(sheetRow.value.id) : null
+
+function backPanel() {
+  const st = panelStack.value
+  if (!st.length) return
+  panel.value = st[st.length - 1]
+  panelStack.value = st.slice(0, -1)
+}
+
+function closeDrawer() {
+  panel.value = null
+  panelStack.value = []
+  nextTick(() => {
+    const el = lastFocusedEl
+    if (el && typeof el.focus === 'function') el.focus()
+  })
+}
+
+/** 抽屉条目正文（仅 item 面板有） */
+const panelDetail = computed(() =>
+  panel.value && panel.value.kind === 'item' ? detailOf(panel.value.id) : null
 )
+/** 抽屉标题右侧的字数 */
+const panelChars = computed(() => {
+  const p = panel.value
+  if (!p) return 0
+  if (p.kind === 'item') return panelDetail.value?.chars ?? p.chars ?? 0
+  return p.count ?? 0
+})
+
+function onDrawerKey(e) {
+  if (!panel.value) return
+  if (e.key === 'Escape') {
+    e.stopPropagation()
+    closeDrawer()
+  }
+}
+
+// ── 背景滚动锁：抽屉打开锁 body，关闭 / 卸载都恢复 ─────────────
+// 先记录进入前的取值再恢复（不覆盖别人写的 overflow）；scrollLocked
+// 保证幂等；onBeforeUnmount 兜底——否则抽屉开着切页会把滚动永久锁死。
+let prevBodyOverflow = ''
+let scrollLocked = false
+function setScrollLock(on) {
+  if (typeof document === 'undefined' || !document.body) return
+  if (on && !scrollLocked) {
+    prevBodyOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    scrollLocked = true
+  } else if (!on && scrollLocked) {
+    document.body.style.overflow = prevBodyOverflow || ''
+    scrollLocked = false
+  }
+}
+watch(isDrawerOpen, (v) => setScrollLock(v), { immediate: true })
+
+onMounted(() => {
+  if (typeof window !== 'undefined') window.addEventListener('keydown', onDrawerKey)
+  setScrollLock(isDrawerOpen.value)
+  loadOutline()
+})
+onBeforeUnmount(() => {
+  if (typeof window !== 'undefined') window.removeEventListener('keydown', onDrawerKey)
+  // 卸载兜底：恢复背景滚动（防止 overflow:hidden 永久残留）
+  setScrollLock(false)
+})
 
 // ── 漏斗进度条：宽度用 transform: scaleX()，不动 width（DESIGN-v2 §3）──
 const barRatio = computed(() => {
@@ -396,8 +485,6 @@ async function reload() {
   busy.value = false
   pushLog('大纲已刷新', 'info')
 }
-
-onMounted(() => loadOutline())
 </script>
 
 <template>
@@ -526,6 +613,14 @@ onMounted(() => loadOutline())
             <span class="ml-auto shrink-0 text-[10px] text-content-sec font-mono">
               {{ row.count }} 条
             </span>
+            <!-- 层详情：抽屉里列出该层全部条目 -->
+            <button
+              class="ot-open shrink-0"
+              type="button"
+              title="查看该层详情"
+              aria-label="查看该层详情"
+              @click.stop="openDetail(row)"
+            >⤢</button>
           </template>
 
           <!-- ── 条目节点 ── -->
@@ -541,13 +636,13 @@ onMounted(() => loadOutline())
             <span class="shrink-0 text-[10px] text-content-sec/70 font-mono">
               {{ row.meta }}
             </span>
-            <!-- 大段正文改到卡片看；stop 避免同时触发展收 -->
+            <!-- 条目详情：右侧大抽屉（常显，触屏也能点）-->
             <button
               class="ot-open shrink-0"
               type="button"
-              title="在卡片中打开"
-              aria-label="在卡片中打开"
-              @click.stop="openSheet(row)"
+              title="查看详情（右侧抽屉）"
+              aria-label="查看详情"
+              @click.stop="openDetail(row)"
             >⤢</button>
           </template>
 
@@ -574,6 +669,12 @@ onMounted(() => loadOutline())
             （空）
           </div>
           <pre v-else class="ot-content">{{ detailOf(row.id).content }}</pre>
+          <button
+            v-if="detailOf(row.id) && detailOf(row.id).content"
+            class="ot-inline-more"
+            type="button"
+            @click.stop="openDetail(row)"
+          >在大抽屉中阅读 →</button>
           <div
             v-if="row.source"
             class="mt-1 text-[10px] text-content-sec/45 font-mono truncate"
@@ -587,57 +688,135 @@ onMounted(() => loadOutline())
       >暂无大纲数据</div>
     </div>
 
-    <!-- ══════ 条目悬浮卡片（半屏抽屉，沿用旧版交互）══════ -->
+    <!-- ══════ 方案 C 全屏大抽屉（节点详情）══════ -->
     <Teleport to="body">
-      <Transition name="ot-card">
-        <div v-if="sheetRow" class="fixed inset-0 z-[56]">
+      <!-- 外层：遮罩淡入淡出（只动 opacity）；:duration 兜底，
+           保证 300ms 滑出动画跑完才卸载 DOM -->
+      <Transition name="cy-mask" :duration="{ enter: 200, leave: 320 }">
+        <div v-if="panel" class="fixed inset-0 z-[60]">
+          <!-- 关闭① 遮罩：点它关闭 -->
           <div
-            class="ot-mask absolute inset-0 bg-black/45 backdrop-blur-[2px]"
-            @click="closeSheet"
+            class="absolute inset-0 bg-black/45"
+            @click="closeDrawer"
           />
-          <div
-            class="ot-sheet absolute left-2 right-2 bottom-2 max-h-[74vh]
-                   glass-strong rounded-2xl overflow-hidden flex flex-col
-                   shadow-2 ring-1 ring-line/50"
+
+          <!-- 抽屉本体：.cy-drawer = min(85vw, 640px) + 右滑入 300ms + 玻璃底内建 -->
+          <Transition name="cy-drawer" appear>
+          <aside
+            class="ot-panel cy-drawer"
+            role="dialog"
+            aria-modal="true"
+            aria-label="大纲节点详情"
           >
-            <div
-              class="shrink-0 flex items-center gap-2 px-3.5 py-2.5
-                     border-b border-line/60"
+            <!-- ── 抽屉头部 ── -->
+            <header
+              class="shrink-0 flex items-center gap-2 px-4 py-3 border-b border-line/60"
             >
-              <span class="font-mono text-[11px] text-primary shrink-0">
-                {{ sheetRow.key }}
-              </span>
-              <span
-                class="flex-1 min-w-0 text-[12.5px] font-semibold text-content truncate"
-              >{{ sheetRow.label }}</span>
-              <span class="shrink-0 text-[10px] text-content-sec/70 font-mono">
-                {{ fmtK(sheetData?.chars || 0) }} 字
-              </span>
               <button
+                v-if="panelStack.length"
                 class="shrink-0 w-7 h-7 rounded-lg bg-surface-card-2 text-content-sec
                        flex items-center justify-center text-[15px] active:scale-95
                        transition-transform"
-                @click="closeSheet"
-                aria-label="关闭"
+                type="button"
+                aria-label="返回上一层"
+                @click="backPanel"
+              >‹</button>
+
+              <template v-if="panel.kind === 'item'">
+                <span class="shrink-0 font-mono text-[11px] text-primary">
+                  {{ panel.key }}
+                </span>
+                <span class="flex-1 min-w-0 text-[14px] font-semibold text-content truncate">
+                  {{ panel.label }}
+                </span>
+              </template>
+              <template v-else>
+                <span
+                  class="shrink-0 font-mono text-[12px] font-semibold"
+                  :class="accOf(panel.rank)"
+                >{{ panel.code }}</span>
+                <span class="flex-1 min-w-0 text-[14px] font-semibold text-content truncate">
+                  {{ panel.label }}
+                </span>
+              </template>
+
+              <span class="shrink-0 text-[10.5px] text-content-sec/70 font-mono">
+                {{ panel.kind === 'item' ? fmtK(panelChars) + ' 字' : panelChars + ' 条' }}
+              </span>
+
+              <!-- 右上角关闭按钮 -->
+              <button
+                ref="closeBtn"
+                class="shrink-0 w-7 h-7 rounded-lg bg-surface-card-2 text-content-sec
+                       flex items-center justify-center text-[15px] active:scale-95
+                       transition-transform"
+                type="button"
+                aria-label="关闭（Esc）"
+                title="关闭（Esc）"
+                @click="closeDrawer"
               >✕</button>
+            </header>
+
+            <!-- ── 抽屉内容 ── -->
+            <div class="cy-drawer-md flex-1 min-h-0">
+              <!-- 层面板：该层条目列表（复用已加载数据，不发新请求） -->
+              <template v-if="panel.kind === 'layer'">
+                <div class="flex items-center gap-2 mb-2.5">
+                  <span
+                    class="text-[10px] px-1.5 py-0.5 rounded-sm border"
+                    :class="panel.badge.c"
+                  >{{ panel.badge.t }}</span>
+                  <span v-if="panel.err" class="text-[10.5px] text-danger break-all">
+                    {{ panel.err }}
+                  </span>
+                </div>
+                <div v-if="!panel.children.length" class="text-[12px] text-content-sec/70">
+                  该层暂无条目
+                </div>
+                <button
+                  v-for="it in panel.children"
+                  :key="it.id"
+                  class="ot-lay-item"
+                  type="button"
+                  @click="openItemFromLayer(it)"
+                >
+                  <span class="shrink-0 font-mono text-[10.5px] text-content-sec/90">
+                    {{ it.key }}
+                  </span>
+                  <span class="flex-1 min-w-0 text-content truncate text-left">
+                    {{ it.label }}
+                  </span>
+                  <span class="shrink-0 text-[10px] text-content-sec/70 font-mono">
+                    {{ it.meta }}
+                  </span>
+                  <span class="shrink-0 text-content-sec/50 text-[13px]">›</span>
+                </button>
+              </template>
+
+              <!-- 条目面板：Markdown 放大排版 -->
+              <template v-else>
+                <div v-if="!panelDetail || panelDetail.loading" class="text-[12.5px] text-content-sec">
+                  读取中…
+                </div>
+                <div v-else-if="panelDetail.err" class="text-[12.5px] text-danger break-all">
+                  {{ panelDetail.err }}
+                </div>
+                <div v-else-if="!panelDetail.content" class="text-[12.5px] text-content-sec/70">
+                  （空）
+                </div>
+                <div v-else class="ot-md">
+                  <MarkdownBlock :source="panelDetail.content" />
+                </div>
+
+                <div
+                  v-if="panel.source"
+                  class="mt-4 pt-2.5 border-t border-line-divider text-[10.5px]
+                         text-content-sec/45 font-mono break-all"
+                >{{ panel.source }}</div>
+              </template>
             </div>
-            <div class="flex-1 min-h-0 overflow-y-auto px-3.5 py-3">
-              <div v-if="!sheetData || sheetData.loading" class="text-[11.5px] text-content-sec">
-                读取中…
-              </div>
-              <div v-else-if="sheetData.err" class="text-[11.5px] text-danger break-all">
-                {{ sheetData.err }}
-              </div>
-              <div v-else-if="!sheetData.content" class="text-[11.5px] text-content-sec/70">
-                （空）
-              </div>
-              <pre v-else class="ot-content">{{ sheetData.content }}</pre>
-              <div
-                v-if="sheetRow.source"
-                class="mt-2 text-[10px] text-content-sec/45 font-mono break-all"
-              >{{ sheetRow.source }}</div>
-            </div>
-          </div>
+          </aside>
+          </Transition>
         </div>
       </Transition>
     </Teleport>
@@ -718,7 +897,7 @@ onMounted(() => loadOutline())
   color: rgb(var(--primary-rgb) / 1);
 }
 
-/* ── 条目行内的「打开卡片」按钮：hover / 聚焦才现身（opacity 过渡）── */
+/* ── 行内「详情」按钮：常显（原 hover 才现身，触屏点不到），只动 opacity/transform ── */
 .ot-open {
   width: 20px;
   height: 20px;
@@ -730,7 +909,7 @@ onMounted(() => loadOutline())
   justify-content: center;
   color: rgb(var(--text-sec-rgb) / 1);
   background: rgb(var(--card-2-rgb) / 0.8);
-  opacity: 0;
+  opacity: 0.5;
   transition: opacity var(--dur-2, 200ms) var(--ease-io, ease),
     transform var(--dur-1, 100ms) var(--ease-io, ease);
 }
@@ -738,6 +917,7 @@ onMounted(() => loadOutline())
 .ot-row:focus-within .ot-open,
 .ot-open:focus-visible {
   opacity: 1;
+  color: rgb(var(--primary-rgb) / 1);
 }
 .ot-open:active {
   transform: scale(0.92);
@@ -760,31 +940,121 @@ onMounted(() => loadOutline())
   color: rgb(var(--text-sec-rgb) / 1);
   font-family: inherit;
 }
+.ot-inline-more {
+  margin-top: 6px;
+  font-size: 10.5px;
+  color: rgb(var(--primary-rgb) / 1);
+  transition: opacity var(--dur-2, 200ms) var(--ease-io, ease);
+}
+.ot-inline-more:active {
+  opacity: 0.7;
+}
 
-/* ── 悬浮卡片：底部上滑 + 遮罩淡入（只用 transform / opacity）── */
-.ot-card-enter-active .ot-mask,
-.ot-card-leave-active .ot-mask {
-  transition: opacity 220ms ease;
+/* ── 抽屉里的「层条目」行 ── */
+.ot-lay-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 8px;
+  border-radius: 8px;
+  font-size: 12px;
+  transition: background-color var(--dur-2, 200ms) var(--ease-io, ease);
 }
-.ot-card-enter-active .ot-sheet {
-  transition: transform 320ms cubic-bezier(0.22, 1.4, 0.36, 1),
-    opacity 200ms ease;
+.ot-lay-item:hover {
+  background: rgb(var(--card-2-rgb) / 0.6);
 }
-.ot-card-leave-active .ot-sheet {
-  transition: transform 200ms cubic-bezier(0.4, 0, 1, 1), opacity 170ms ease;
+.ot-lay-item + .ot-lay-item {
+  border-top: 1px solid rgb(var(--divider-rgb) / 0.7);
 }
-.ot-card-enter-from .ot-mask,
-.ot-card-leave-to .ot-mask {
-  opacity: 0;
+
+/* ── 抽屉正文：Markdown 大字排版 ──
+   基线由 .cy-drawer-md 给（15px / 1.85），这里用双类名 + :deep 把
+   MarkdownBlock 自身的 em 相对字号钉成绝对 px：标题 22 / 18 / 15px
+   （比上一版 20 / 18 / 15 更大，正文 13.5 → 15px，行高仍 1.85）。 */
+.ot-md {
+  font-size: 15px;
+  line-height: 1.85;
+  color: rgb(var(--text-rgb) / 1);
 }
-.ot-card-enter-from .ot-sheet,
-.ot-card-leave-to .ot-sheet {
-  opacity: 0;
-  transform: translate3d(0, 100%, 0) scale(0.98);
+.ot-md.ot-md :deep(p) {
+  margin: 0.55rem 0;
+  line-height: 1.85;
 }
-.ot-sheet {
-  padding-bottom: env(safe-area-inset-bottom, 0px);
+.ot-md.ot-md :deep(h1) {
+  font-size: 22px;
+  line-height: 1.4;
+  font-weight: 650;
+  margin: 1.1rem 0 0.5rem;
+}
+.ot-md.ot-md :deep(h2) {
+  font-size: 18px;
+  line-height: 1.45;
+  font-weight: 620;
+  margin: 1rem 0 0.45rem;
+}
+.ot-md.ot-md :deep(h3) {
+  font-size: 15px;
+  line-height: 1.5;
+  font-weight: 600;
+  margin: 0.85rem 0 0.4rem;
+}
+.ot-md.ot-md :deep(h4),
+.ot-md.ot-md :deep(h5),
+.ot-md.ot-md :deep(h6) {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0.7rem 0 0.35rem;
+}
+.ot-md.ot-md :deep(h1:first-child),
+.ot-md.ot-md :deep(h2:first-child),
+.ot-md.ot-md :deep(h3:first-child) {
+  margin-top: 0;
+}
+.ot-md.ot-md :deep(li) {
+  margin: 0.22rem 0;
+  line-height: 1.8;
+}
+.ot-md.ot-md :deep(ul),
+.ot-md.ot-md :deep(ol) {
+  margin: 0.45rem 0;
+  padding-left: 1.5rem;
+}
+.ot-md.ot-md :deep(blockquote) {
+  margin: 0.7rem 0;
+  padding: 0.35rem 0.9rem;
+  border-left: 3px solid rgb(var(--primary-rgb) / 0.55);
+}
+
+/* ── 抽屉：容器 / 正文的尺寸、玻璃底、圆角都由骨架类提供 ──
+   .cy-drawer = min(85vw, 640px) + 右滑入（translateX(100%) → 0 / 300ms）
+   .cy-drawer-md = 15px / 1.85 / padding 20px
+   过渡类用 style.css 的 .cy-drawer-*（transform）、.cy-mask-*（opacity），
+   只动 transform / opacity（DESIGN-v2 §3）。这里只补 HTML 容器提示。 */
+.ot-panel {
+  border-radius: 0 12px 12px 0;
+  overflow: hidden;
   will-change: transform;
+}
+
+/* 遮罩淡出延长到 300ms：让抽屉滑完再撤暗底（进入仍用 200ms） */
+.cy-mask-leave-active {
+  transition: opacity 300ms ease;
+}
+
+/* 正文容器：padding / overflow-y 交给 .cy-drawer-md，这里只禁住滚动链 */
+.cy-drawer-md {
+  overscroll-behavior: contain;
+}
+
+/* 尊重「减少动态效果」偏好 */
+@media (prefers-reduced-motion: reduce) {
+  .cy-drawer-enter-active,
+  .cy-drawer-leave-active,
+  .cy-mask-enter-active,
+  .cy-mask-leave-active {
+    transition: none;
+  }
 }
 
 /* ── 骨架屏 ── */

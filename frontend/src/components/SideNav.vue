@@ -71,7 +71,9 @@ function pickMobile(m) {
   } else if (m.key === 'settings') {
     goTab('settings')
   } else {
-    goTab('system') // 工作台
+    // 工作台：不再直接切页，而是弹出底部功能抽屉让用户选子页
+    // （原先靠左上角汉堡，拇指够不到）
+    open.value = true
   }
 }
 
@@ -125,24 +127,12 @@ watch(() => [nav.tab, nav.pane], close)
     </nav>
   </aside>
 
-  <!-- ════════ 形态 B：<768px 汉堡 + 左侧抽屉 + 底部三入口 ════════ -->
-  <button
-    type="button"
-    class="md:hidden fixed top-2 left-2 z-[60] w-9 h-9 rounded-lg glass-strong
-           flex items-center justify-center text-[15px] leading-none
-           transition-transform active:scale-[0.94]"
-    :aria-expanded="open"
-    aria-controls="side-drawer"
-    aria-label="打开导航"
-    @click="toggle"
-  >
-    <span aria-hidden="true">{{ open ? '✕' : '☰' }}</span>
-  </button>
-
-  <!-- 层级：汉堡 z-60 > 抽屉 z-50 > 遮罩 z-40。
-       汉堡必须在最上：否则抽屉打开时遮罩(z-40，DOM 更靠后)会盖住它，
-       导致「打开后点不到汉堡关闭」——实测踩过。 -->
-  <Transition name="nav-mask">
+  <!-- ════════ 形态 B：<768px 底部三入口 + 底部功能抽屉（Action Sheet） ════════
+       ⚠️ 2026-10-20 第三轮修正：原先用**左上角汉堡**，但总指挥指出手机屏幕大、
+       单手拇指够不到左上角 —— 不符合操作习惯。
+       现改为：点底部「工作台」→ 从**屏幕底部**弹出半屏功能抽屉（所有子页面）。
+       动效只动 transform / opacity。 -->
+  <Transition name="sheet-mask">
     <div
       v-if="open"
       class="md:hidden fixed inset-0 z-40 bg-black/50"
@@ -151,45 +141,42 @@ watch(() => [nav.tab, nav.pane], close)
     />
   </Transition>
 
-  <Transition name="nav-drawer">
-    <aside
+  <Transition name="sheet-up">
+    <div
       v-if="open"
-      id="side-drawer"
+      id="pane-sheet"
       role="dialog"
+      aria-modal="true"
       aria-label="全部功能"
-      class="md:hidden fixed top-0 left-0 bottom-0 z-50 w-[250px] glass-strong
-             border-r border-line flex flex-col"
+      class="md:hidden fixed inset-x-0 bottom-0 z-50 glass-strong
+             rounded-t-2xl border-t border-line max-h-[62vh] flex flex-col"
       style="padding-bottom: env(safe-area-inset-bottom, 0px)"
     >
-      <div class="h-[52px] shrink-0 flex items-center gap-2 px-4">
-        <span class="w-1.5 h-1.5 rounded-full bg-primary" aria-hidden="true" />
-        <span class="text-[12px] tracking-wide text-content-sec truncate">残响之河</span>
+      <!-- 抓手 -->
+      <div class="shrink-0 pt-2 pb-1 flex justify-center" aria-hidden="true">
+        <span class="w-9 h-1 rounded-full bg-content-sec/35" />
       </div>
-      <div class="px-4 pb-1 shrink-0 text-[10px] tracking-wider text-content-sec/70">
+      <div class="shrink-0 px-4 pb-1 text-[10px] tracking-wider text-content-sec/70">
         全部功能
       </div>
-      <nav class="flex-1 min-h-0 overflow-y-auto px-2 py-1 flex flex-col gap-0.5">
+      <!-- 网格：拇指易点，一屏放下全部入口 -->
+      <div class="flex-1 min-h-0 overflow-y-auto px-3 pb-3 pt-1
+                  grid grid-cols-3 gap-2">
         <button
           v-for="it in ITEMS"
           :key="it.key"
           type="button"
-          class="relative flex items-center gap-2.5 w-full h-11 pl-3.5 pr-2 rounded-lg text-left
-                 transition-transform active:scale-[0.98]"
-          :class="activeKey === it.key ? 'bg-primary/12 text-primary' : 'text-content-sec'"
+          class="flex flex-col items-center justify-center gap-1.5 h-[68px] rounded-xl
+                 transition-transform active:scale-[0.96]"
+          :class="activeKey === it.key ? 'bg-primary/12 text-primary border border-primary/30' : 'glass text-content-sec'"
           :aria-current="activeKey === it.key ? 'page' : undefined"
           @click="pick(it)"
         >
-          <span
-            class="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-full bg-primary pointer-events-none
-                   transition-opacity duration-200"
-            :class="activeKey === it.key ? 'opacity-100' : 'opacity-0'"
-            aria-hidden="true"
-          />
-          <span class="w-4 text-center leading-none text-[15px]" aria-hidden="true">{{ it.icon }}</span>
-          <span class="text-[13px] leading-none truncate">{{ it.label }}</span>
+          <span class="text-[18px] leading-none" aria-hidden="true">{{ it.icon }}</span>
+          <span class="text-[11px] leading-none">{{ it.label }}</span>
         </button>
-      </nav>
-    </aside>
+      </div>
+    </div>
   </Transition>
 
   <!-- 底部三入口：工作台 / 对话 / 设置
@@ -219,13 +206,21 @@ watch(() => [nav.tab, nav.pane], close)
 
 <style scoped>
 /* 只动 transform / opacity（合成器属性） */
-.nav-drawer-enter-active,
-.nav-drawer-leave-active {
-  transition: transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
+.sheet-up-enter-active,
+.sheet-up-leave-active {
+  transition: transform 280ms cubic-bezier(0.22, 1, 0.36, 1);
 }
-.nav-drawer-enter-from,
-.nav-drawer-leave-to {
-  transform: translateX(-100%);
+.sheet-up-enter-from,
+.sheet-up-leave-to {
+  transform: translateY(100%);
+}
+.sheet-mask-enter-active,
+.sheet-mask-leave-active {
+  transition: opacity 200ms ease;
+}
+.sheet-mask-enter-from,
+.sheet-mask-leave-to {
+  opacity: 0;
 }
 .nav-mask-enter-active,
 .nav-mask-leave-active {

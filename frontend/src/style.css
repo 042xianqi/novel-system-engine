@@ -1009,3 +1009,32 @@ html[data-skin='mohei'] .glass-strong {
     0 6px 20px -10px rgb(var(--primary-rgb) / 0.6),
     inset 0 1px 0 rgb(255 255 255 / 0.18);
 }
+
+/* ══════════════════════════════════════════════════════════════
+   布局宽度保障（2026-10-20）
+   总指挥反馈手机端「主内容区偏左、右侧留白过多」。
+   这里显式把整条根链钉成 100% 宽 + 内容区居中，排除任何
+   漏写的宽度/居中导致的塌陷；同时防止子元素把父级撑出横向滚动。
+   ══════════════════════════════════════════════════════════════ */
+html,
+body,
+#app {
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+  padding: 0;
+}
+#app > * {
+  width: 100%;
+}
+.shell-main {
+  width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+}
+/* 兜底：任何页面不得产生横向滚动（否则在窄屏 WebView 里表现为右侧空白） */
+.shell-main,
+.shell-main > * {
+  max-width: 100%;
+  overflow-x: hidden;
+}

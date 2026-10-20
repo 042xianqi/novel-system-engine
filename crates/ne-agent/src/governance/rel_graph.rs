@@ -241,6 +241,85 @@ fn meta(conn: &Connection) -> Value {
 }
 
 /// 读取全部边（src,dst）。供内存图算法复用。
+/// 【任务一·星图】实体关系网全量导出（只读，gov 铁则）。
+///
+/// 数据源：`entity_edge`（374 边，UNIQUE(src,dst,type)）+ `library_index`
+/// 补节点标题/层。表不存在时（旧库未建）返回空图而非报错，前端渲染空态。
+///
+/// # 为什么不做分页
+/// 374 边 + ~250 节点一次性 JSON < 100KB，分页反而让前端要做增量拼图。
+pub fn entity_graph(conn: &Connection) -> Result<Value> {
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='entity_edge'",
+        [],
+        |r| r.get(0),
+    )?;
+    if exists == 0 {
+        return Ok(json!({"nodes": [], "edges": [], "note": "entity_edge 表不存在（旧库）"}));
+    }
+
+    // 节点 = 出现过的 src ∪ dst；标题从 library_index 反查（key 可能不在
+    // library_index 里的占位实体，title 回落 key 本身）。
+    let mut title_of: HashMap<String, String> = HashMap::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT key, COALESCE(NULLIF(title,''), key) FROM library_index",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (k, t) = row?;
+            title_of.insert(k, t);
+        }
+    }
+
+    let mut nodes_set: BTreeSet<String> = BTreeSet::new();
+    let mut edges: Vec<Value> = Vec::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT src_key, dst_key, edge_type, COALESCE(state,'stable'), \
+                    COALESCE(conf,0.7) FROM entity_edge",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, f64>(4)?,
+            ))
+        })?;
+        for row in rows {
+            let (src, dst, et, state, conf) = row?;
+            nodes_set.insert(src.clone());
+            nodes_set.insert(dst.clone());
+            edges.push(json!({
+                "s": src, "d": dst, "t": et, "st": state, "c": conf,
+            }));
+        }
+    }
+
+    let nodes: Vec<Value> = nodes_set
+        .iter()
+        .map(|k| {
+            // 实体类型 = key 前缀（CHAR-99-001 → CHAR）
+            let kind = k.split('-').next().unwrap_or("?").to_string();
+            json!({
+                "k": k,
+                "title": title_of.get(k).cloned().unwrap_or_else(|| k.clone()),
+                "kind": kind,
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "nodes": nodes,
+        "edges": edges,
+        "count": { "nodes": nodes.len(), "edges": edges.len() },
+    }))
+}
+
 pub fn load_edges(conn: &Connection) -> Result<Vec<(String, String)>> {
     ensure_table(conn)?;
     let mut stmt = conn.prepare("SELECT src_key,dst_key FROM rel_edge")?;

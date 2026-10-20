@@ -113,7 +113,7 @@ pub fn chapter_plan(cfg: &Cfg, volume: &str) -> serde_json::Value {
         "suggest_append": suggest_append,
         "default_target": first_gap.unwrap_or(suggest_append),
         "note": if has_gap {
-            format!("检测到第{}章缺失，默认优先补缺口（mode=fill_gap）；如需跳过缺口向后续写请显式传 chapter={suggest_append}", first_gap.unwrap())
+            format!("检测到第{}章缺失，默认优先补缺口（mode=fill_gap）；如需跳过缺口向后续写请显式传 chapter={suggest_append}", first_gap.unwrap_or(suggest_append))
         } else {
             format!("章节连续，建议续写第{suggest_append}章（mode=append）")
         },

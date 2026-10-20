@@ -168,6 +168,7 @@ async function doUnlock() {
       <div
         v-for="m in chat.messages"
         :key="m.id"
+        v-memo="[m.text, m.typing, m.plan, m.needsUnlock]"
         class="flex animate-fade-in"
         :class="m.role === 'user' ? 'justify-end' : 'justify-start'"
       >

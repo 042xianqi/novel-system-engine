@@ -4,7 +4,7 @@
 //! 历史教训：设计层词/禁词曾散落在 8 处（`chapter.rs` 的 `BANNED_WORDS` /
 //! `MYTH_NEUTRAL` / `DESIGN_LAYER_NEUTRAL`、`health.rs` 的 `BOOT_DESIGN_WORDS`、
 //! `outline_rebuild.rs` 的 `DESIGN_WORDS`、`gates.rs` 的 `MYTH_BANNED` /
-//! `G13_STOP_WORDS` / `G17_DESIGN_LEAK_WORDS`、`gate14.rs` 的 `MYTH_BANNED`），
+//! `G13_STOP_WORDS` / `G18_DESIGN_LEAK_WORDS`、`gate14.rs` 的 `MYTH_BANNED`），
 //! 改一处必漏五处，且已实测漂移（`BOOT_DESIGN_WORDS` 含「分支演算」而
 //! `DESIGN_WORDS` 却是「分支」）。收敛到此处，一处改全系统生效。
 //!

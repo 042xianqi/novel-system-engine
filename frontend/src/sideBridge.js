@@ -22,6 +22,7 @@
 
 import { chat, tasks, winLog, toast, pushLog, syncWinState } from './store.js'
 import { nav, openWin, setView } from './nav.js'
+import { bus, EV } from './events.js'
 
 /** 挂一个钩子，重复挂不会报错（幂等），返回是否挂成功 */
 function mount(name, fn) {
@@ -100,7 +101,7 @@ export function installSideBridge() {
     try {
       const t = String(text || '').trim()
       if (!t) return 'empty'
-      window.dispatchEvent(new CustomEvent('nov:send', { detail: { text: t } }))
+      bus.emit(EV.SIDE_SEND, { text: t })
       return 'ok'
     } catch (e) {
       return 'err'
@@ -115,6 +116,6 @@ export function installSideBridge() {
 
   // 主动通知宿主「我准备好了」（ToolPkg 若监听 console 或轮询 __novStatus 可感知）
   try {
-    window.dispatchEvent(new CustomEvent('nov:ready'))
+    bus.emit(EV.APP_READY)
   } catch (e) { /* ignore */ }
 }

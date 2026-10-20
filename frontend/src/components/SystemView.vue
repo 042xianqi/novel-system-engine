@@ -27,12 +27,14 @@ import { nav, goPane, PANES, paneIndex } from '../nav.js'
 import TaskBoard from './panes/TaskBoard.vue'
 import OutlineTree from './panes/OutlineTree.vue'
 import CardBrowser from './panes/CardBrowser.vue'
+import GraphStar from './panes/GraphStar.vue'
 import StatsPane from './panes/StatsPane.vue'
 
 const PANE_MAP = {
   tasks: TaskBoard,
   outline: OutlineTree,
   cards: CardBrowser,
+  graph: GraphStar,
   stats: StatsPane,
 }
 

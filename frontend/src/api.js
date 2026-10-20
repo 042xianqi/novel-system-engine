@@ -54,6 +54,17 @@ export const ChatAPI = {
   // 改这里要同步改 crates/ne-agent/src/governance/mod.rs。
   send: (message, session = 'chat') =>
     api.post('/api/chat', { message, session }),
+  /**
+   * 真流式发送（Phase-1）：返回原始 Response（不解析 JSON），
+   * 供 useStreamBlocks.js 消费 SSE 分块。
+   * `?stream=1` 是显式开关：旧客户端 / 未适配的消费方继续用 send()。
+   */
+  sendStream: (message, session = 'chat') =>
+    fetch(`${BASE}/api/chat?stream=1`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream, application/json' },
+      body: JSON.stringify({ message, session }),
+    }),
   /** 历史（后端 GET /api/chat/history 已实现，返回最近 N 条） */
   history: (session = 'chat') =>
     api

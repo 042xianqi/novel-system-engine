@@ -463,7 +463,7 @@ fn main() {
             "funnel_exists": cfg.funnel_path().exists(),
             "tools": tool_specs()["tools"].as_array().map(|a| a.len()).unwrap_or(0),
         });
-        println!("{}", serde_json::to_string_pretty(&out).unwrap());
+        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_else(|e| format!("{{\"error\":\"序列化失败：{e}\"}}")));
         return;
     }
 

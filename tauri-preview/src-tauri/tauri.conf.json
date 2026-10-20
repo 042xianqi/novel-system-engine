@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "残响之河",
+  "version": "0.0.24",
+  "identifier": "app.taixu.canxiang",
+  "build": {
+    "frontendDist": "../../frontend/dist",
+    "devUrl": "http://127.0.0.1:8270",
+    "beforeDevCommand": "",
+    "beforeBuildCommand": "cd ../../frontend && npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "残响之河 · 治理中枢",
+        "width": 1280,
+        "height": 860,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": true,
+        "transparent": false,
+        "center": true,
+        "theme": "Dark"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' http://127.0.0.1:8270 ws://127.0.0.1:8270"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["deb", "appimage"],
+    "icon": ["icons/icon.png"],
+    "resources": [],
+    "externalBin": ["binaries/ne-agent"],
+    "linux": {
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"]
+      }
+    }
+  },
+  "plugins": {}
+}

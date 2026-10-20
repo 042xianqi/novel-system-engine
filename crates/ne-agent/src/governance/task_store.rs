@@ -559,14 +559,34 @@ pub fn task_exists(conn: &Connection, id: &str) -> Result<bool> {
 }
 
 /// 终止未运行任务（pending → canceled）。
+///
+/// 【P3 换血】除改 DB 状态外，同步触发进程内取消令牌（cancel_token::fire）：
+/// Rust 侧正在等待该任务的阻塞方（SSE 长连、未来的 Rust 长任务）立即被
+/// 唤醒；Python 执行器侧靠 DB 状态可见性感知（看门狗每 15s 查一次）。
 pub fn cancel(conn: &Connection, id: &str) -> Result<Value> {
     ensure_tables(conn)?;
     let n = conn.execute(
         "UPDATE webui_task SET state='canceled', updated_ts=?1 WHERE id=?2 AND state IN ('pending','blocked')",
         params![now(), id],
     )?;
-    category_store::log_op(conn, "task.cancel", id, &format!("rows={n}"), "")?;
-    Ok(json!({"ok": n > 0, "id": id, "canceled": n}))
+    // 无论 DB 受影响行数多少都触发令牌：任务可能正在 running（DB 行不在
+    // pending/blocked），但 Rust 侧等待者仍需被唤醒。
+    let fired = super::cancel_token::fire(id);
+
+    // 【2026-10-20 真杀】置位令牌只唤醒 **Rust 进程内** 的等待者；
+    // 实际干活的是 Python 执行器子进程，必须真发信号才叫"一秒杀停"。
+    // 拿不到锁（例如任务还在 pending 未派发）时返回 killed=false，属正常。
+    let kill = kill_executor().unwrap_or_else(|e| json!({"killed": false, "reason": e.to_string()}));
+    let killed = kill.get("killed").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    category_store::log_op(
+        conn,
+        "task.cancel",
+        id,
+        &format!("rows={n} token_fired={fired} killed={killed}"),
+        "",
+    )?;
+    Ok(json!({"ok": n > 0, "id": id, "canceled": n, "token_fired": fired, "killed": killed}))
 }
 
 /// 结果回写（2026-10-17 · 路径A）：由执行方（ToolPkg / MCP）执行完后调用。
@@ -580,6 +600,24 @@ pub fn update_result(conn: &Connection, id: &str, body: &str) -> Result<Value> {
         .unwrap_or_else(|| if dispatched == Some(true) { "done".into() } else { "rejected".into() });
     if !["done", "rejected", "failed", "running"].contains(&state.as_str()) {
         bail!("state 非法：{state}（允许 done/rejected/failed/running）");
+    }
+    // 【P3 换血·防僵尸回写】任务已被用户取消时，拒收执行器的滞后回写
+    // （竞态窗口：看门狗 15s 间隔内执行器可能刚写完 running/done）。
+    // 例外：回写"running"也拒——已取消的任务不可能合法地重新进入 running。
+    // 拒收不报错（执行器拿 ok=false 自行跳过），DB 状态保持 canceled。
+    {
+        let cur: String = conn
+            .query_row("SELECT state FROM webui_task WHERE id=?1", params![id], |r| r.get(0))
+            .unwrap_or_default();
+        if cur == "canceled" && state != "canceled" {
+            let _ = super::cancel_token::fire(id);
+            category_store::log_op(conn, "task.result.rejected_by_cancel", id,
+                &format!("blocked_state={state}"), "")?;
+            return Ok(json!({
+                "ok": false, "id": id, "rejected_by_cancel": true,
+                "current_state": "canceled", "blocked_state": state,
+            }));
+        }
     }
     let result = v.get("result").and_then(|x| x.as_str()).unwrap_or("").to_string();
     let n = conn.execute(
@@ -650,6 +688,16 @@ pub fn update_result(conn: &Connection, id: &str, body: &str) -> Result<Value> {
 /// 「保底」由 update_result 负责（它写 result 字段），这里只做实时通道。
 /// 前端断线重连后，从 /api/tasks/{id}/result 拉回完整进度即可。
 pub fn push_event(_conn: &Connection, id: &str, body: &str) -> Result<Value> {
+    // 【P3 换血·防僵尸事件】已取消的任务拒收后续事件（执行器子线程的
+    // 滞后 _emit 会在取消后继续到达几秒），防止 SSE 面板"取消后还在刷"。
+    {
+        let cur: String = _conn
+            .query_row("SELECT state FROM webui_task WHERE id=?1", params![id], |r| r.get(0))
+            .unwrap_or_default();
+        if cur == "canceled" {
+            return Ok(json!({"ok": false, "id": id, "rejected_by_cancel": true}));
+        }
+    }
     let v: Value = serde_json::from_str(body.trim()).unwrap_or(json!({}));
     let kind = v.get("type").and_then(|x| x.as_str()).unwrap_or("log");
     let mut data = v.get("data").cloned().unwrap_or(json!({}));
@@ -814,6 +862,54 @@ fn proc_alive_token(pid: u32, starttime: Option<u64>) -> bool {
         None => true,
         // 进程在但读不到 starttime → 保守判活（宁可拒绝重复启动，不冒并发风险）
         Some(st) => proc_starttime(pid).map(|cur| cur == st).unwrap_or(true),
+    }
+}
+
+/// 真杀执行器子进程（取消任务时调用）。
+///
+/// # 为什么必须真杀，而不是只改状态
+/// 原先 `cancel()` 只做两件事：改 DB 状态 + 置位进程内令牌。而真正干活的
+/// Python 执行器（exec_pending.py）靠**15 秒看门狗自查**才能感知——也就是说
+/// 用户点"中止"后，子进程最多还会再跑 15 秒、继续烧 LLM 额度。
+/// 这里按锁文件里的 `pid:starttime` 精确发信号，实现**立即停**。
+///
+/// # 为什么校验 starttime
+/// pid 会被内核复用。若只按 pid 杀，极端情况下可能杀掉一个复用了该 pid 的
+/// 无关进程。`proc_alive_token` 已做 (pid, starttime) 双校验，只有确认是
+/// **同一个**执行器进程才动手。
+///
+/// 返回 `{killed: bool, pid, reason?}`——不 bail，取消流程不应因杀进程失败而中断。
+pub fn kill_executor() -> Result<Value> {
+    let lock = Path::new(EXEC_LOCK);
+    let Some((pid, st)) = read_lock_token(lock) else {
+        return Ok(json!({"killed": false, "reason": "无执行器锁文件（没有在跑的执行器）"}));
+    };
+    // 双校验：进程在 + starttime 一致，才是"同一个"执行器
+    if !proc_alive_token(pid, st) {
+        let _ = std::fs::remove_file(lock);
+        return Ok(json!({"killed": false, "pid": pid, "reason": "执行器已退出（清理僵尸锁）"}));
+    }
+    // SIGTERM 优先：让 Python 有机会写收尾日志
+    let sent = std::process::Command::new("kill")
+        .arg("-TERM")
+        .arg(pid.to_string())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if sent {
+        // 给 200ms 优雅退出窗口，仍未退出则 SIGKILL 强杀
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        if proc_alive_token(pid, st) {
+            let _ = std::process::Command::new("kill")
+                .arg("-KILL")
+                .arg(pid.to_string())
+                .status();
+        }
+        // 锁必然已失效，清掉避免下次误判"已在跑"
+        let _ = std::fs::remove_file(lock);
+        Ok(json!({"killed": true, "pid": pid}))
+    } else {
+        Ok(json!({"killed": false, "pid": pid, "reason": "kill 命令执行失败（权限或进程已消失）"}))
     }
 }
 

@@ -39,6 +39,7 @@
 use anyhow::Result;
 use ne_engine::llm::{LlmParams, Message, LlmOutput};
 
+use super::cancel_token;
 use super::llm_gate;
 
 /// 门控拦截时返回的错误类型。
@@ -107,11 +108,21 @@ pub fn governed_call(
         }));
     }
 
+    // 【取消检查点 ①：外呼前】任务已被取消就不发这个请求——
+    // 省掉一次可能几十秒的真实外呼，也避免日志里出现"用户已中止却还在跑"的假象。
+    cancel_token::check_cancel_current()?;
+
     // 已解锁：真实外呼（显式、可审计）
     eprintln!("[llm-gate] ALLOWED site={} —— 真实外呼", site);
     ne_engine::llm::call(llm, msgs).map_err(|e| {
         eprintln!("[llm-gate] FAILED site={} err={}", site, e);
         e
+    })
+    .and_then(|out| {
+        // 【取消检查点 ②：外呼返回后】调用期间被取消 —— 结果已无人接收，
+        // 直接丢弃并报取消，避免"取消了但内容还是写进去了"。
+        cancel_token::check_cancel_current()?;
+        Ok(out)
     })
 }
 

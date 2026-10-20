@@ -50,15 +50,17 @@ impl RateLimiter {
     }
     /// 阻塞式获取 1 个请求名额（先占并发槽，再等 RPM 窗口）。
     pub fn acquire(&self) {
-        let mut slot = self.state.lock().unwrap();
+        let mut slot = self.state.lock().unwrap_or_else(|e| e.into_inner());
         while *slot >= self.max_inflight {
-            slot = self.cv.wait(slot).unwrap();
+            // 【决策二·E级修复】持有锁时 wait 不会返回 Err（也不可能中毒），但
+            // unwrap 留了个 panic 面；改为等价恢复，语义不变。
+            slot = self.cv.wait(slot).unwrap_or_else(|e| e.into_inner());
         }
         *slot += 1;
         drop(slot);
 
         let now = Instant::now();
-        let mut q = self.window.lock().unwrap();
+        let mut q = self.window.lock().unwrap_or_else(|e| e.into_inner());
         while q.len() >= self.rpm as usize {
             if let Some(front) = q.front() {
                 if now.duration_since(*front) >= Duration::from_secs(60) {
@@ -67,7 +69,7 @@ impl RateLimiter {
                     let wait_ms = 60000u64.saturating_sub(front.elapsed().as_millis() as u64);
                     drop(q);
                     std::thread::sleep(Duration::from_millis(wait_ms.saturating_sub(50)));
-                    q = self.window.lock().unwrap();
+                    q = self.window.lock().unwrap_or_else(|e| e.into_inner());
                     break;
                 }
             } else {
@@ -77,17 +79,17 @@ impl RateLimiter {
         q.push_back(Instant::now());
     }
     pub fn release(&self) {
-        let mut slot = self.state.lock().unwrap();
+        let mut slot = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if *slot > 0 {
             *slot -= 1;
         }
         self.cv.notify_one();
     }
     pub fn in_flight(&self) -> u32 {
-        *self.state.lock().unwrap()
+        *self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
     pub fn remaining(&self) -> u32 {
-        let q = self.window.lock().unwrap();
+        let q = self.window.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
         let active = q
             .iter()

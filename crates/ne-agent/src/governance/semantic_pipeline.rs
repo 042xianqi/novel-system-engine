@@ -239,9 +239,27 @@ pub fn call_raw(
             return Ok(Outcome::Unavailable(m));
         }
         Err(e) => {
+            // 【接调用点·候选1】先把后端错误桥进结构化体系，拿到 分类/可重试/用户话术/根因链，
+            // 再回填既有契约字段（kind/message）——对外 JSON 结构不变，契约零破坏。
             let kind = match e { llm_adapter::BackendError::NotConfigured(_) => "not_configured", llm_adapter::BackendError::Protocol(_) => "protocol", llm_adapter::BackendError::Transport(_) => "transport", _ => "other" };
+            // 先取 Display（后面回填既有契约要用），再 move 进结构化类型。
+            let message = e.to_string();
+            let he: crate::error::HarnessError = e.into();
+            // 日志同时给出「用户友好提示」与「底层根因链」——这是本次接入要达成的目标。
+            crate::governance::structured_log::log(
+                if he.is_fault() { "error" } else { "warn" },
+                "semantic_pipeline",
+                "llm.backend_error",
+                serde_json::json!({
+                    "kind": kind,
+                    "class": he.class().as_str(),
+                    "retryable": he.retryable(),
+                    "user": he.user_message(),
+                    "detail": he.chain(),
+                }),
+            );
             let _ = llm_obs::record(conn, &llm_obs::CallRecord { backend: backend_name, model, token_in: 0, token_out: 0, elapsed_ms: elapsed, cache_hit: false, ok: false, note: kind.into(), ..Default::default() }, cfg.breaker_threshold, 60);
-            return Ok(Outcome::BackendError { kind: kind.into(), message: e.to_string() });
+            return Ok(Outcome::BackendError { kind: kind.into(), message });
         }
         Ok(o) => o,
     };

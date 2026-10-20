@@ -378,8 +378,24 @@ fn extract_name(body: &str) -> String {
 }
 
 /// 抓某字段行（`- **境界**：xx` / `- 境界：xx`）。
+///
+/// # 【隐患修复】key 必须 escape 再拼进正则
+/// 原实现 `format!(r"...{key}...")` 直接拼接：`key` 是运行时字符串，
+/// 一旦含正则元字符（`(`, `[`, `*`, `?`, `+`, `\\` …）就会让 `Regex::new` 返回
+/// `Err`，而原代码 `.unwrap()` → **panic**。当前调用方只传中文字面量
+/// （"境界"/"所属"/"身份"）所以没爆，但这是「隐式不变量」而非保证：
+/// 任何人加一个新字段名（如 `备注(临时)`）就会在生产路径 panic。
+///
+/// 修复两处：
+///   1. `regex::escape(key)` —— 把 key 当字面量而非模式；
+///   2. `unwrap()` → `else { return String::new() }` —— 即便 regex 仍失败
+///      （例如超长 key 触发大小上限），也只是取不到该字段，绝不 panic。
 fn extract_field(body: &str, key: &str) -> String {
-    let re = regex::Regex::new(&format!(r"[-*]?\s*\*?\*?{key}\*?\*?[：:]\s*(.+)")).unwrap();
+    let pattern = format!(r"[-*]?\s*\*?\*?{}\*?\*?[：:]\s*(.+)", regex::escape(key));
+    let Ok(re) = regex::Regex::new(&pattern) else {
+        // 走到这里说明 key 极端异常（长度/编码）；字段缺失优于进程崩溃。
+        return String::new();
+    };
     re.captures(body).map(|c| c[1].trim().to_string()).unwrap_or_default()
 }
 
@@ -424,6 +440,22 @@ fn extract_summary(body: &str) -> String {
 mod tests {
     use super::*;
     use std::fs;
+
+    /// 【隐患修复回归】key 含正则元字符时不得 panic。
+    ///
+    /// 修复前：`format!(r"...{key}...")` + `.unwrap()` → `Regex::new` 对
+    /// `备注(临时)` 这类 key 返回 Err → 生产路径 panic。
+    /// 修复后：`regex::escape` 把它当字面量，且失败也只返回空串。
+    #[test]
+    fn extract_field_survives_regex_metacharacters_in_key() {
+        // 元字符 key：修复前这里必 panic
+        let body = "\n- 备注(临时)：丙级\n";
+        assert_eq!(extract_field(body, "备注(临时)"), "丙级");
+        // 路径分隔/星号也不得炸
+        assert_eq!(extract_field("- a*b[c]：值", "a*b[c]"), "值");
+        // 未出现的 key 返回空串（不 panic）
+        assert_eq!(extract_field(body, "不存在的(键)"), "");
+    }
 
     #[test]
     fn build_injection_returns_missing_for_empty_lib() {

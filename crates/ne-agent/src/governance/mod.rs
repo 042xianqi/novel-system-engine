@@ -27,6 +27,7 @@ pub mod pipeline_view;
 pub mod pipeline_file;
 pub mod pipeline_engine;
 pub mod task_store;
+pub mod cancel_token;
 pub mod task_events;
 pub mod layer_store;
 pub mod web_gateway;

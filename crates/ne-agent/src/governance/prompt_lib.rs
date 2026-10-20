@@ -322,7 +322,11 @@ pub fn init_templates(work_root: &Path, overwrite: bool) -> Result<Vec<PathBuf>>
         if p.exists() && !overwrite {
             continue;
         }
-        let t = builtin(name).unwrap();
+        // 【决策二·E级修复】BUILTIN_NAMES 与 builtin() 若不同步，原 unwrap 会 panic。
+        // 改为显式报错并指明错因，让问题在第一次执行就暴露成可读错误。
+        let Some(t) = builtin(name) else {
+            anyhow::bail!("内置模板 {name} 缺失：BUILTIN_NAMES 与 builtin() 未同步");
+        };
         let content = format!(
             "# world-gov prompt 模板：{name}（可自由修改；改后无需重编译）\n\
              # 输出必须为纯 JSON；schema_json 为强校验用（最小 JSON Schema 子集）。\n\

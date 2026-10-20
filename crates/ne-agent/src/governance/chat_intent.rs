@@ -722,7 +722,9 @@ fn intent_write_chapter(
     let volume = if c.get(1).map(|m| m.as_str() == "0").unwrap_or(true) {
         "卷01".to_string()
     } else {
-        format!("卷{:0>2}", cn_num(c.get(1).unwrap().as_str()).unwrap_or(1))
+        // 【决策二·E级修复】`c.get(1)` 依赖"正则含第 1 捕获组"这一隐式前提；
+        // 正则一旦被改就会 panic。改为 and_then 链，取不到时回退默认卷号 1。
+        format!("卷{:0>2}", c.get(1).and_then(|m| cn_num(m.as_str())).unwrap_or(1))
     };
     let chapter = c
         .get(2)

@@ -5,11 +5,12 @@
 //   （text/event-stream + 无 Content-Length + 15s ping 保活 + 3600s 回收），
 //   实测 `curl -N http://127.0.0.1:8270/api/tasks/stream` 返回 200 与 hello 帧。
 //   但那一路只推**任务事件**（任务看板用），不推聊天 token；
-//   /api/chat 仍是一次性 JSON 回复，所以聊天侧继续用「假流式」打字机是正确的。
-//   将来若给 /api/chat 上 SSE，只需把 typewriterCtl 换成读 ReadableStream。
+//   Phase-1 起 /api/chat?stream=1 已支持传输层真分块（useStreamBlocks.js），
+//   typewriterCtl 仅作为旧后端/异常回落路径保留。
 
 import { ref } from 'vue'
 import { ChatAPI } from '../api.js'
+import { consumeChatStream } from './useStreamBlocks.js'
 import { chat, toast, pushLog, syncWinState } from '../store.js'
 import { openWin } from '../nav.js'
 
@@ -203,21 +204,46 @@ export function useChat() {
     chat.sending = true
 
     try {
-      const r = await ChatAPI.send(text)
+      // Phase-1：优先真流式（?stream=1 → 后端 SSE 分块，逐块真到达真上屏）；
+      // 旧后端 / 反代缓冲 / 流式链路异常时自动回落一次性 JSON + 打字机。
+      stopActiveTyper()
+      let r = null
+      let streamed = false
+      try {
+        const res = await ChatAPI.sendStream(text)
+        const consumed = await consumeChatStream(res, {
+          onBlock: (t) => {
+            // 每个分块到达即上屏（后端 50ms 节奏推送；非本地假打字机）
+            bot.typing = true
+            bot.text += t
+          },
+        })
+        streamed = consumed.streamed
+        r = consumed.final
+      } catch (streamErr) {
+        // 流式链路本身异常 → 回落一次性接口（行为与旧版完全一致）
+        r = await ChatAPI.send(text)
+      }
 
       if (!r || !r.ok) {
         bot.typing = false
-        bot.text = r?.error || '抱歉，没听懂，或者后端未就绪。'
+        // 流式中途断开时保留已收到的部分内容，避免清空用户已看到的字
+        if (!bot.text) bot.text = r?.error || '抱歉，没听懂，或者后端未就绪。'
         toast(r?.error || '请求失败', true)
         return
       }
 
-      // 3. 打字机渲染回复（用可取消版本；开打前先停掉可能残留的上一条）
-      stopActiveTyper()
-      const typer = typewriterCtl(bot, r.reply || '（无回复）')
-      _activeTyper = typer
-      await typer.promise
-      if (_activeTyper === typer) _activeTyper = null
+      if (streamed) {
+        // 真流式已完成逐块上屏；用末帧完整回复校准（末帧字段与一次性 JSON 一致）
+        bot.text = r.reply || bot.text || '（无回复）'
+        bot.typing = false
+      } else {
+        // 兼容路径：一次性 JSON → 保留打字机（可取消版本）
+        const typer = typewriterCtl(bot, r.reply || '（无回复）')
+        _activeTyper = typer
+        await typer.promise
+        if (_activeTyper === typer) _activeTyper = null
+      }
 
       // 4. 挂上计划信息（前端渲染成步骤卡）
       if (r.plan && r.plan.length) {

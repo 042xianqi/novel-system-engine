@@ -145,7 +145,10 @@ pub fn memory_influence(memories: &[Value], chapter: u32, lambda_mem: f64) -> BT
                     m.get("source_chapter").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
                 )) as f64)
                     .exp();
-            *acc.get_mut(dim).unwrap() += round4(e_t);
+            // 【决策二·E级修复】dim 来自固定枚举，当前必命中；改为 if let 消除 panic 面。
+            if let Some(v) = acc.get_mut(dim) {
+                *v += round4(e_t);
+            }
         }
     }
     acc

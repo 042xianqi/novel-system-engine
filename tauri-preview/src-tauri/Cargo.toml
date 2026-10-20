@@ -1,0 +1,20 @@
+[package]
+name = "canxiang-shell"
+version = "0.0.24"
+edition = "2021"
+description = "残响之河 · 桌面壳（Tauri 2 预研）"
+
+# 独立于主 workspace：Tauri 壳与 ne-agent 的依赖树互不污染。
+# 显式声明空 workspace，防止 cargo 向上找到 /root/novel-system-refactor/Cargo.toml
+# 后被并进那个 workspace（那样会把 tauri 拖进主构建，破坏"零 tokio/reqwest"铁律）。
+[workspace]
+
+[[bin]]
+name = "canxiang-shell"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }

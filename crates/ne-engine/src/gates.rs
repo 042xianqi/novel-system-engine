@@ -48,9 +48,12 @@ pub const VOL9_REVERSAL: &[&str] = &["反转", "逆转", "揭露", "真相大白
 /// G13 确定性 4 维的禁词（＝ SSOT 正典禁词）。
 pub const G13_STOP_WORDS: &[&str] = &lex::BANNED_WORDS;
 
-/// G17 设计层/工程层词泄漏（＝ SSOT 探测集；卷01-03 生效）。
+/// G18 设计层/工程层词泄漏（＝ SSOT 探测集；卷01-03 生效）。
+///
+/// 【2026-10-20 编号让位】本门禁原编号 G17，与 Python 侧 `G17_geo_reachability`
+/// （地理可达性，gate14.py）撞号。为跨栈语义一致，迁为 **G18**；G17 留给地理可达性。
 /// 仅作**字面**检测；语义层（如"算的哪门子账"）无法被覆盖。
-pub const G17_DESIGN_LEAK_WORDS: &[&str] = &lex::DESIGN_LEAK_WORDS;
+pub const G18_DESIGN_LEAK_WORDS: &[&str] = &lex::DESIGN_LEAK_WORDS;
 /// G13 AI 词（＝ SSOT AI 痕词）。
 pub const G13_AI_WORDS: &[&str] = &lex::AI_TRACE_WORDS;
 /// 开篇断言 B：金手指亮相（g01）。
@@ -579,12 +582,12 @@ pub fn g16_leak_words(text: &str) -> GateResult {
     out
 }
 
-// ───────────────────────────── G17
-/// G17 设计层/工程层词泄漏：卷01-03 正文严禁出现漏斗工程代号。
+// ───────────────────────────── G18
+/// G18 设计层/工程层词泄漏：卷01-03 正文严禁出现漏斗工程代号。
 ///
 /// 卷01-03 = 「严禁输出该文字」阶段（见全局铁则 & STYLE_CONSTRAINTS §0），
 /// 故命中即 **P0 打回**；卷04 起降级为 P1（此时认知曲线可逐步显性）。
-pub fn g17_design_leak(text: &str, volume: &str) -> GateResult {
+pub fn g18_design_leak(text: &str, volume: &str) -> GateResult {
     // 2026-10-16：改用 lexicon::design_leak_hits（扣除正典专名豁免，避免误伤推演院/未来推演）。
     let h = lex::design_leak_hits(text);
     let mut out = GateResult::ok(format!("设计层词命中={}", fmt_hits(&h)));
@@ -612,9 +615,9 @@ pub fn g17_design_leak(text: &str, volume: &str) -> GateResult {
             )
         };
         if early {
-            out.p0("G17_design_leak", sev_issue, action);
+            out.p0("G18_design_leak", sev_issue, action);
         } else {
-            out.p1("G17_design_leak", sev_issue, action);
+            out.p1("G18_design_leak", sev_issue, action);
         }
     }
     out
@@ -758,7 +761,7 @@ pub const GATE_COUNT_ORDER: &[&str] = &[
     "G14_world_consistency",
     "G15_family_consistency",
     "G16_leak_words",
-    "G17_design_leak",
+    "G18_design_leak",
     "P1_PARAGRAPH",
 ];
 
@@ -848,7 +851,7 @@ pub fn run_all(text: &str, chapter: u32, volume: &str, cfg: &Config, ctx: &dyn G
     run!("G14_world_consistency", g14_world_consistency(text, cfg, ctx));
     run!("G15_family_consistency", g15_family_consistency(text, cfg));
     run!("G16_leak_words", g16_leak_words(text));
-    run!("G17_design_leak", g17_design_leak(text, volume));
+    run!("G18_design_leak", g18_design_leak(text, volume));
 
     // P1-PARAGRAPH：段落格式修复型门禁（只产 P1，永不 P0）
     let (para_res, fixed_text) = p1_paragraph(text);
@@ -980,8 +983,8 @@ mod tests_g09_semantics {
 
     /// G17：卷01-03 设计层词命中 → P0（上帝视角下渗防线的字面闸门）。
     #[test]
-    fn g17_design_leak_p0_in_early_volumes() {
-        let r = g17_design_leak("那股味儿有点像推演算账时候的模糊感觉。", "卷01");
+    fn g18_design_leak_p0_in_early_volumes() {
+        let r = g18_design_leak("那股味儿有点像推演算账时候的模糊感觉。", "卷01");
         assert!(!r.pass, "卷01 出现工程词必须打回");
         assert!(!r.p0.is_empty(), "应有 P0");
         assert!(format!("{:?}", r.p0).contains("推演"));
@@ -990,14 +993,14 @@ mod tests_g09_semantics {
     /// G17：干净体感文本不误伤。
     #[test]
     fn g17_clean_sensory_passes() {
-        let r = g17_design_leak("颅内一阵说不清的体感，像细碎的东西在淌，抓不住，一闪就散了。", "卷01");
+        let r = g18_design_leak("颅内一阵说不清的体感，像细碎的东西在淌，抓不住，一闪就散了。", "卷01");
         assert!(r.pass, "纯体感应过 G17: {:?}", r.p0);
     }
 
     /// G17：卷04+ 降级为 P1（认知曲线允许渐显）。
     #[test]
     fn g17_downgraded_after_volume3() {
-        let r = g17_design_leak("他终于确信，这东西在推演。", "卷04");
+        let r = g18_design_leak("他终于确信，这东西在推演。", "卷04");
         assert!(r.pass, "卷04 不再 P0");
         assert_eq!(r.p1.len(), 1);
     }
@@ -1007,7 +1010,7 @@ mod tests_g09_semantics {
     fn g01_b_has_no_design_words() {
         for w in G01_B {
             assert!(
-                !G17_DESIGN_LEAK_WORDS.contains(w),
+                !G18_DESIGN_LEAK_WORDS.contains(w),
                 "G01_B 含设计层词「{w}」，与 STYLE_CONSTRAINTS §0 冲突"
             );
         }

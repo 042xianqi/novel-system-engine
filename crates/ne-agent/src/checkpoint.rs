@@ -131,7 +131,7 @@ impl CheckpointStore {
     /// 开启新的一轮检查点；若上一轮未关闭则先关闭（对齐太墟 `beginTurn`）。
     pub fn begin_turn(&self, session_id: &str, turn: i64, prompt: &str) -> Result<()> {
         self.close_active(session_id, None)?;
-        let mut active = self.active.lock().unwrap();
+        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
         active.insert(
             session_id.to_string(),
             ActiveTurn {
@@ -152,7 +152,7 @@ impl CheckpointStore {
         if over_snapshot_limit(&snap) {
             return Ok(false);
         }
-        let mut active = self.active.lock().unwrap();
+        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
         let Some(turn) = active.get_mut(session_id) else {
             return Ok(false);
         };
@@ -176,7 +176,7 @@ impl CheckpointStore {
                 return Ok(false);
             }
         }
-        let mut active = self.active.lock().unwrap();
+        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
         let Some(turn) = active.get_mut(session_id) else {
             return Ok(false);
         };
@@ -191,7 +191,7 @@ impl CheckpointStore {
     /// `None` = 无凭据（不做外部改动冲突检测）。
     pub fn latest_after_image(&self, session_id: &str, path: &str) -> Result<Option<String>> {
         {
-            let active = self.active.lock().unwrap();
+            let active = self.active.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(turn) = active.get(session_id) {
                 if let Some(snap) = turn.files.iter().find(|f| f.path == path) {
                     if snap.after_content.is_some() {
@@ -225,7 +225,7 @@ impl CheckpointStore {
     pub fn drop_session(&self, session_id: &str) -> Result<()> {
         self.con
             .execute("DELETE FROM checkpoints WHERE session_id = ?1", params![session_id])?;
-        self.active.lock().unwrap().remove(session_id);
+        self.active.lock().unwrap_or_else(|e| e.into_inner()).remove(session_id);
         Ok(())
     }
 
@@ -292,7 +292,7 @@ impl CheckpointStore {
     pub fn plan_code_rewind(&self, session_id: &str, to_turn: i64) -> Result<RewindPlan> {
         let cps = self.checkpoints(session_id)?;
         let active_turn = {
-            let a = self.active.lock().unwrap();
+            let a = self.active.lock().unwrap_or_else(|e| e.into_inner());
             a.get(session_id).map(|t| t.turn)
         };
         let newest_closed = cps.last().map(|c| c.turn).unwrap_or(-1);
@@ -320,7 +320,7 @@ impl CheckpointStore {
         }
         if let Some(at) = active_turn {
             if to_turn <= at {
-                let a = self.active.lock().unwrap();
+                let a = self.active.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(t) = a.get(session_id) {
                     for f in &t.files {
                         if seen.insert(f.path.clone()) {
@@ -337,7 +337,7 @@ impl CheckpointStore {
     /// 关闭活动轮并落库（内部）。空轮丢弃、不落库。
     fn close_active(&self, session_id: &str, anchor: Option<String>) -> Result<()> {
         let taken = {
-            let mut active = self.active.lock().unwrap();
+            let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
             active.remove(session_id)
         };
         let Some(turn) = taken else {

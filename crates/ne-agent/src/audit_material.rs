@@ -264,15 +264,21 @@ pub fn audit_chapter(lib_root: &Path, volume: &str, chapter: u32) -> Result<Chap
         evidence: "生成链走 budget::select_materials（按 card_refs 顺序遍历+预算）。rank_cards 仅用于 ne-mcp:ne_inject 预览。".into(),
     });
     // LTM 已入库键清单（category/key），供 ⑦ 判定。
-    let lt_keys: std::collections::HashSet<String> = {
-        let mut st = conn
-            .prepare("SELECT category, key FROM long_term_memory")
-            .unwrap();
-        st.query_map([], |r| Ok(format!("{}/{}", r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-            .unwrap()
+    // 【决策二·E级修复】原 prepare/query_map 上的 .unwrap() 会让库结构异常直接
+    // panic 掉整个审计进程。改为闭包内 `?` 传播，失败降级为空集合——审计报告少
+    // 一行统计，好过整条命令挂掉。
+    let lt_keys: std::collections::HashSet<String> = (|| -> anyhow::Result<_> {
+        let mut st = conn.prepare("SELECT category, key FROM long_term_memory")?;
+        // 先绑定再返回：`query_map` 的迭代器借用 `st`，若直接写在尾表达式里，
+        // 临时值会活到闭包块结束（晚于 `st` 的析构）→ E0597。加分号即可让临时
+        // 在本语句结束时就释放。
+        let out: std::collections::HashSet<String> = st
+            .query_map([], |r| Ok(format!("{}/{}", r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
             .filter_map(|x| x.ok())
-            .collect()
-    };
+            .collect();
+        Ok(out)
+    })()
+    .unwrap_or_default();
     // ── ⑦ L0/L1/L1x/L2：磁盘原文件仍未被生成链读；但同内容的 LTM 条目已入 LAYER_1。
     for (name, path, ltm_key) in [
         ("L0 整本概括", "03_叙事规划/00_整本概括.md", "顶层设定/整本概括"),
@@ -320,18 +326,20 @@ pub fn audit_chapter(lib_root: &Path, volume: &str, chapter: u32) -> Result<Chap
         evidence: format!("共 {layer1_total} 条；{}", per_cat.join("，")),
     });
     // 明细：L0/L1/L1x 是否真的进了 LAYER_1（原先它们是 NotQueried）。
-    let l0l1: Vec<(String, String, i64)> = {
-        let mut st = conn
-            .prepare(
-                "SELECT category, key, LENGTH(content) FROM long_term_memory
-                 WHERE category IN ('顶层设定','分卷大纲') ORDER BY priority, category, key",
-            )
-            .unwrap();
-        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-            .unwrap()
+    // 【决策二·E级修复】同 lt_keys：改为 `?` 传播 + 降级空向量。
+    let l0l1: Vec<(String, String, i64)> = (|| -> anyhow::Result<_> {
+        let mut st = conn.prepare(
+            "SELECT category, key, LENGTH(content) FROM long_term_memory
+             WHERE category IN ('顶层设定','分卷大纲') ORDER BY priority, category, key",
+        )?;
+        // 同上：先绑定再返回，避免借用 `st` 的临时值活过 `st`。
+        let out: Vec<(String, String, i64)> = st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
             .filter_map(|x| x.ok())
-            .collect()
-    };
+            .collect();
+        Ok(out)
+    })()
+    .unwrap_or_default();
     for (cat, key, n) in &l0l1 {
         checks.push(Check {
             item: format!("LAYER_1 条目：{cat}/{key}"),

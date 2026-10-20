@@ -7,6 +7,7 @@
 //     同时把值持久化到 localStorage，下次冷启动直接套上。
 //   · initSkin() 必须在 app.mount 之前调用，避免首帧闪一下默认皮肤。
 import { reactive, computed } from 'vue'
+import { bus, EV } from '../events.js'
 
 export const SKINS = [
   { id: 'qinglan', name: '青蓝', desc: '冷静工具感', dot: '#4f8cff', dark: false },
@@ -70,6 +71,7 @@ export function initSkin() {
   return valid
 }
 
+
 /** 切换皮肤（幂等：同值不重复写 DOM） */
 export function setSkin(skinId) {
   if (!SKINS.some((s) => s.id === skinId)) return false
@@ -83,7 +85,7 @@ export function setSkin(skinId) {
   }
   // 广播出去，方便别处（如强制重绘 canvas）监听
   if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('nov:skin', { detail: skinId }))
+    bus.emit(EV.SKIN_CHANGED, skinId)
   }
   return true
 }

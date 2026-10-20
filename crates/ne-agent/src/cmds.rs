@@ -10,7 +10,20 @@ use crate::cli::{MemoryCmd, SessionCmd, TaskCmd};
 use crate::{build_runtime, truncate};
 
 mod cmds_ctx;
+mod inspect;
+mod mcp;
+mod pipeline_ops;
+mod wg_trace;
 pub(crate) use cmds_ctx::{run_compress, run_context, run_history};
+pub(crate) use inspect::{
+    run_checkpoint, run_compliance, run_estimate, run_health, run_layer_health, run_models,
+    run_outline, run_refs, run_risk_list, run_sys_check,
+};
+pub(crate) use mcp::{run_library_ctl, run_mcp};
+pub(crate) use wg_trace::run_wg_trace;
+pub(crate) use pipeline_ops::{
+    print_audit_batch, print_audit_one, run_fix, run_novel, run_pipeline, run_score,
+};
 
 /// 运行子智能体 Lane。
 pub(crate) fn run_subagent(

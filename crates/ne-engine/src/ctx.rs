@@ -59,8 +59,25 @@ impl RepoCtx {
         if max == 0 {
             return "日常".to_string();
         }
-        // 声明序第一个达到最高分的
-        scores.iter().find(|(_, n)| *n == max).map(|(s, _)| s.to_string()).unwrap()
+        // 声明序第一个达到最高分的。
+        //
+        // 【不变量显式化】此处必然命中，理由是一个**可证明的前置条件**：
+        //   · `scores` 是定长数组 `[(&str, usize); 7]`，恒有 7 个元素（非空）；
+        //   · `max` = 这 7 个数的最大值，故 `max > 0` 时必存在某元素的计数 == max；
+        //   · 因而 `find(|(_, n)| *n == max)` 不可能返回 `None`。
+        // 修复前用 `.unwrap()` 表达这个不变量 → 一旦将来有人把 `scores` 改成
+        // 动态构造（例如按配置裁剪场景表）而忘了同步，就会在生产路径 panic。
+        // 现在：debug 构建断言不变量（开发期立刻暴露），release 构建提供语义
+        // 等价的兜底（最大计数与全 0 同义 = 无场景信号 → "日常"），不留 panic 点。
+        debug_assert!(
+            scores.iter().any(|(_, n)| *n == max),
+            "不变量破坏：max={max} 但无任何场景计数等于 max（scores 被动态改过？）"
+        );
+        scores
+            .iter()
+            .find(|(_, n)| *n == max)
+            .map(|(s, _)| s.to_string())
+            .unwrap_or_else(|| "日常".to_string())
     }
 
     /// 读细纲文件全文（卷 NN.md）。

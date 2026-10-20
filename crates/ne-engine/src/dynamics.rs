@@ -67,11 +67,18 @@ pub fn lst_square(payload: &Value) -> Result<Value> {
             }
         }
     }
-    if fval(payload, "atk_alpha").unwrap_or(0.0) > 0.0 {
-        alpha = fval(payload, "atk_alpha").unwrap();
+    // 【决策二·E级修复】原先"先 unwrap_or(0.0) 判空、再 unwrap() 取值"是两次独立
+    // 调用：当前实现下第二次必定 Some（安全），但一旦 fval 改为非确定性实现就 panic。
+    // 改为一次取值 + if let，panic 点彻底消失，语义等价。
+    if let Some(a) = fval(payload, "atk_alpha") {
+        if a > 0.0 {
+            alpha = a;
+        }
     }
-    if fval(payload, "def_beta").unwrap_or(0.0) > 0.0 {
-        beta = fval(payload, "def_beta").unwrap();
+    if let Some(b) = fval(payload, "def_beta") {
+        if b > 0.0 {
+            beta = b;
+        }
     }
 
     let ratio = alpha / beta;

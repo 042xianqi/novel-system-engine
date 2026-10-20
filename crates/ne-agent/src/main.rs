@@ -11,10 +11,9 @@
 //! 后续：chat(M1) / memory(M2) / novel(M3) / tool(M4)。
 
 use anyhow::{Context, Result};
-use ne_agent::governance::governed_call::ne_agent_gov_call;
 use clap::Parser;
 
-use crate::cli::{Cli, Cmd, LibraryCtlCmd, McpCmd, ModelsCmd, QueueCmd, VaultCmd, WorldGovCmd, AuditExportCmd, CacheCmd, ProbeExportCmd, SelfCheckCmd, TagCmd, NoteCmd, DiffCmd, DiffSnapCmd, WebCmd, ConflictCmd, GraphCmd, SandboxCmd, SandboxTraceCmd, LlmCmd, LlmCacheCmd, LlmConfigCmd, PipelineCmd, HealthCmd, OutlineCmd};
+use crate::cli::{Cli, Cmd, QueueCmd, VaultCmd, WorldGovCmd, AuditExportCmd, CacheCmd, ProbeExportCmd, SelfCheckCmd, TagCmd, NoteCmd, DiffCmd, DiffSnapCmd, WebCmd, ConflictCmd, GraphCmd, SandboxCmd, SandboxTraceCmd, LlmCmd, LlmCacheCmd, LlmConfigCmd, HealthCmd, OutlineCmd};
 use ne_agent::{RuntimeConfig, Vault};
 use std::path::{Path, PathBuf};
 mod cli;
@@ -50,7 +49,7 @@ fn run() -> Result<()> {
 
     match &cli.cmd {
         Cmd::Vault { cmd } => run_vault(&vault, cmd, cli.json),
-        Cmd::Models { cmd } => run_models(&vault, cmd, cli.json),
+        Cmd::Models { cmd } => cmds::run_models(&vault, cmd, cli.json),
         Cmd::Chat { message, resume, session, new, plan, approval } => run_chat(
             &vault,
             message.as_deref(),
@@ -88,10 +87,10 @@ fn run() -> Result<()> {
         Cmd::History { cmd } => cmds::run_history(&vault, cmd, cli.json),
         Cmd::Memory { cmd } => cmds::run_memory(&vault, cmd, cli.json),
         Cmd::Score { chap_id, volume, lib, file } => {
-            run_score(&vault, *chap_id, volume, lib.as_deref(), file.as_deref())
+            cmds::run_score(&vault, *chap_id, volume, lib.as_deref(), file.as_deref())
         }
         Cmd::Fix { chap_id, volume, lib, findings, dry_run } => {
-            run_fix(&vault, *chap_id, volume, lib.as_deref(), findings.as_deref(), *dry_run)
+            cmds::run_fix(&vault, *chap_id, volume, lib.as_deref(), findings.as_deref(), *dry_run)
         }
         Cmd::Novel { chap_id, volume, lib, dry_run, prompt_only, use_memory, check_compliance, preflight } => {
             let lib_root_for_pf = lib.clone().or_else(|| cli.work_root.clone()).unwrap_or_else(|| vault.workspace());
@@ -106,7 +105,7 @@ fn run() -> Result<()> {
                     anyhow::bail!("生成前闸门未通过（Fatal {} 项）：已中止，未调模型", rep.fatal);
                 }
             }
-            let r = run_novel(&vault, *chap_id, volume, lib.as_deref(), *dry_run, *prompt_only, *use_memory, cli.json);
+            let r = cmds::run_novel(&vault, *chap_id, volume, lib.as_deref(), *dry_run, *prompt_only, *use_memory, cli.json);
             // 可选：落盘后独立做一次治理登记（默认关；只记录 refs/待评，不改正文）
             if *check_compliance && r.is_ok() {
                 let lib_root = lib.clone().unwrap_or_else(|| vault.workspace());
@@ -120,11 +119,11 @@ fn run() -> Result<()> {
         }
         Cmd::AuditLayerHealth { semantic, lib } => {
             let lib_root = lib.clone().or_else(|| cli.work_root.clone()).unwrap_or_else(|| vault.workspace());
-            run_layer_health(&lib_root, *semantic, cli.json)
+            cmds::run_layer_health(&lib_root, *semantic, cli.json)
         }
         Cmd::LibraryCtl { cmd } => {
             let lib_root = cli.work_root.clone().unwrap_or_else(|| vault.workspace());
-            run_library_ctl(&lib_root, cmd, cli.json)
+            cmds::run_library_ctl(&lib_root, cmd, cli.json)
         }
         Cmd::WorldGov { cmd } => {
             let lib_root = cli.work_root.clone().unwrap_or_else(|| vault.workspace());
@@ -132,19 +131,19 @@ fn run() -> Result<()> {
         }
         Cmd::AuditChapterCompliance { from, to, volume, lib, semantic } => {
             let lib_root = lib.clone().or_else(|| cli.work_root.clone()).unwrap_or_else(|| vault.workspace());
-            run_compliance(&vault, &lib_root, *from, *to, volume, *semantic, cli.json)
+            cmds::run_compliance(&vault, &lib_root, *from, *to, volume, *semantic, cli.json)
         }
         Cmd::AuditRefs { volume, lib } => {
             let lib_root = lib.clone().or_else(|| cli.work_root.clone()).unwrap_or_else(|| vault.workspace());
-            run_refs(&lib_root, volume, cli.json)
+            cmds::run_refs(&lib_root, volume, cli.json)
         }
         Cmd::AuditRiskList { all, lib } => {
             let lib_root = lib.clone().or_else(|| cli.work_root.clone()).unwrap_or_else(|| vault.workspace());
-            run_risk_list(&lib_root, !*all, cli.json)
+            cmds::run_risk_list(&lib_root, !*all, cli.json)
         }
         Cmd::LibCheckpoint { lib, out } => {
             let lib_root = lib.clone().or_else(|| cli.work_root.clone()).unwrap_or_else(|| vault.workspace());
-            run_checkpoint(&lib_root, out.clone(), cli.json)
+            cmds::run_checkpoint(&lib_root, out.clone(), cli.json)
         }
         Cmd::AuditMaterialCoverage { from, to, volume, lib } => {
             let lib_root = lib.clone().or_else(|| cli.work_root.clone()).unwrap_or_else(|| vault.workspace());
@@ -153,14 +152,14 @@ fn run() -> Result<()> {
                 if cli.json {
                     println!("{}", serde_json::to_string_pretty(&rep)?);
                 } else {
-                    print_audit_batch(&rep);
+                    cmds::print_audit_batch(&rep);
                 }
             } else {
                 let rep = ne_agent::audit_material::audit_chapter(&lib_root, volume, *from)?;
                 if cli.json {
                     println!("{}", serde_json::to_string_pretty(&rep)?);
                 } else {
-                    print_audit_one(&rep);
+                    cmds::print_audit_one(&rep);
                 }
             }
             Ok(())
@@ -173,7 +172,7 @@ fn run() -> Result<()> {
                     lib.clone().or_else(|| cli.work_root.clone()).unwrap_or_else(|| vault.workspace())
                 }
             };
-            run_health(&lib_root, cmd, cli.json)
+            cmds::run_health(&lib_root, cmd, cli.json)
         }
         Cmd::Outline { cmd } => {
             let lib_root = match cmd {
@@ -183,16 +182,16 @@ fn run() -> Result<()> {
                     lib.clone().or_else(|| cli.work_root.clone()).unwrap_or_else(|| vault.workspace())
                 }
             };
-            run_outline(&vault, &lib_root, cmd)
+            cmds::run_outline(&vault, &lib_root, cmd)
         }
-        Cmd::Mcp { cmd } => run_mcp(&vault, cmd, cli.json),
+        Cmd::Mcp { cmd } => cmds::run_mcp(&vault, cmd, cli.json),
         Cmd::SysCheck { mode, lib } => {
             let lib_root = lib.clone().or_else(|| cli.work_root.clone()).unwrap_or_else(|| vault.workspace());
-            run_sys_check(&lib_root, mode, cli.json)
+            cmds::run_sys_check(&lib_root, mode, cli.json)
         }
         Cmd::Pipeline { cmd } => {
             let lib_root = cli.work_root.clone().unwrap_or_else(|| vault.workspace());
-            run_pipeline(&vault, &lib_root, cmd, cli.json, cli.quiet)
+            cmds::run_pipeline(&vault, &lib_root, cmd, cli.json, cli.quiet)
         }
         // 【规约适配】顶层别名：构造等价的 WorldGovCmd 并委托 run_world_gov（完全复用底层，不另起逻辑）
         Cmd::Snap { cmd, lib } => {
@@ -249,37 +248,8 @@ fn run() -> Result<()> {
             }
             Ok(())
         }
-        Cmd::Estimate { file } => run_estimate(file.as_deref(), cli.json),
+        Cmd::Estimate { file } => cmds::run_estimate(file.as_deref(), cli.json),
     }
-}
-
-/// 估算 token（上下文预算调试用）。
-fn run_estimate(file: Option<&Path>, json: bool) -> Result<()> {
-    use std::io::Read;
-    let text = match file {
-        Some(p) => std::fs::read_to_string(p)
-            .with_context(|| format!("读文件失败：{}", p.display()))?,
-        None => {
-            let mut s = String::new();
-            std::io::stdin()
-                .read_to_string(&mut s)
-                .context("从 stdin 读取失败")?;
-            s
-        }
-    };
-    let tokens = ne_agent::context::estimate_tokens(&text);
-    let chars = text.chars().count();
-    if json {
-        println!(
-            "{}",
-            serde_json::json!({ "chars": chars, "tokens": tokens,
-                "ratio": if tokens == 0 { 0.0 } else { chars as f64 / tokens as f64 } })
-        );
-    } else {
-        let ratio = if tokens == 0 { 0.0 } else { chars as f64 / tokens as f64 };
-        println!("{chars} 字 → {tokens} token（{ratio:.2} 字/token）");
-    }
-    Ok(())
 }
 
 fn run_vault(vault: &Vault, cmd: &VaultCmd, json: bool) -> Result<()> {
@@ -508,641 +478,6 @@ fn truncate(s: &str, n: usize) -> String {
     } else {
         one_line.to_string()
     }
-}
-
-/// 管理外部 MCP 服务。
-fn run_mcp(vault: &Vault, cmd: &McpCmd, json: bool) -> Result<()> {
-    vault.init()?;
-    let cfg = RuntimeConfig::load(vault.root())?;
-    match cmd {
-        McpCmd::List => {
-            if cfg.mcp.servers.is_empty() {
-                if json {
-                    println!("[]");
-                } else {
-                    println!("（未配置 MCP 服务；在 runtime.yaml 的 mcp.servers 里添加）");
-                }
-                return Ok(());
-            }
-            if json {
-                let v: Vec<serde_json::Value> = cfg
-                    .mcp
-                    .servers
-                    .iter()
-                    .map(|s| serde_json::json!({
-                        "name": s.name, "command": s.command, "args": s.args, "enabled": s.enabled,
-                    }))
-                    .collect();
-                println!("{}", serde_json::to_string_pretty(&v)?);
-            } else {
-                for s in &cfg.mcp.servers {
-                    println!(
-                        "  {:<14} {} {}  {}",
-                        s.name,
-                        s.command,
-                        s.args.join(" "),
-                        if s.enabled { "" } else { "（已禁用）" }
-                    );
-                }
-            }
-            Ok(())
-        }
-        McpCmd::Tools { name } => {
-            let specs: Vec<ne_agent::config::McpServerCfg> = cfg
-                .mcp
-                .servers
-                .iter()
-                .filter(|s| s.enabled && name.as_ref().map(|n| &s.name == n).unwrap_or(true))
-                .cloned()
-                .collect();
-            if specs.is_empty() {
-                anyhow::bail!("没有匹配的（已启用）MCP 服务");
-            }
-            let mut reg = ne_agent::mcp::McpRegistry::new(specs);
-            let tools = reg.discover_all();
-            if json {
-                let v: Vec<serde_json::Value> = tools
-                    .iter()
-                    .map(|(srv, t)| serde_json::json!({
-                        "qualified": format!("mcp__{srv}__{}", t.name),
-                        "server": srv, "name": t.name,
-                        "description": t.description, "inputSchema": t.input_schema,
-                    }))
-                    .collect();
-                println!("{}", serde_json::to_string_pretty(&v)?);
-            } else if tools.is_empty() {
-                println!("（服务未提供任何工具，或全部连接失败）");
-            } else {
-                for (srv, t) in tools {
-                    println!("  mcp__{srv}__{}  {}", t.name, t.description);
-                }
-            }
-            Ok(())
-        }
-        McpCmd::Call { server, tool, args_json } => {
-            let spec = cfg
-                .mcp
-                .servers
-                .iter()
-                .find(|s| s.name == *server && s.enabled)
-                .ok_or_else(|| anyhow::anyhow!("未配置（或已禁用）的 MCP 服务：{server}"))?
-                .clone();
-            let args: serde_json::Value = serde_json::from_str(args_json)
-                .map_err(|e| anyhow::anyhow!("args_json 不是合法 JSON：{e}"))?;
-            let mut reg = ne_agent::mcp::McpRegistry::new(vec![spec]);
-            let out = reg.call(server, tool, args)?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&serde_json::json!({"result": out}))?);
-            } else {
-                println!("{out}");
-            }
-            Ok(())
-        }
-        McpCmd::ProbeAll { call_test } => {
-            let specs: Vec<ne_agent::config::McpServerCfg> = cfg
-                .mcp
-                .servers
-                .iter()
-                .filter(|s| s.enabled)
-                .cloned()
-                .collect();
-            if specs.is_empty() {
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                        "command": "mcp probe-all", "servers": [], "note": "未配置（或全部禁用）MCP 服务",
-                    }))?);
-                } else {
-                    println!("（未配置 MCP 服务；在 runtime.yaml 的 mcp.servers 里添加）");
-                }
-                return Ok(());
-            }
-            let mut reports: Vec<serde_json::Value> = Vec::new();
-            for spec in &specs {
-                // 逐服务独立连接，一个失败不影响其它（可用性探测的语义）
-                let mut reg = ne_agent::mcp::McpRegistry::new(vec![spec.clone()]);
-                let tools = reg.discover_all();
-                let server_tools: Vec<serde_json::Value> = tools
-                    .iter()
-                    .filter(|(srv, _)| srv == &spec.name)
-                    .map(|(_, t)| serde_json::json!({"name": t.name, "description": t.description}))
-                    .collect();
-                let ok = !server_tools.is_empty();
-                let mut calls: Vec<serde_json::Value> = Vec::new();
-                if *call_test && ok {
-                    for (_, t) in tools.iter().filter(|(srv, _)| srv == &spec.name) {
-                        // 轻量探活：用空参数调用；执行期失败也算"可达"（关键在握手/往返通）
-                        match reg.call(&spec.name, &t.name, serde_json::json!({})) {
-                            Ok(_) => calls.push(serde_json::json!({"tool": t.name, "reachable": true})),
-                            Err(e) => calls.push(serde_json::json!({"tool": t.name, "reachable": false, "error": e.to_string()})),
-                        }
-                    }
-                }
-                reports.push(serde_json::json!({
-                    "server": spec.name, "command": spec.command, "args": spec.args,
-                    "ok": ok, "tool_count": server_tools.len(), "tools": server_tools,
-                    "call_test": if *call_test { serde_json::json!(calls) } else { serde_json::Value::Null },
-                }));
-            }
-            let all_ok = reports.iter().all(|r| r["ok"] == true);
-            if json {
-                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                    "command": "mcp probe-all", "all_ok": all_ok,
-                    "server_count": reports.len(), "servers": reports,
-                }))?);
-            } else {
-                println!("== mcp probe-all（{} 个服务；{}）==", reports.len(),
-                    if all_ok { "全部可达" } else { "存在不可达" });
-                for r in &reports {
-                    println!("  {} {} 工具 {} — {}",
-                        if r["ok"] == true { "✅" } else { "❌" },
-                        r["server"].as_str().unwrap_or(""),
-                        r["tool_count"],
-                        if r["ok"] == true { "握手 + 列工具成功" } else { "连接失败或无工具" });
-                    if *call_test {
-                        if let Some(cs) = r["call_test"].as_array() {
-                            for c in cs {
-                                println!("      {} {} {}", if c["reachable"] == true { "·" } else { "✗" },
-                                    c["tool"].as_str().unwrap_or(""),
-                                    c["error"].as_str().unwrap_or(""));
-                            }
-                        }
-                    }
-                }
-            }
-            Ok(())
-        }
-    }
-}
-
-/// 【规约适配】全局系统自检（= `world-gov self-check run` 的别名入口）。
-///
-/// 第 18 批：对齐《项目总规约》的 `sys-check full --json`。**复用**同一实现。
-/// 系统健康自检（两层）。
-///
-/// - `health modules`：加载时模块自检。
-/// - `health preflight --chapter N`：生成前注入就绪闸门。
-///   **Fatal 项 → 退出码非 0**（便于脚本在生成前卡住）。
-fn run_health(lib_root: &Path, cmd: &HealthCmd, json: bool) -> Result<()> {
-    let rep = match cmd {
-        HealthCmd::Modules { volume, .. } => ne_agent::health::check_modules(lib_root, volume)?,
-        HealthCmd::Preflight { chapter, volume, .. } => {
-            ne_agent::health::preflight(lib_root, volume, *chapter)?
-        }
-        HealthCmd::Boot { volume, .. } => ne_agent::health::boot(lib_root, volume)?,
-    };
-    if json {
-        println!("{}", serde_json::to_string_pretty(&rep)?);
-    } else {
-        ne_agent::health::print_report(&rep);
-    }
-    if !rep.ready {
-        std::process::exit(2);
-    }
-    Ok(())
-}
-
-/// 细纲工具（`outline rebuild`）：调 LLM 把「1 拍 5 章概要复制」重建为 5 个递进子拍。
-fn run_outline(vault: &Vault, lib_root: &Path, cmd: &OutlineCmd) -> Result<()> {
-    vault.init()?;
-    match cmd {
-        OutlineCmd::Rebuild { volume, beat, dry_run, .. } => {
-            if !lib_root.exists() {
-                anyhow::bail!("库根不存在：{}", lib_root.display());
-            }
-            let cfg = RuntimeConfig::load(vault.root())?;
-            let llm = cfg.llm_params(&vault.llm_dir())?;
-            let opts = ne_agent::outline_rebuild::RebuildOpts {
-                volume: volume.clone(),
-                only_beat: *beat,
-                dry_run: *dry_run,
-            };
-            println!("== 细纲重建 {}（{}）==", volume, if *dry_run { "dry-run" } else { "落盘" });
-            let (ok, keep) = ne_agent::outline_rebuild::rebuild(lib_root, &llm, &opts)?;
-            if keep > 0 && ok == 0 {
-                anyhow::bail!("全部 {keep} 拍均未通过校验、已保留原样");
-            }
-            Ok(())
-        }
-        OutlineCmd::Sanitize { volume, chapter, dry_run, .. } => {
-            if !lib_root.exists() {
-                anyhow::bail!("库根不存在：{}", lib_root.display());
-            }
-            let cfg = RuntimeConfig::load(vault.root())?;
-            let llm = cfg.llm_params(&vault.llm_dir())?;
-            let opts = ne_agent::outline_rebuild::SanitizeOpts {
-                volume: volume.clone(),
-                only_chapter: *chapter,
-                dry_run: *dry_run,
-            };
-            println!("== 细纲设计层词清洗 {}（{}）==", volume, if *dry_run { "dry-run" } else { "落盘" });
-            let (ok, keep) = ne_agent::outline_rebuild::sanitize(lib_root, &llm, &opts)?;
-            if ok == 0 && keep > 0 {
-                println!("⚠ 无章被清洗（可能本卷已干净，或全部保留原样）");
-            }
-            Ok(())
-        }
-        OutlineCmd::Check { volume, json, .. } => {
-            if !lib_root.exists() {
-                anyhow::bail!("库根不存在：{}", lib_root.display());
-            }
-            let rep = ne_agent::health::boot(lib_root, volume)?;
-            // 只暴露与「细纲出厂」相关的两项（设计层词/雷同），其余（注入面卡）另属 boot 范畴。
-            let relevant: Vec<_> = rep
-                .checks
-                .iter()
-                .filter(|c| c.name.contains("细纲"))
-                .collect();
-            if *json {
-                println!("{}", serde_json::to_string_pretty(&relevant)?);
-            } else {
-                println!("== 细纲出厂门禁 {volume} ==");
-                for c in &relevant {
-                    let mark = match c.level {
-                        ne_agent::health::Level::Fatal => "❌",
-                        ne_agent::health::Level::Warn => "⚠",
-                        ne_agent::health::Level::Info => "✅",
-                    };
-                    println!("  {mark} {} : {}", c.name, c.detail);
-                }
-            }
-            let fatal = relevant
-                .iter()
-                .any(|c| matches!(c.level, ne_agent::health::Level::Fatal));
-            if fatal {
-                anyhow::bail!("细纲出厂门禁未过（含 Fatal）");
-            }
-            Ok(())
-        }
-    }
-}
-
-fn run_sys_check(lib_root: &Path, mode: &str, json: bool) -> Result<()> {
-    match mode {
-        "full" => {}
-        other => anyhow::bail!("sys-check 未知 mode：{other}（当前仅支持 full）"),
-    }
-    let conn = ne_agent::governance::open_gov(lib_root)?;
-    let r = ne_agent::governance::self_check::run(&conn, lib_root, false, 30)?;
-    if json {
-        println!("{}", serde_json::to_string_pretty(&r)?);
-    } else {
-        println!("== sys-check full（= world-gov self-check；{} 项检查，{} 失败）==",
-            r["checks"], r["failed"]);
-        if let Some(items) = r["items"].as_array() {
-            for it in items {
-                let mark = if it["ok"] == true {
-                    if it["warn"].as_bool().unwrap_or(false) { "⚠" } else { "✅" }
-                } else { "❌" };
-                println!("  {mark} {} : {}", it["name"], it["detail"]);
-            }
-        }
-    }
-    Ok(())
-}
-
-/// 【规约适配】pipeline 命令组（scan-auto / world-analyze）。
-///
-/// 第 18 批：对齐《项目总规约》的命令面。全部是**适配层**——底层复用 world-gov 的
-/// `scan_library` 与统一 `semantic_pipeline` 收口，不另起一套。默认零外呼；
-/// `--ai-run` 才显式开命令行锁（仍需 feature + WOGOV_ALLOW_REAL_LLM=yes）。
-fn run_pipeline(vault: &Vault, lib_root: &Path, cmd: &PipelineCmd, json: bool, quiet: bool) -> Result<()> {
-    let _ = vault;
-    match cmd {
-        PipelineCmd::ScanAuto { slice, ai_guided, ai_run, dry_run, all_layers, lib: _ } => {
-            let conn = ne_agent::governance::open_gov(lib_root)?;
-            ne_agent::governance::progress::emit(quiet, "pipeline scan-auto", 0, 1, None);
-            // 复用 world-gov scan-library 同一实现；semantic = --ai-run（显式）
-            let r = ne_agent::world_gov::scan_library(
-                &conn, lib_root, slice.as_deref(), *ai_run, *dry_run, *all_layers, None, None, None,
-            )?;
-            ne_agent::governance::progress::emit(quiet, "pipeline scan-auto", 1, 1, Some(0));
-            if json {
-                let mut out = r.clone();
-                out["command"] = serde_json::json!("pipeline scan-auto");
-                out["ai_guided"] = serde_json::json!(ai_guided);
-                out["ai_run"] = serde_json::json!(ai_run);
-                out["llm_gate"] = ne_agent::governance::llm_gate::lock_status(*ai_run);
-                println!("{}", serde_json::to_string_pretty(&out)?);
-            } else {
-                let s = &r["slice"];
-                println!("== pipeline scan-auto（AI 引导扫描包装）==");
-                println!("分片 {}/{}：本片 {} 条 / 扫描域 {} 条", s["n"], s["m"], s["items"], s["total"]);
-                println!("semantic={} ai_guided={} ai_run={} dry_run={}", r["semantic"], ai_guided, ai_run, dry_run);
-                if !*ai_run {
-                    println!("[默认零外呼] 只产探针清单；加 --ai-run 才走真实语义扫描（仍需三重锁）。");
-                } else {
-                    let st = ne_agent::governance::llm_gate::lock_status(true);
-                    if st["gate_unlocked"] == true {
-                        println!("[三重锁已开] 真实语义扫描通路已启用。");
-                    } else {
-                        println!("[三重锁未全开] {}", st["status"].as_str().unwrap_or(""));
-                    }
-                }
-                if *dry_run { println!("[--dry-run] 未落盘清单文件。"); }
-            }
-            Ok(())
-        }
-        PipelineCmd::WorldAnalyze { slice, ai_run, dry_run, lib: _ } => {
-            let conn = ne_agent::governance::open_gov(lib_root)?;
-            let r = ne_agent::world_gov::scan_library(
-                &conn, lib_root, slice.as_deref(), *ai_run, *dry_run, false, None, None, None,
-            )?;
-            if json {
-                let mut out = r.clone();
-                out["command"] = serde_json::json!("pipeline world-analyze");
-                out["ai_run"] = serde_json::json!(ai_run);
-                out["llm_gate"] = ne_agent::governance::llm_gate::lock_status(*ai_run);
-                println!("{}", serde_json::to_string_pretty(&out)?);
-            } else {
-                println!("== pipeline world-analyze（= scan-library --semantic 别名）==");
-                println!("扫描域 {} 条；semantic={} ai_run={}", r["counts"]["used"], r["semantic"], ai_run);
-                println!("入库通路: {}", r["semantic_channel"]);
-                if !*ai_run {
-                    println!("[默认零外呼] 结构化报告骨架已产；加 --ai-run 走真实语义（仍需三重锁）。");
-                }
-            }
-            Ok(())
-        }
-    }
-}
-
-/// 生成一章。
-///
-/// 库根解析顺序：显式 `--lib` / `$NE_AGENT_LIB` → vault 的 `workspace/`
-/// （vault 里放一份库，或软链指向真实资料库）。
-/// 按 l5_质检.md 对正文做 LLM 深读（输出质检报告）。
-fn run_score(
-    vault: &Vault,
-    chap_id: u32,
-    volume: &str,
-    lib: Option<&Path>,
-    file: Option<&Path>,
-) -> Result<()> {
-    let lib_root = lib.map(|p| p.to_path_buf()).unwrap_or_else(|| vault.workspace());
-    let prompt_dir = vault.path(ne_agent::vault::PROMPTS_DIR);
-    let ctx = ne_agent::novel_ctx::NovelCtx::open(&lib_root)?.with_prompt_fallback(&prompt_dir);
-    // 读正文
-    let text_path = file
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| lib_root.join("04_正文").join(volume).join(format!("第{chap_id}章.md")));
-    let text = std::fs::read_to_string(&text_path)
-        .with_context(|| format!("读不到正文：{}", text_path.display()))?;
-    let tpl = ctx.prompt_template("l5_质检.md", Some(&prompt_dir)).unwrap_or_default();
-    let outline = ne_engine::chapter::ChapterCtx::injection(&ctx, volume, chap_id)
-        .ok()
-        .and_then(|v| v.get("chapter").and_then(|c| c.get("outline")).and_then(|o| o.as_str()).map(|s| s.to_string()))
-        .unwrap_or_default();
-    let prompt = format!("{tpl}\n\n── 待质检正文（第{chap_id}章）──\n{text}\n\n── 本章细纲 ──\n{outline}\n");
-    let llm = RuntimeConfig::load(vault.root())?.llm_params(&vault.llm_dir())?;
-    let msgs = vec![
-        ne_engine::llm::Message::system("你是《残响之河》的质检员。按模板逐维扫描，输出 findings（P0/P1）与总评，不要改写正文。"),
-        ne_engine::llm::Message::user(prompt),
-    ];
-    let out = ne_agent_gov_call(&llm, &msgs)?;
-    let rep = lib_root.join("07_勘误工坊").join(format!("质检_卷{volume}_第{chap_id}章.md"));
-    std::fs::create_dir_all(rep.parent().unwrap())?;
-    std::fs::write(&rep, &out.content)?;
-    println!("质检报告 → {}", rep.display());
-    println!("{}", out.content.chars().take(600).collect::<String>());
-    Ok(())
-}
-
-/// 按 l5_修复.md 定向修复（读质检 findings + 原文）。
-fn run_fix(
-    vault: &Vault,
-    chap_id: u32,
-    volume: &str,
-    lib: Option<&Path>,
-    findings: Option<&Path>,
-    dry_run: bool,
-) -> Result<()> {
-    let lib_root = lib.map(|p| p.to_path_buf()).unwrap_or_else(|| vault.workspace());
-    let prompt_dir = vault.path(ne_agent::vault::PROMPTS_DIR);
-    let ctx = ne_agent::novel_ctx::NovelCtx::open(&lib_root)?.with_prompt_fallback(&prompt_dir);
-    let text_path = lib_root.join("04_正文").join(volume).join(format!("第{chap_id}章.md"));
-    let text = std::fs::read_to_string(&text_path)
-        .with_context(|| format!("读不到正文：{}", text_path.display()))?;
-    let fnd = match findings {
-        Some(p) => std::fs::read_to_string(p).unwrap_or_default(),
-        None => std::fs::read_to_string(lib_root.join("07_勘误工坊").join(format!("质检_卷{volume}_第{chap_id}章.md"))).unwrap_or_default(),
-    };
-    let tpl = ctx.prompt_template("l5_修复.md", Some(&prompt_dir)).unwrap_or_default();
-    let prompt = format!("{tpl}\n\n── 质检 findings ──\n{fnd}\n\n── 原正文 ──\n{text}\n");
-    let llm = RuntimeConfig::load(vault.root())?.llm_params(&vault.llm_dir())?;
-    let msgs = vec![
-        ne_engine::llm::Message::system("你是《残响之河》的修复者。最小改动，只修命中的维度，输出修复后正文全文。"),
-        ne_engine::llm::Message::user(prompt),
-    ];
-    let out = ne_agent_gov_call(&llm, &msgs)?;
-    if dry_run {
-        println!("{}", out.content);
-    } else {
-        let path = ne_engine::chapter::write_chapter(&lib_root, &out.content, chap_id, volume)?;
-        println!("修复后正文 → {path}");
-    }
-    Ok(())
-}
-
-fn run_novel(
-    vault: &Vault,
-    chap_id: u32,
-    volume: &str,
-    lib: Option<&Path>,
-    dry_run: bool,
-    prompt_only: bool,
-    use_memory: bool,
-    json: bool,
-) -> Result<()> {
-    vault.init()?;
-    let lib_root = match lib {
-        Some(p) => p.to_path_buf(),
-        None => vault.workspace(),
-    };
-    if !lib_root.exists() {
-        anyhow::bail!(
-            "库根不存在：{}\n提示：用 `--lib <资料库根>` 指定，或把它放到 vault 的 workspace/ 下",
-            lib_root.display()
-        );
-    }
-
-    let cfg = RuntimeConfig::load(vault.root())?;
-    let prompt_dir = vault.path(ne_agent::vault::PROMPTS_DIR);
-
-    if prompt_only {
-        // 只组装 prompt，不调模型 → 不需要模型配置
-        let ctx = ne_agent::novel_ctx::NovelCtx::open(&lib_root)?
-            .with_prompt_fallback(&prompt_dir);
-        let prompt = ne_engine::chapter::build_prompt(&ctx, chap_id, volume)
-            .map_err(|e| anyhow::anyhow!("组装第 {chap_id} 章 prompt 失败（卷 {volume}）：{e}"))?;
-        if json {
-            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                "chapter": chap_id, "volume": volume,
-                "promptChars": prompt.chars().count(),
-                "prompt": prompt,
-            }))?);
-        } else {
-            println!("第 {chap_id} 章（{volume}）prompt 已组装：{} 字", prompt.chars().count());
-            println!("── 前 800 字 ──");
-            println!("{}", prompt.chars().take(800).collect::<String>());
-        }
-        return Ok(());
-    }
-
-    let llm = cfg.llm_params(&vault.llm_dir())?;
-    let out = ne_agent::task::novel_chapter_with_memory(
-        &lib_root,
-        volume,
-        chap_id,
-        &llm,
-        &vault.workspace(),
-        &prompt_dir,
-        dry_run,
-        use_memory,
-    )?;
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-            "chapter": out.chapter, "volume": out.volume,
-            "chars": out.text.chars().count(),
-            "writtenTo": out.written_to,
-            "verdict": out.verdict, "p0": out.p0, "p1": out.p1,
-            "notes": out.notes,
-        }))?);
-    } else {
-        print!("{}", out.render());
-    }
-    Ok(())
-}
-
-fn run_models(vault: &Vault, cmd: &ModelsCmd, json: bool) -> Result<()> {
-    let llm_dir = vault.llm_dir();
-    match cmd {
-        ModelsCmd::List => {
-            let s = RuntimeConfig::describe_models(&llm_dir)?;
-            if json {
-                let providers: Vec<serde_json::Value> = s
-                    .providers
-                    .iter()
-                    .map(|p| {
-                        serde_json::json!({
-                            "name": p.name,
-                            "baseUrl": p.base_url,
-                            "keyCount": p.key_count,
-                            "keySource": p.key_source,
-                            "models": p.models,
-                        })
-                    })
-                    .collect();
-                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                    "dir": s.dir.display().to_string(),
-                    "providers": providers,
-                    "roles": s.roles,
-                }))?);
-            } else {
-                print!("{}", s.render());
-            }
-            Ok(())
-        }
-        ModelsCmd::Check => {
-            let cfg = RuntimeConfig::load(vault.root())?;
-            let p = cfg.llm_params(&llm_dir)?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                    "ok": true,
-                    "model": p.model,
-                    "baseUrl": p.base_url,
-                    "keyCount": p.keys.len(),
-                    "maxTokens": p.max_tokens,
-                }))?);
-            } else {
-                println!("✓ 配置可用");
-                println!("  模型   ：{}", if p.model.is_empty() { "(未指定)" } else { &p.model });
-                println!("  端点   ：{}", p.base_url);
-                println!("  key 数 ：{}", p.keys.len());
-                println!("  max_tokens：{}", p.max_tokens);
-            }
-            Ok(())
-        }
-    }
-}
-
-/// 人读输出：单章。
-fn print_audit_one(a: &ne_agent::audit_material::ChapterAudit) {
-    use ne_agent::audit_material::Status;
-    println!("== 审计 {} 第{}章 ==", a.volume, a.chapter);
-    println!("细纲切出: {}  引用卡 {} → 选入 {}", a.outline_found, a.refs_total, a.refs_selected);
-    println!("prompt 合计 {} 字；记忆注入 {} token", a.prompt_chars, a.mem.inject_tokens);
-    println!("短期 {} 条 / 快照 {:?} / char_state {} 行 / 锚点 {} 条", a.mem.short_term_rows, a.mem.snapshot_id, a.mem.char_state_rows, a.mem.anchor_rows);
-    println!("压缩细纲 {} 字（原 {} 字）", a.mem.compressed_outline_chars, a.mem.raw_outline_chars);
-    println!("--");
-    for c in &a.checks {
-        let tag = match c.status { Status::Hit => "HIT   ", Status::Empty => "EMPTY ", Status::NotQueried => "NOQUERY" };
-        println!("[{tag}] {} :: {}", c.item, c.evidence);
-    }
-}
-
-/// 人读输出：批量汇总表。
-fn print_audit_batch(rep: &serde_json::Value) {
-    println!("== 批量审计 {} 第{}-{}章（共 {} 章）==", rep["volume"], rep["from"], rep["to"], rep["chapters"]);
-    println!("{:<52} {:>5} {:>6} {:>9}  {}", "项", "HIT", "EMPTY", "NOQUERY", "判定");
-    if let Some(sum) = rep["summary"].as_array() {
-        for s in sum {
-            println!(
-                "{:<52} {:>5} {:>6} {:>9}  {}",
-                s["item"].as_str().unwrap_or("").chars().take(50).collect::<String>(),
-                s["hit"], s["empty"], s["not_queried"], s["verdict"].as_str().unwrap_or("")
-            );
-        }
-    }
-}
-
-
-// ─────────────────────────── 治理工具实现（独立外挂，默认只读/默认关）
-
-fn run_layer_health(lib_root: &Path, semantic: bool, json: bool) -> Result<()> {
-    let conn = ne_agent::governance::open_gov(lib_root)?;
-    let entries = ne_agent::governance::layer_health(&conn)?;
-    // 入库风险
-    for e in &entries {
-        if e.level != "OK" {
-            ne_agent::governance::record_risk(&conn, "layer_health", None, None,
-                "audit-layer-health", &e.level, &format!("{} / {}: {}", e.layer, e.key, e.notes.join("；")))?;
-        }
-    }
-    if json {
-        println!("{}", serde_json::to_string_pretty(&entries)?);
-    } else {
-        println!("== L0~锚点 层级健康巡检（{} 条）==", entries.len());
-        for e in &entries {
-            println!("[{:8}] {:6} {} / {}（{} 字）{:?} {}", e.level, e.layer, e.category, e.key, e.chars, e.types,
-                if e.notes.is_empty() { String::new() } else { format!("← {}", e.notes.join("；")) });
-        }
-    }
-    if semantic {
-        eprintln!("[提示] --semantic 需要模型；当前为无模型元检查。语义检查请由上层 agent 调 LLM（本工具只产基准文本，不自行调用）。");
-    }
-    Ok(())
-}
-
-fn run_library_ctl(lib_root: &Path, cmd: &LibraryCtlCmd, json: bool) -> Result<()> {
-    let conn = ne_agent::governance::open_gov(lib_root)?;
-    let out = match cmd {
-        LibraryCtlCmd::Init => ne_agent::governance::library_init(&conn, lib_root)?,
-        LibraryCtlCmd::Classify { out } => {
-            let dir = out.clone().unwrap_or_else(|| lib_root.join("07_勘误工坊/export"));
-            ne_agent::governance::library_classify(&conn, Some(&dir))?
-        }
-        LibraryCtlCmd::Audit { semantic: _ } => ne_agent::governance::library_audit(&conn, lib_root)?,
-        LibraryCtlCmd::Export { out, layer } => {
-            let dir = out.clone().unwrap_or_else(|| lib_root.join("07_勘误工坊/export"));
-            ne_agent::governance::library_export_layer(&conn, lib_root, &dir, layer.as_deref())?
-        }
-        LibraryCtlCmd::Reindex { batch: _ } => ne_agent::governance::library_reindex(lib_root)?,
-        LibraryCtlCmd::Stats => ne_agent::governance::library_stats(&conn)?,
-    };
-    if json { println!("{}", serde_json::to_string_pretty(&out)?); }
-    else { println!("{}", serde_json::to_string_pretty(&out)?); }
-    Ok(())
 }
 
 /// world-gov —— 世界观法务官（独立外挂；默认零模型只产探针包；--semantic 才调模型）。
@@ -2124,16 +1459,7 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
             }
         }
         WorldGovCmd::Trace { key, dry_run: _, lib: _ } => {
-            let r = world_gov::trace(&conn, lib_root, key)?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&r)?);
-            } else if r["status"] == "NOT_FOUND" {
-                println!("未找到 key={key}");
-            } else {
-                println!("== 法理溯源链 ==");
-                println!("{}", r["visual"].as_str().unwrap_or(""));
-                println!("（共 {} 层上层约束；详见 --json）", r["chain_len"]);
-            }
+            cmds::run_wg_trace(&conn, lib_root, key, json)?;
         }
         WorldGovCmd::ScanLibrary { semantic, slice, dry_run, enqueue, persist, all_layers, since, since_snap, write_snapshot, no_cache, invalidate_cache, with_tag, without_tag, lib: _ } => {
             if *enqueue {
@@ -2820,7 +2146,13 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
                                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
                                         let ckey = v["key"].as_str().unwrap_or("");
                                         if !ckey.is_empty() && !tag_ok(ckey) { tag_filtered += 1; continue; }
-                                        items.push((format!("probe-cache-{}.json", p.file_stem().unwrap().to_string_lossy()), v));
+                                        // 【决策二·D级修复】file_stem() 对 ".." 之类无主名路径返回 None，
+                                        // 原 .unwrap() 会 panic。降级为文件名兜底，永不再炸。
+                                        let stem = p.file_stem()
+                                            .map(|x| x.to_string_lossy().into_owned())
+                                            .or_else(|| p.file_name().map(|x| x.to_string_lossy().into_owned()))
+                                            .unwrap_or_else(|| "unknown".to_string());
+                                        items.push((format!("probe-cache-{stem}.json"), v));
                                     }
                                 }
                             }
@@ -3452,78 +2784,5 @@ return gov_enqueue(&conn, ne_agent::governance::pipeline::JobKind::InspectCard,
             }
         }
     }
-    Ok(())
-}
-fn run_compliance(vault: &Vault, lib_root: &Path, from: u32, to: Option<u32>, volume: &str, semantic: bool, json: bool) -> Result<()> {
-    let conn = ne_agent::governance::open_gov(lib_root)?;
-    // 【world-gov 法理基线接入点·预埋】基线随基准一起生成，语义校验暂不激活
-    // （铁则：--semantic 显式开才调模型；本处只备料，不推理、不写任何合规结论）。
-    let law_baseline: Vec<serde_json::Value> = ne_agent::world_gov::baseline_entries(&conn)?
-        .iter()
-        .map(|e| serde_json::json!({
-            "layer": e.layer, "key": e.key,
-            "summary": e.summary.chars().take(80).collect::<String>(),
-        }))
-        .collect();
-    let law_fp = ne_agent::world_gov::baseline_fingerprint(&ne_agent::world_gov::baseline_entries(&conn)?);
-    let lo = if from == 0 { 1 } else { from };
-    let hi = to.unwrap_or(lo);
-    let mut out = Vec::new();
-    for ch in lo..=hi {
-        let (_base, refs_l3, refs_l4) = ne_agent::governance::compliance_baseline(&conn, lib_root, volume, ch)?;
-        ne_agent::governance::set_refs(&conn, volume, ch, &refs_l3, &refs_l4)?;
-        // 无模型时只登记基准与 refs；合规等级交由上层 agent 写入
-        out.push(serde_json::json!({"chapter": ch, "refs_l3": refs_l3, "refs_l4": refs_l4, "level": "(未评)"}));
-    }
-    let _ = vault;
-    if json {
-        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-            "volume": volume,
-            "chapters": out,
-            "law_baseline_attached": law_baseline.len(),
-            "law_baseline_fingerprint": law_fp,
-            "semantic": if semantic { "requested_but_locked（--semantic 仅占位；语义校验未激活）" } else { "off（默认零模型）" },
-        }))?);
-    }
-    else {
-        println!("合规基准已生成/refs 已回写：{} 章", out.len());
-        println!("法理基线（world-gov 预埋）：{} 条已随基准附上（指纹 {law_fp}），语义校验未激活", law_baseline.len());
-        if semantic {
-            println!("[提示] --semantic 已请求但锁死：真实模型推理等你单独放行。");
-        }
-    }
-    Ok(())
-}
-
-fn run_refs(lib_root: &Path, volume: &str, json: bool) -> Result<()> {
-    let conn = ne_agent::governance::open_gov(lib_root)?;
-    let g = ne_agent::governance::refs_graph(&conn, lib_root, volume)?;
-    if json { println!("{}", serde_json::to_string_pretty(&g)?); }
-    else { println!("{}", serde_json::to_string_pretty(&g)?); }
-    Ok(())
-}
-
-fn run_risk_list(lib_root: &Path, unresolved_only: bool, json: bool) -> Result<()> {
-    let conn = ne_agent::governance::open_gov(lib_root)?;
-    let r = ne_agent::governance::risk_list(&conn, unresolved_only)?;
-    if json { println!("{}", serde_json::to_string_pretty(&r)?); }
-    else {
-        println!("== 风险清单（unresolved_only={unresolved_only}）total={} ==", r["total"]);
-        if let Some(items) = r["items"].as_array() {
-            for it in items.iter().take(50) {
-                println!("[{}] #{} {} {} :: {}", it["level"], it["id"], it["risk_type"],
-                    it["volume"].as_str().unwrap_or(""), it["message"].as_str().unwrap_or(""));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn run_checkpoint(lib_root: &Path, out: Option<PathBuf>, json: bool) -> Result<()> {
-    let conn = ne_agent::governance::open_gov(lib_root)?;
-    let dir = out.unwrap_or_else(|| lib_root.join("09_冷备份"));
-    let r = ne_agent::governance::lib_checkpoint(&conn, lib_root, &dir)?;
-    if json { println!("{}", serde_json::to_string_pretty(&r)?); }
-    else { println!("里程碑包：{}", r["dir"]); }
     Ok(())
 }

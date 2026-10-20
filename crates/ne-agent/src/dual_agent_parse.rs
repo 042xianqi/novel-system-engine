@@ -81,8 +81,19 @@ fn has_word_boundary(hay: &str, needle: &str) -> bool {
     while let Some(rel) = hay[from..].find(needle) {
         let start = from + rel;
         let end = start + needle.len();
-        let before_ok = start == 0 || !hay[..start].chars().next_back().unwrap().is_ascii_alphabetic();
-        let after_ok = end == hay.len() || !hay[end..].chars().next().unwrap().is_ascii_alphabetic();
+        // 【决策二·E级修复】原式靠 `||` 短路保证切片非空（逻辑正确），但 unwrap
+        // 仍是一个 panic 面：一旦条件顺序被调换或改成 && 就会崩。改用 map_or：
+        // 取不到字符时返回 true（等价"不是字母"），与原式在不可达情形下语义一致。
+        let before_ok = start == 0
+            || hay[..start]
+                .chars()
+                .next_back()
+                .map_or(true, |c| !c.is_ascii_alphabetic());
+        let after_ok = end == hay.len()
+            || hay[end..]
+                .chars()
+                .next()
+                .map_or(true, |c| !c.is_ascii_alphabetic());
         if before_ok && after_ok {
             return true;
         }

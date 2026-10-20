@@ -81,6 +81,54 @@ const pending = computed(() => byTime(groups.value.pending))
 const done = computed(() => byTime(groups.value.done).slice(0, 40))
 const blocked = computed(() => byTime(groups.value.blocked))
 
+// ══════ 【任务三·长列表渐进渲染】══════
+// 为什么不直接上完整虚拟列表：
+//   · 任务卡片行高不固定（progress / card_groups 展开后高度变化），
+//     真虚拟化要测量 + 滚动锚定，实现复杂度高、移动端易抖；
+//   · 数据上限是受限的：后端 task_store::list() 已 `clamp(1,500)`，
+//     done 组另 `slice(0,40)`，所以最坏 500 行而非"几千"。
+// 方案：分段揭示（首屏只挂 STEP 行）+ v-memo（已渲染行零 diff）。
+//   首屏 DOM ≤ 4×20 行，滚动到底再按需追加 —— 实际手感等同虚拟列表，
+//   但没有高度测量的风险，也不会破坏现有滚动位置与展开状态。
+const VISIBLE_STEP = 20
+const shown = ref({
+  running: VISIBLE_STEP,
+  pending: VISIBLE_STEP,
+  blocked: VISIBLE_STEP,
+  done: VISIBLE_STEP,
+})
+/** 当前组应渲染的子列表（未超过阈值时原样返回，不做无谓 slice） */
+function visList(sec) {
+  const lim = shown.value[sec.key] ?? VISIBLE_STEP
+  return sec.list.length > lim ? sec.list.slice(0, lim) : sec.list
+}
+/** 该组还有多少条没渲染 */
+function restCount(sec) {
+  const lim = shown.value[sec.key] ?? VISIBLE_STEP
+  return Math.max(0, sec.list.length - lim)
+}
+function showMore(key) {
+  shown.value[key] = (shown.value[key] ?? VISIBLE_STEP) + VISIBLE_STEP
+}
+
+/**
+ * 行级 v-memo 依赖签名（全部取原始值，不用对象引用）。
+ *
+ * 为什么必须是原始值：`tasks.items = r.items` 每次轮询整体换成新对象，
+ * 若签名里放 `t.progress` 这类对象，引用必变 → v-memo 永远失效，等于没加。
+ * 反过来只放影响渲染的标量，内容没变的行就真的跳过 diff。
+ *
+ * `updated_ts` 是兜底：任何一次 DB 回写都会改它，保证不出现陈旧行。
+ */
+function memoKey(t) {
+  return [
+    t.id, t.state, t.summary, t.created_ts, t.updated_ts,
+    t.result_preview, t.current,
+    t.progress?.done, t.progress?.total, t.progress?.failed,
+    t.card_groups?.length,
+  ]
+}
+
 const STATE_STYLE = {
   pending: { label: '排队', cls: 'text-warn bg-warn/12 border-warn/25' },
   running: { label: '执行中', cls: 'text-acc bg-acc/12 border-acc/25' },
@@ -881,8 +929,9 @@ watch(() => dispatching.value, (v) => { if (!v) schedulePoll() })
         </div>
 
         <div
-          v-for="t in sec.list"
+          v-for="t in visList(sec)"
           :key="t.id"
+          v-memo="memoKey(t)"
           class="glass rounded-md overflow-hidden"
         >
           <button
@@ -981,6 +1030,14 @@ watch(() => dispatching.value, (v) => { if (!v) schedulePoll() })
             class="px-3 pb-2 -mt-0.5 text-[10.5px] text-fg-dim leading-relaxed line-clamp-2"
           >{{ brief(t) }}</div>
         </div>
+
+        <!-- 【任务三】渐进渲染：还有未挂载的行时给一个明确的「继续」入口 -->
+        <button
+          v-if="restCount(sec) > 0"
+          class="w-full py-1.5 rounded-md text-[10.5px] text-fg-dim
+                 bg-ink-700/30 active:bg-ink-700/55 transition-colors"
+          @click="showMore(sec.key)"
+        >还有 {{ restCount(sec) }} 条 · 点击展开</button>
       </div>
     </template>
     <!-- ══════ 任务详情悬浮卡片（底部上滑半屏）══════

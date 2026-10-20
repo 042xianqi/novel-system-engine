@@ -56,9 +56,13 @@ import { useChat } from './composables/useChat.js'
 import { installSideBridge } from './sideBridge.js'
 import { installRipple } from './composables/useRipple.js'
 import { nav, goTab, slideName, toggleFloatChat, openWin } from './nav.js'
+import { bus, EV } from './events.js'
 import { tasks } from './store.js'
 
 const composer = ref(null)
+// 事件订阅的 unsubscribe 句柄（bus.on 返回，卸载时调用；null 表示未订阅）
+let offSend = null
+let offView = null
 const { start, stop } = useTasks()
 const { send, loadHistory } = useChat()
 
@@ -97,15 +101,14 @@ function onTaskBallTap() {
 }
 
 /** 侧边栏 ToolPkg 通过 __novSend 钩子派发的消息在这里落地 */
-function onSideSend(e) {
-  const t = e?.detail?.text
+function onSideSend(p) {
+  const t = p?.text
   if (t) send(t)
 }
 
 /** 侧边栏要求切视图：{tab, pane} 或旧的 {view} */
-function onSideView(e) {
-  const d = e?.detail || {}
-  const tab = d.tab || d.view
+function onSideView(d) {
+  const tab = d?.tab || d?.view
   if (tab) goTab(tab)
 }
 
@@ -119,14 +122,14 @@ onMounted(() => {
   // 全局点击涟漪：事件委托，一次注册全站生效。
   // 这样老组件（没用 BaseButton 的那些）也自动获得物理确认感。
   installRipple()
-  window.addEventListener('nov:send', onSideSend)
-  window.addEventListener('nov:view', onSideView)
+  offSend = bus.on(EV.SIDE_SEND, onSideSend)
+  offView = bus.on(EV.SIDE_VIEW, onSideView)
 })
 
 onUnmounted(() => {
   stop()
-  window.removeEventListener('nov:send', onSideSend)
-  window.removeEventListener('nov:view', onSideView)
+  if (offSend) offSend()
+  if (offView) offView()
 })
 
 /** 快捷指令：填入输入框（不自动发送，给用户改的机会） */

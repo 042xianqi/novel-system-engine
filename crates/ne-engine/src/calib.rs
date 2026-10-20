@@ -224,7 +224,12 @@ pub fn etl_card(map: &CalibMap, card_text: &str, code: &str, name: &str, subdir:
         "subdir": subdir,
         "xingge_present": !sec.xingge.is_empty(),
     });
-    let o = entry.as_object_mut().unwrap();
+    // 【决策二·E级修复】entry 由 json!({...}) 构造，当前必为对象；但一旦上游改成
+    // 其它结构，.unwrap() 会 panic。降级：非对象则原样返回（调用方拿到不完整 entry，
+    // 好过整条 ETL 崩溃）。
+    let Some(o) = entry.as_object_mut() else {
+        return entry;
+    };
     match res {
         None => {
             o.insert("emotion_base".into(), Value::Null);

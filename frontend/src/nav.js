@@ -40,6 +40,7 @@ export const PANES = [
   { key: 'tasks', label: '任务看板', icon: '▶' },
   { key: 'outline', label: '大纲', icon: '≡' },
   { key: 'cards', label: '卡片', icon: '▦' },
+  { key: 'graph', label: '星图', icon: '✦' },
   { key: 'stats', label: '统计', icon: '◑' },
 ]
 

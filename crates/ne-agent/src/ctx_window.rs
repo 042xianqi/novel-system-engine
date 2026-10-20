@@ -7,6 +7,24 @@
 use crate::config::ContextSection;
 use crate::context;
 use crate::session::SessionStore;
+use crate::token_cache::TokenCacheManager;
+
+/// 进程级 token 前缀缓存单例（P2 换血）。
+///
+/// # 为什么是单例而不是挂在 HarnessCtx 上
+/// `HarnessCtx` 有 5 处构造点（task.rs×2 / subagent_runner / dual_agent×2），
+/// 挂字段要同步改 5 处且 `&'a` 生命周期复杂；而前缀算法对**失配天然安全**
+/// ——不同会话/不同 system 的序列前缀必然逐条失配，自动回落全量重算，
+/// 不会算错，只会少省。所以进程级单例即可，正确性由算法保证。
+///
+/// # 为什么 Mutex 而不是 AtomicU64
+/// 缓存状态是复合结构（前缀 Vec + 计数），必须互斥；争用极低
+/// （单线程网关 + 每轮一次），`unwrap_or_else(into_inner)` 防中毒。
+fn token_cache_singleton() -> &'static std::sync::Mutex<TokenCacheManager> {
+    use std::sync::OnceLock;
+    static C: OnceLock<std::sync::Mutex<TokenCacheManager>> = OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(TokenCacheManager::new()))
+}
 
 /// 应用上下文策略：老轮次工具结果截断 + 按预算折叠最早整轮。
 ///
@@ -41,12 +59,22 @@ pub(crate) fn truncate_context(
     let _ = changed;
 
     // 2) 预算折叠：先估总 token，超折叠线才丢最早整轮
+    //    【P2 换血】全量逐条重算 → TokenCacheManager 公共前缀增量估算：
+    //    会话历史是追加型的，前缀命中时零重算；失配（截断/压缩改写历史）
+    //    时算法自动回落全量重算，正确性由逐条相等比较保证。
     let limit = context::folding_limit(
         cfg.max_prompt_tokens,
         cfg.reserve_tokens,
         context::TOOL_SCHEMA_RESERVE_TOKENS,
     );
-    let est: usize = hist.iter().map(|m| context::estimate_tokens(&m.content) + 64).sum();
+    let est: usize = {
+        let entries: Vec<(String, String)> = hist
+            .iter()
+            .map(|m| (m.role.clone(), m.content.clone()))
+            .collect();
+        let mut cache = token_cache_singleton().lock().unwrap_or_else(|e| e.into_inner());
+        cache.calculate_input_tokens(&entries, None, true) as usize
+    };
     if est > limit && hist.len() > 1 {
         // 首条是 system，永不折叠 → 从第 2 条起找轮边界
         let body = &hist[1..];

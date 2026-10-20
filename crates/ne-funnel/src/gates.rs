@@ -1,6 +1,7 @@
 //! L0–L5 推进的依赖图与门禁注册表。
 //!
-//! 事实源：`05_管线框架/rules.md §5`（门禁表）+ `engine/gate14.py`（16 门禁实现）。
+//! 事实源：`05_管线框架/rules.md §5`（门禁表）+ `engine/gate14.py`（门禁实现）。
+//! 2026-10-20：补入 G17_design_leak，与 ne-engine 的 `run!` 执行注册表对齐（G01–G17 完整）。
 //! 本模块**只描述「门禁叫什么、属于哪层、判什么」，不实现判定**——
 //! 判定逻辑在 Python gate14.py（661 行，含 67 维评分换算）与 LLM 解释层，
 //! Rust 侧复刻它属于重复实现且必然漂移，故以「注册表 + 调用契约」形式对齐。
@@ -57,6 +58,10 @@ pub const GATES: &[GateSpec] = &[
     GateSpec { id: "G14_world_consistency",  name: "世界观一致性", kind: GateKind::Deterministic, severity: Severity::P0 },
     GateSpec { id: "G15_family_consistency", name: "家族一致性",   kind: GateKind::Deterministic, severity: Severity::P0 },
     GateSpec { id: "G16_leak_words",         name: "泄漏词",       kind: GateKind::Deterministic, severity: Severity::P0 },
+    // 2026-10-20 补：规格表此前只有 G01–G16，缺 ne-engine 实际执行的 G17。
+    // 严重级取 ne-engine 实现的主值（卷01-03 命中即 P0 打回）；卷04+ 会降级为 P1
+    // ——这里的 severity 是**基线**，按卷降级属判定逻辑，规格表只描述基线。
+    GateSpec { id: "G17_design_leak",        name: "设计层词泄漏", kind: GateKind::Deterministic, severity: Severity::P0 },
 ];
 
 pub fn gate(id: &str) -> Option<&'static GateSpec> {

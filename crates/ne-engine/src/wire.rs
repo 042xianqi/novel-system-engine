@@ -591,6 +591,18 @@ pub fn render_blocks(d: &WireData) -> String {
 // --------------------------------------------- 回写侧
 
 /// 写章后：跑情绪递推，落库 char_emotion / char_memory / dynamics_events。
+/// dynamics_events 的**单一主体**取值（F10 门禁要求 subject 不含逗号）。
+///
+/// 约定来源：真实库既有数据 `subject='CHAR-99-001'` 而
+/// `subjects_json=["CHAR-99-001","CHAR-99-097"]` —— subject 只放**主实体**，
+/// 全体实体码放 subjects_json 数组，二者并存。
+///
+/// 无角色码时回退 `"—"`：它仍是**单值且无逗号**，满足门禁的可判定性；
+/// "本事件无实体"这一语义由 subjects_json 的 `[]` 表达，不靠 subject 承载。
+fn primary_subject(codes: &[String]) -> String {
+    codes.first().cloned().unwrap_or_else(|| "—".to_string())
+}
+
 pub fn commit_chapter(
     db_path: &Path,
     root: &Path,
@@ -624,27 +636,53 @@ pub fn commit_chapter(
         done.push((code.clone(), format!("ch{chapter} dominant={dom}")));
     }
 
-    let _ = con.execute(
-        "INSERT INTO dynamics_events(seq,novel_id,domain,kind,subject,at,payload,created_at)
-         VALUES((SELECT COALESCE(MAX(seq),0)+1 FROM dynamics_events),?1,?2,'emotion_engine.step.by_wire',?3,?4,?5,datetime('now'))",
+    // ── F10 对齐（2026-10-20 三处 P0 修复）────────────────────────────
+    // 铁律来源：真实库既有数据 `subject='CHAR-99-001'` + `subjects_json=["CHAR-99-001","CHAR-99-097"]`。
+    //   1. `subject` = **单一主体**。唯一键是 (kind, subject, at)，且 F10 门禁规定
+    //      subject 含逗号即 RED —— 原先传 `char_codes.join(",")` 会直接亮红灯。
+    //   2. `subjects_json` = **全量实体数组**（供门禁按实体反查）。
+    //      序列化失败回退 `"[]"` 而非 `""`：空串不是合法 JSON，会让按 JSON 解析的
+    //      门禁直接报错；`[]` 才是语义正确的"本事件无实体"。
+    //   3. 写入前按 (kind, at, novel_id) **先删后插**：同章重跑时旧行会与
+    //      ux_dyn_kind_subject_at 相撞，原实现的 `let _ =` 把失败吞掉 = 静默丢数据。
+    let subject = primary_subject(char_codes);
+    let subjects_json = serde_json::to_string(char_codes).unwrap_or_else(|_| "[]".to_string());
+    let at = chapter as i64;
+    // 【注意】DELETE 的范围必须与唯一键 `ux_dyn_kind_subject_at(kind, subject, at)` **严格对齐**：
+    // 该索引里**没有 novel_id**，所以清理时也不能用 novel_id 限定——否则当既有行的
+    // novel_id 与当前配置不同时，删除匹配不到，插入依旧撞唯一键（实测已复现）。
+    // 按 (kind, at) 删除是本章该 kind 的全量清理，是能保证不撞键的最小安全范围。
+    let cleanup = |kind: &str| -> Result<()> {
+        con.execute(
+            "DELETE FROM dynamics_events WHERE kind=?1 AND at=?2",
+            rusqlite::params![kind, at],
+        )?;
+        Ok(())
+    };
+    cleanup("emotion_engine.step.by_wire")?;
+    con.execute(
+        "INSERT INTO dynamics_events(seq,novel_id,domain,kind,subject,at,payload,created_at,subjects_json)
+         VALUES((SELECT COALESCE(MAX(seq),0)+1 FROM dynamics_events),?1,?2,'emotion_engine.step.by_wire',?3,?4,?5,datetime('now'),?6)",
         rusqlite::params![
             novel_id,
             volume,
-            char_codes.join(","),
-            chapter as i64,
+            subject,
+            at,
             serde_json::to_string(&json!({"chars": char_codes, "events": event_ids})).unwrap_or_default(),
+            subjects_json,
         ],
-    );
+    )?;
 
     // 落动力学 8 模型 + 世界物理 3 公式（幂等：同章重跑覆盖式新增）
     let dz = run_dynamics_ref(&con, volume, chapter, "");
     let wp = run_world_physics_ref(&con, volume, chapter);
     for (kind, val) in [("dynamics.by_wire", dz), ("world_physics.by_wire", wp)] {
         if val.as_object().map(|o| o.is_empty()).unwrap_or(true) { continue; }
-        let _ = con.execute(
-            "INSERT INTO dynamics_events(seq,novel_id,domain,kind,subject,at,payload,created_at) VALUES((SELECT COALESCE(MAX(seq),0)+1 FROM dynamics_events),?1,?2,?3,?4,?5,?6,datetime('now'))",
-            rusqlite::params![novel_id, volume, kind, char_codes.join(","), chapter as i64, serde_json::to_string(&val).unwrap_or_default()],
-        );
+        cleanup(kind)?;
+        con.execute(
+            "INSERT INTO dynamics_events(seq,novel_id,domain,kind,subject,at,payload,created_at,subjects_json) VALUES((SELECT COALESCE(MAX(seq),0)+1 FROM dynamics_events),?1,?2,?3,?4,?5,?6,datetime('now'),?7)",
+            rusqlite::params![novel_id, volume, kind, subject, at, serde_json::to_string(&val).unwrap_or_default(), subjects_json],
+        )?;
     }
     Ok(done)
 }

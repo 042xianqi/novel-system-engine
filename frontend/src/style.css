@@ -1139,3 +1139,29 @@ body,
 @media (prefers-color-scheme: light) {
   html[data-skin="mohei"] { --bg: #14151A; --bg-rgb: 20 21 26; }
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   「主内容区偏左」的真正修复（2026-10-20，来自 Operit 真机取证）
+   ══════════════════════════════════════════════════════════════════════════
+   真机：1200x2608 @density 480 → CSS 宽度 400px。
+   Android WebView 用**传统占位式滚动条**：offsetWidth 376 / clientWidth 370
+   ⇒ 滚动条吃掉 6px，且只占右侧 ⇒ 内容整体偏左 6px（实测卡网格 12/18）。
+
+   为什么我在沙箱里复现不出来：
+   桌面 Chrome 用 **overlay 滚动条**（不占布局宽度）→ offsetWidth==clientWidth
+   → 这个偏移在任何桌面浏览器里都是"不存在"的。
+
+   之前给 .shell-main 加的 overflow-x:hidden 是有效兜底，但属"掩盖"；
+   真正的修复是让滚动条**左右对称占位**（保留可拖动皮肤化滚动条）：
+   · scrollbar-gutter: stable both-edges  → 现代 WebView
+   · @supports 兜底 → 旧 WebView 用 padding-right 补 6px
+   ══════════════════════════════════════════════════════════════════════════ */
+.shell-main .overflow-y-auto,
+.shell-main .overflow-y-scroll {
+  scrollbar-gutter: stable both-edges;
+}
+@supports not (scrollbar-gutter: stable) {
+  .shell-main :where(.overflow-y-auto, .overflow-y-scroll) {
+    padding-right: 6px;
+  }
+}

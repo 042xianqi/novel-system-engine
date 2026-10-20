@@ -136,6 +136,14 @@ const STATE_STYLE = {
   blocked: { label: '阻塞', dot: 'bg-danger', text: 'text-danger' },
   failed: { label: '失败', dot: 'bg-danger', text: 'text-danger' },
   rejected: { label: '拒绝', dot: 'bg-danger', text: 'text-danger' },
+  // 【2026-10-20 并入 Operit 补丁】此前缺这三档 → 命中 UNKNOWN_STYLE
+  // 会把 state 原样渲染成英文串（如 partial），比标红更糟。
+  //   partial  ：部分完成（如 cardgen 一批里成功若干/失败若干）
+  //   canceled ：已取消
+  //   archived ：已归档
+  partial: { label: '部分完成', dot: 'bg-warning', text: 'text-warning' },
+  canceled: { label: '已取消', dot: 'bg-content-disabled', text: 'text-content-sec' },
+  archived: { label: '已归档', dot: 'bg-content-disabled', text: 'text-content-sec' },
 }
 const UNKNOWN_STYLE = { label: '未知', dot: 'bg-content-disabled', text: 'text-content-sec' }
 

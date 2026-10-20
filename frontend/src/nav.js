@@ -37,6 +37,7 @@ export const TABS = [
 
 /** 系统视图内部的三个子页 */
 export const PANES = [
+  { key: 'dashboard', label: '驾驶舱', icon: '▤' },
   { key: 'tasks', label: '任务看板', icon: '▶' },
   { key: 'outline', label: '大纲', icon: '≡' },
   { key: 'cards', label: '卡片', icon: '▦' },
@@ -55,7 +56,7 @@ export const nav = reactive({
   /** 顶层：system | chat | settings */
   tab: 'chat',
   /** 系统视图子页：tasks | outline | cards */
-  pane: 'tasks',
+  pane: 'dashboard',
   /** 过渡方向：1 = 新页从右进（往左推）；-1 = 新页从左进 */
   dir: 1,
   /** 悬浮窗形态 */

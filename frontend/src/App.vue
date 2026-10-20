@@ -253,6 +253,9 @@ onUnmounted(() => {
 /* ── 主区：移动端底部让位给「3 入口」底栏（56px + safe-area） ──
    ≥768px 无底栏，归零。 */
 .shell-main {
+  /* 顶部让位：状态胶囊是 fixed 的（占 0~42px），内容不得压上去。
+     移动端还有汉堡(8~44px)，故统一留 46px；桌面端同样留，避免与右上胶囊重叠。 */
+  padding-top: 46px;
   padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px));
 }
 @media (min-width: 768px) {

@@ -28,9 +28,11 @@ import TaskBoard from './panes/TaskBoard.vue'
 import OutlineTree from './panes/OutlineTree.vue'
 import CardBrowser from './panes/CardBrowser.vue'
 import GraphStar from './panes/GraphStar.vue'
+import Dashboard from './panes/Dashboard.vue'
 import StatsPane from './panes/StatsPane.vue'
 
 const PANE_MAP = {
+  dashboard: Dashboard,
   tasks: TaskBoard,
   outline: OutlineTree,
   cards: CardBrowser,
@@ -38,7 +40,7 @@ const PANE_MAP = {
   stats: StatsPane,
 }
 
-const current = computed(() => PANE_MAP[nav.pane] || TaskBoard)
+const current = computed(() => PANE_MAP[nav.pane] || Dashboard)
 const curIdx = computed(() => paneIndex.value)
 
 /** 子页过渡方向：往右切 → 新页从右进 */
@@ -53,8 +55,11 @@ onMounted(() => {
 
 <template>
   <div class="h-full flex flex-col bg-ink-900">
-    <!-- ── 子导航（分段控件）── -->
-    <div class="shrink-0 px-3 pt-2 pb-2">
+    <!-- ── 子导航（分段控件）──
+         ⚠️ 2026-10-20 修重叠：此段原先在 y≈8 处渲染，与左上角汉堡按钮
+         (8,8)-(44,44) 正面相撞（实测矩形相交）。移动端导航改由汉堡抽屉承担，
+         故此处 <768px 隐藏；桌面端两侧不冲突，保留。 -->
+    <div class="hidden md:block shrink-0 px-3 pt-2 pb-2">
       <div class="glass rounded-md p-0.5 flex items-stretch relative">
         <!-- 滑动指示块（60fps：只用 transform，不触发 layout） -->
         <div

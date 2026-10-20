@@ -98,7 +98,7 @@ export function useChat() {
   // ── 打字机所有权：必须放模块级，不能放这里 ──
   //
   // 【R12 修复】若把 activeTyper 写成 useChat() 内的局部变量，
-  //   Composer.vue / FloatingChat.vue / App.vue 各自调 useChat() 会各拿一份，
+  //   Composer.vue / 聊天抽屉 / App.vue 各自调 useChat() 会各拿一份，
   //   互不可见 → Composer 触发 send 时「停掉上一条」实际停的是自己的空引用，
   //   而浮窗那条还在打。三条入口写的是同一个 store.chat.messages 单例，
   //   于是同一个 msg.text 被两个打字机交错写，出现「文字乱跳/回退」。

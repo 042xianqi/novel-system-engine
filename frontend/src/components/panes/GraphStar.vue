@@ -8,10 +8,22 @@
          · c     = entity_edge.conf（默认 0.7）
        全部字段均由既有端点提供，邻接列表从 edges 自行推导，未臆造后端字段。
 
+     布局（2026-10-20 二次改造）：
+       · **全屏画布**：根节点不再套卡片（没有 glass / card-cyber 外壳），
+         canvas 直接 absolute inset-0 + h-full w-full 占满主内容区
+         （父级 SystemView 是 h-full flex-col + flex-1 min-h-0 的确定高度容器）。
+         canvas 会按 clientWidth/clientHeight 生成位图，高度为 0 就什么都画不出来，
+         故 metrics() 做了「canvas → 容器 → 放弃本帧」三级高度兜底，
+         并在挂载后 ensureSized() 重试若干帧等布局稳定。
+       · **左侧悬浮图例面板**：默认展开，可收起为左缘把手（只动 transform/opacity）。
+         每行 = 颜色点（点一下=只看该类）+ 勾选框 + 类型名 + 数量，勾选控制显隐；
+         顶部保留「全部 N」「核心 ≥3 / 全量」两个原有开关。
+         图例占左侧，故图心按图例宽度右移（metrics().cx），展开/收起都会重绘。
+
      交互（DESIGN-v2.md §5④ 关系星图验收点）：
        ① 点击节点 → 右侧滑出实体详情面板（类型/编号/关系数 + 入边出边邻接列表，
           邻接行显示边类型 t / 状态 st / 置信度 c；点邻接行可跳转聚焦）
-       ② 顶部筛选栏：按 kind 多选过滤（chips），过滤后**重新布局**并重启物理收敛
+       ② 左侧图例面板：按 kind 勾选过滤（selKinds），过滤后**重新布局**并重启物理收敛
        ③ 「重新布局」按钮：重置 alpha + 重新初始化坐标（螺旋相位轮转，保证可复现）
        ④ 物理收敛后 done=true，彻底停止积分；且 rAF 不再空转（DESIGN-v2 §3 硬约束）
        ⑤ 保留原有：滚轮缩放、拖拽平移、点击邻接高亮
@@ -31,6 +43,8 @@ const canvasEl = ref(null)
 const wrapEl = ref(null)
 const panelEl = ref(null)
 const refsExpanded = ref(false)
+// 左侧图例面板：默认展开，可收起为左缘把手（收起只影响 transform/opacity + 图心偏移）
+const legendOpen = ref(true)
 
 const s = ref({
   loaded: false,
@@ -150,6 +164,21 @@ function toggleKind(k) {
 }
 function clearKinds() {
   selKinds.value = []
+}
+
+// ── 左侧图例的勾选语义（不改变 selKinds 的既有含义：空数组 = 全部）──
+/// 某类型当前是否显示（「全部」态下所有类型都显示）。
+const isKindOn = (k) => !selKinds.value.length || selKinds.value.includes(k)
+/// 勾选/取消勾选某个类型：
+///   · 「全部」态下取消一个 → 显式勾选其余所有类型（即“隐藏这一类”）
+///   · 非「全部」态下：勾选加入、取消移除；移除到空则回落「全部」（沿用既有语义）
+function toggleKindCheck(k) {
+  const all = kinds.value.map((x) => x.k)
+  const cur = selKinds.value
+  let next
+  if (!cur.length) next = all.filter((x) => x !== k)
+  else next = cur.includes(k) ? cur.filter((x) => x !== k) : [...cur, k]
+  selKinds.value = next.length ? next : []
 }
 
 /// 切换「只看核心节点」。切换会重新布局并重启收敛（与 kind 筛选同路径）。
@@ -347,6 +376,22 @@ function tick() {
   draw()
 }
 
+/// 高度兜底：个别挂载时序下首帧 clientHeight 仍为 0（父级布局未落定），
+/// 这里在若干帧内轮询重试重绘，避免画布停在空白（本仓踩过 0 高的坑）。
+function ensureSized() {
+  let tries = 0
+  const step = () => {
+    const cv = canvasEl.value
+    if (!cv) return
+    if (cv.clientHeight > 0 || tries++ > 12) {
+      requestDraw()
+      return
+    }
+    requestAnimationFrame(step)
+  }
+  step()
+}
+
 // ── 邻接表（选中高亮 + 详情面板）──
 const adj = computed(() => {
   const m = new Map()
@@ -412,13 +457,35 @@ function closePanel() {
 }
 
 // ── 绘制 ──
-const TOP_SAFE = 46 // 顶部筛选栏占位，避免图心被压住
+// 画布坐标系：左侧图例面板默认展开，图心按图例宽度右移让位；
+// 顶部留 PAD_T 给右上状态胶囊（≤30px 高，DESIGN §4）。
+// 高度来源：canvas 的 clientHeight → 容器 clientHeight → 放弃本帧（避免 0 高位图）。
+const PAD_T = 34
+function metrics() {
+  const cv = canvasEl.value
+  const wrap = wrapEl.value
+  const w = (cv && cv.clientWidth) || (wrap && wrap.clientWidth) || 0
+  const h = (cv && cv.clientHeight) || (wrap && wrap.clientHeight) || 0
+  const padL = legendOpen.value ? Math.min(Math.max(w * 0.5, 120), 208) : 0
+  const usableW = Math.max(1, w - padL)
+  const usableH = Math.max(1, h - PAD_T)
+  const R = Math.min(usableW, usableH) * 0.42 * state.scale
+  return {
+    w,
+    h,
+    R,
+    cx: padL + usableW / 2 + state.ox,
+    cy: PAD_T + usableH / 2 + state.oy,
+  }
+}
 function draw() {
   const cv = canvasEl.value
   if (!cv) return
+  const m = metrics()
+  const w = m.w
+  const h = m.h
+  if (!w || !h) return // 容器高度为 0：本帧不画，等 ResizeObserver / ensureSized 重试
   const dpr = window.devicePixelRatio || 1
-  const w = cv.clientWidth
-  const h = cv.clientHeight
   if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
     cv.width = Math.round(w * dpr)
     cv.height = Math.round(h * dpr)
@@ -428,9 +495,9 @@ function draw() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   ctx.clearRect(0, 0, w, h)
 
-  const R = Math.min(w, h - TOP_SAFE) * 0.42 * state.scale
-  const cx = w / 2 + state.ox
-  const cy = (h + TOP_SAFE) / 2 + state.oy
+  const R = m.R
+  const cx = m.cx
+  const cy = m.cy
   const sel = s.value.selected
   const hov = s.value.hover
   const adjSel = sel ? adj.value.get(sel) || [] : []
@@ -531,11 +598,11 @@ function draw() {
 
 // ── 命中检测（视图内节点）──
 function hit(x, y) {
-  const cv = canvasEl.value
-  if (!cv) return ''
-  const R = Math.min(cv.clientWidth, cv.clientHeight - TOP_SAFE) * 0.42 * state.scale
-  const cx = cv.clientWidth / 2 + state.ox
-  const cy = (cv.clientHeight + TOP_SAFE) / 2 + state.oy
+  if (!canvasEl.value) return ''
+  const m = metrics()
+  const R = m.R
+  const cx = m.cx
+  const cy = m.cy
   let best = ''
   let bd = Infinity
   for (const nd of view.nodes) {
@@ -676,6 +743,13 @@ watch(
   }
 )
 watch(
+  () => legendOpen.value,
+  () => {
+    // 图例收起/展开 → 图心水平偏移变化，重绘（不做过渡动画，避免每帧 rAF）
+    requestDraw()
+  }
+)
+watch(
   () => s.value.selected,
   (k, old) => {
     requestDraw()
@@ -704,6 +778,7 @@ onMounted(() => {
   } else {
     window.addEventListener('resize', requestDraw)
   }
+  ensureSized()
 })
 
 onBeforeUnmount(() => {
@@ -721,10 +796,16 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="wrapEl" class="relative h-full w-full select-none overflow-hidden">
+  <!-- 全屏画布：**不套卡片**（无 glass / card-cyber 外壳）。
+       根节点吃父级给的 absolute inset-0，故 h-full 具备明确高度；
+       min-h-[240px] 只是兜底，避免父级无高度约束时 canvas 被压成 0 高。 -->
+  <div
+    ref="wrapEl"
+    class="relative h-full min-h-[240px] w-full select-none overflow-hidden"
+  >
     <canvas
       ref="canvasEl"
-      class="block h-full w-full"
+      class="absolute inset-0 block h-full w-full touch-none"
       :class="s.hover ? 'cursor-pointer' : 'cursor-crosshair'"
       role="img"
       :aria-label="`实体关系星图：${vstat.nodes} 个实体、${vstat.edges} 条关系。滚轮或双指缩放，拖拽平移，点击实体查看详情。`"
@@ -736,66 +817,119 @@ onBeforeUnmount(() => {
       @pointerleave="onPointerLeave"
     />
 
-    <!-- ── 顶部筛选栏（类型多选 + 重新布局 + 收敛状态）── -->
-    <div class="absolute inset-x-0 top-0 z-20 px-2 pt-2">
-      <div class="glass-strong rounded-md px-2 py-1.5 flex flex-col gap-1.5">
-        <div class="flex items-center gap-2">
-          <div class="flex-1 min-w-0 flex items-center gap-1.5 overflow-x-auto pb-0.5">
-            <button
-              class="shrink-0 rounded border px-2 py-0.5 text-[10.5px] transition-colors"
-              :class="selKinds.length === 0 ? 'border-acc/40 bg-acc/15 text-acc' : 'border-line text-fg-dim hover:text-fg'"
-              :aria-pressed="selKinds.length === 0"
-              @click="clearKinds"
-            >
-              全部 {{ s.count.nodes }}
-            </button>
-            <!-- 核心/全量开关：窄屏默认只看骨架，避免 284 点糊成乱线 -->
-            <button
-              class="shrink-0 rounded border px-2 py-0.5 text-[10.5px] transition-colors"
-              :class="coreOnly ? 'border-acc/40 bg-acc/15 text-acc' : 'border-line text-fg-dim hover:text-fg'"
-              :aria-pressed="coreOnly"
-              :title="coreOnly ? '当前：只看度数≥3 的核心节点' : '当前：全部节点'"
-              @click="toggleCoreOnly"
-            >
-              {{ coreOnly ? '核心 ≥3' : '全量' }}
-            </button>
-            <button
-              v-for="kd in kinds"
-              :key="kd.k"
-              class="shrink-0 flex items-center gap-1 rounded border px-2 py-0.5 text-[10.5px] transition-colors"
-              :class="selKinds.includes(kd.k) ? '' : 'border-line text-fg-dim hover:text-fg'"
-              :style="selKinds.includes(kd.k) ? { borderColor: kd.color + '88', background: kd.color + '22', color: kd.color } : null"
-              :aria-pressed="selKinds.includes(kd.k)"
-              :title="`${kd.k} · ${kd.n} 个实体`"
-              @click="toggleKind(kd.k)"
-            >
-              <span class="h-1.5 w-1.5 rounded-full" :style="{ background: kd.color }" />
-              <span class="font-mono">{{ kd.k }}</span>
-              <span class="opacity-60">{{ kd.n }}</span>
-            </button>
-          </div>
+    <!-- ── 左侧悬浮图例面板（默认展开；颜色点=只看该类，勾选框=显隐）── -->
+    <div
+      class="legend-panel pointer-events-none absolute left-0 top-0 bottom-0 z-20 flex w-[64%] max-w-[208px] flex-col"
+      :class="legendOpen ? '' : 'legend-closed'"
+    >
+      <div class="glass-strong pointer-events-auto m-2 mr-1 flex min-h-0 flex-1 flex-col rounded-md">
+        <!-- 面板头 -->
+        <div class="flex shrink-0 items-center gap-1.5 border-b border-line-divider px-2 py-1.5">
+          <span class="text-[11px] text-fg">图例</span>
+          <span class="font-mono text-[10px] text-fg-dim">{{ kinds.length }} 类</span>
           <button
-            class="shrink-0 rounded border border-line px-2 py-1 text-[10.5px] text-fg-dim transition-colors hover:border-acc/40 hover:text-acc"
-            title="重置 alpha 并重新初始化节点位置"
-            @click="relayout"
+            class="ml-auto shrink-0 rounded px-1.5 py-0.5 text-[10.5px] text-fg-dim transition-colors hover:text-acc"
+            aria-label="收起图例面板"
+            :aria-expanded="legendOpen"
+            @click="legendOpen = false"
           >
-            ↻ 重新布局
+            ‹ 收起
           </button>
         </div>
-        <div class="flex items-center gap-2 text-[10px] font-mono text-fg-dim">
-          <span>
-            实体 {{ vstat.nodes }}<span v-if="vstat.nodes !== s.count.nodes" class="opacity-60">/{{ s.count.nodes }}</span>
-          </span>
-          <span>
-            关系 {{ vstat.edges }}<span v-if="vstat.edges !== s.count.edges" class="opacity-60">/{{ s.count.edges }}</span>
-          </span>
-          <span class="flex items-center gap-1">
-            <span class="h-1.5 w-1.5 rounded-full" :class="physDone ? 'bg-ok' : 'bg-warn animate-pulse'" />
-            {{ physDone ? '已收敛 · 已停算' : `收敛中 ${progress}%` }}
-          </span>
-          <span class="ml-auto hidden opacity-70 sm:inline">滚轮缩放 · 拖拽平移 · 点击节点看详情</span>
+
+        <!-- 总开关：保留原有「全部」「核心 ≥3 / 全量」 -->
+        <div class="flex shrink-0 items-center gap-1.5 border-b border-line-divider px-2 py-1.5">
+          <button
+            class="rounded border px-2 py-0.5 text-[10.5px] transition-colors"
+            :class="selKinds.length === 0 ? 'border-acc/40 bg-acc/15 text-acc' : 'border-line text-fg-dim hover:text-fg'"
+            :aria-pressed="selKinds.length === 0"
+            @click="clearKinds"
+          >
+            全部 {{ s.count.nodes }}
+          </button>
+          <!-- 核心/全量开关：窄屏默认只看骨架，避免 284 点糊成乱线 -->
+          <button
+            class="rounded border px-2 py-0.5 text-[10.5px] transition-colors"
+            :class="coreOnly ? 'border-acc/40 bg-acc/15 text-acc' : 'border-line text-fg-dim hover:text-fg'"
+            :aria-pressed="coreOnly"
+            :title="coreOnly ? '当前：只看度数≥3 的核心节点' : '当前：全部节点'"
+            @click="toggleCoreOnly"
+          >
+            {{ coreOnly ? '核心 ≥3' : '全量' }}
+          </button>
+        </div>
+
+        <!-- 类型列表：颜色点 + 类型名 + 数量 + 勾选框 -->
+        <div class="min-h-0 flex-1 overflow-y-auto px-1 py-1" role="group" aria-label="实体类型显隐">
+          <div
+            v-for="kd in kinds"
+            :key="kd.k"
+            class="flex items-center rounded px-0.5 transition-colors hover:bg-acc/10"
+          >
+            <button
+              class="shrink-0 rounded p-1"
+              :title="`只看 ${kd.k}（${kd.n} 个实体）`"
+              :aria-label="`只看 ${kd.k}`"
+              @click="toggleKind(kd.k)"
+            >
+              <span class="block h-2 w-2 rounded-full" :style="{ background: kd.color }" />
+            </button>
+            <button
+              class="flex min-w-0 flex-1 items-center gap-1.5 rounded px-1 py-1 text-left"
+              role="checkbox"
+              :aria-checked="isKindOn(kd.k)"
+              :title="`${isKindOn(kd.k) ? '隐藏' : '显示'} ${kd.k}`"
+              @click="toggleKindCheck(kd.k)"
+            >
+              <span
+                class="flex h-3 w-3 shrink-0 items-center justify-center rounded-sm border text-[9px] leading-none"
+                :class="isKindOn(kd.k) ? 'border-acc/50 bg-acc/20 text-acc' : 'border-line text-transparent'"
+              >✓</span>
+              <span
+                class="min-w-0 flex-1 truncate font-mono text-[10.5px]"
+                :class="isKindOn(kd.k) ? 'text-fg' : 'text-fg-dim'"
+              >{{ kd.k }}</span>
+              <span class="shrink-0 font-mono text-[9.5px] text-fg-dim">{{ kd.n }}</span>
+            </button>
+          </div>
+          <div v-if="!kinds.length" class="px-2 py-3 text-center text-[10.5px] text-fg-dim">暂无类型数据</div>
         </div>
       </div>
+    </div>
+
+    <!-- 收起后的展开把手：常驻左缘，面板收起时只剩它 -->
+    <button
+      v-show="!legendOpen"
+      class="glass-strong absolute left-0 top-1/2 z-20 -translate-y-1/2 rounded-r-md border border-l-0 border-line px-1.5 py-3 text-[10.5px] text-fg-dim transition-colors hover:text-acc"
+      style="writing-mode: vertical-rl"
+      aria-label="展开图例面板"
+      :aria-expanded="legendOpen"
+      @click="legendOpen = true"
+    >
+      图例 ›
+    </button>
+
+    <!-- ── 右上状态胶囊（≤30px 高，DESIGN §4）+ 重新布局 ── -->
+    <div class="absolute right-2 top-2 z-20 flex items-center gap-1.5">
+      <div class="glass-strong hidden items-center gap-2 rounded-md px-2 py-1 font-mono text-[10px] text-fg-dim sm:flex">
+        <span>
+          实体 {{ vstat.nodes }}<span v-if="vstat.nodes !== s.count.nodes" class="opacity-60">/{{ s.count.nodes }}</span>
+        </span>
+        <span>
+          关系 {{ vstat.edges }}<span v-if="vstat.edges !== s.count.edges" class="opacity-60">/{{ s.count.edges }}</span>
+        </span>
+        <span class="flex items-center gap-1" :title="physDone ? '力导向已收敛，停止计算' : '力导向演化中'">
+          <span class="h-1.5 w-1.5 rounded-full" :class="physDone ? 'bg-ok' : 'bg-warn animate-pulse'" />
+          {{ physDone ? '已收敛 · 已停算' : `收敛中 ${progress}%` }}
+        </span>
+      </div>
+      <button
+        class="glass-strong shrink-0 rounded-md border border-line px-2 py-1 text-[10.5px] text-fg-dim transition-colors hover:border-acc/40 hover:text-acc"
+        title="重置 alpha 并重新初始化节点位置"
+        @click="relayout"
+      >
+        ↻ 重新布局
+      </button>
     </div>
 
     <!-- ── 右侧实体详情面板（滑出；原底部详情条已合并到此）── -->
@@ -902,6 +1036,19 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* 左侧图例面板收起/展开：只动 transform / opacity（DESIGN-v2 §3，禁 transition-all） */
+.legend-panel {
+  transform: translateX(0);
+  opacity: 1;
+  transition: transform 0.26s ease, opacity 0.2s ease;
+  will-change: transform;
+}
+.legend-panel.legend-closed {
+  transform: translateX(-102%);
+  opacity: 0;
+  pointer-events: none; /* 收起后不挡画布的拖拽/点击 */
+}
+
 /* 抽屉动效：只动 transform / opacity（DESIGN-v2 §3） */
 .drawer-enter-from,
 .drawer-leave-to {

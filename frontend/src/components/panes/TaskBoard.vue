@@ -246,16 +246,28 @@ function errOf(t) {
   const txt = stripId(body)
   return txt || '任务失败，但后端未返回错误详情。'
 }
+/**
+ * 默认只留一行摘要（需求：报错不得直接占满整个卡片行高）。
+ * 10.5px 等宽在窄卡片上约 44 字符/行，取 40 留余量：
+ * 超过 40 字才可能被单行截断 → 才值得给一个「展开堆栈」按钮，
+ * 短错误不摆一个点了没反应的按钮。换行/多空格先归一化再计数，
+ * 否则「一行 3 个词的堆栈」会被误判成长文本。
+ */
+const CLAMP_CHARS = 40
+function errOverflow(txt) {
+  return String(txt == null ? '' : txt).replace(/\s+/g, ' ').trim().length > CLAMP_CHARS
+}
 /** 长堆栈才需要「展开 / 收起」 */
 function errLong(t) {
-  return errOf(t).length > 140
+  return errOverflow(errOf(t))
 }
+// 折叠开关纯展示状态：key 是任务 id，另有 'data'（看板拉取失败）/ 'detail'（详情面板错误）两个非任务键
 const openErr = ref({})
-function errOpen(t) {
-  return !!openErr.value[t.id]
+function errOpen(k) {
+  return !!openErr.value[k]
 }
-function toggleErr(t) {
-  openErr.value[t.id] = !openErr.value[t.id]
+function toggleErr(k) {
+  openErr.value[k] = !openErr.value[k]
 }
 
 // ── 进度（规范②：任务名 → 进度 → 结果）────────────────────────
@@ -337,12 +349,15 @@ const SECTIONS = computed(() => [
   { key: 'blocked', title: '失败 / 阻塞', tone: 'bg-danger', list: blocked.value },
   { key: 'done', title: '最近完成', tone: 'bg-success', list: done.value },
 ])
+// 状态栏分段控件的数据源：全部 / 排队 / 运行 / 失败 / 完成（顺序即展示顺序）
+//   n = 每项后面的「极小灰色数量角标」（如「运行 3」）
+//   all 用后端返回的全量条数；其余用分组长度，保证角标与分组标题里的数字同源
 const FILTERS = computed(() => [
-  { key: 'all', label: '全部', dot: '', n: s.items.length || 0 },
-  { key: 'running', label: '执行中', dot: 'bg-primary', n: running.value.length },
-  { key: 'pending', label: '排队', dot: 'bg-warning', n: pending.value.length },
-  { key: 'blocked', label: '失败', dot: 'bg-danger', n: blocked.value.length },
-  { key: 'done', label: '完成', dot: 'bg-success', n: done.value.length },
+  { key: 'all', label: '全部', n: s.items.length || 0 },
+  { key: 'pending', label: '排队', n: pending.value.length },
+  { key: 'running', label: '运行', n: running.value.length },
+  { key: 'blocked', label: '失败', n: blocked.value.length },
+  { key: 'done', label: '完成', n: done.value.length },
 ])
 /** 只渲染「被选中且非空」的分组 */
 const visibleSections = computed(() =>
@@ -387,6 +402,8 @@ const openResult = computed(() => {
   return txt || '（暂无输出）'
 })
 const openErrText = computed(() => (openTask.value ? errOf(openTask.value) : ''))
+/** 看板拉取失败（s.err）也走同一条清洗管道，避免后端异常文本带出内部 id */
+const dataErrText = computed(() => stripId(s.err))
 
 async function reload() {
   busy.value = true
@@ -891,34 +908,42 @@ watch(() => dispatching.value, (v) => { if (!v) connectSse() })
       </div>
     </div>
 
-    <!-- ── 数据错误（醒目框，规范③）── -->
+    <!-- ── 数据错误（醒目框，规范③）：默认只留一行摘要 + 展开堆栈，不占满卡片 ── -->
     <div v-if="s.err" class="tb-err">
       <span class="tb-err-bar" aria-hidden="true" />
       <div class="tb-err-body">
         <div class="tb-err-head">
           <span class="tb-err-title">⚠ 看板数据拉取失败</span>
+          <button
+            v-if="errOverflow(dataErrText)"
+            class="tb-err-toggle"
+            :aria-expanded="errOpen('data') ? 'true' : 'false'"
+            @click="toggleErr('data')"
+          >{{ errOpen('data') ? '收起堆栈' : '展开堆栈' }}</button>
         </div>
-        <pre class="tb-err-text is-open">{{ stripId(s.err) }}</pre>
+        <pre
+          class="tb-err-text"
+          :class="errOpen('data') ? 'is-open' : 'is-clamped'"
+        >{{ dataErrText }}</pre>
       </div>
     </div>
 
-    <!-- ── 状态筛选（原有分组 + 新增筛选）── -->
-    <div class="flex items-center gap-1.5 overflow-x-auto tb-noscroll" role="tablist" aria-label="按状态筛选">
+    <!-- ── 状态栏：分段控件（Segmented Tabs）· 全部 / 排队 / 运行 / 失败 / 完成 ──
+         选中项：bg-primary/12 + text-primary + 底部 2px 强调条（scaleX/opacity 动效，
+         不占布局高度、不改 width）。数量角标为极小灰字，跟随标签不可点。 -->
+    <div class="tb-seg" role="tablist" aria-label="按状态筛选">
       <button
         v-for="f in FILTERS"
         :key="f.key"
         role="tab"
-        :aria-selected="filter === f.key"
-        class="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[10.5px]
-               transition-transform active:scale-95"
-        :class="filter === f.key
-          ? 'bg-primary/12 border-primary/35 text-primary'
-          : 'bg-surface-card-2 border-line text-content-sec'"
+        :aria-selected="filter === f.key ? 'true' : 'false'"
+        class="tb-seg-item"
+        :class="filter === f.key ? 'bg-primary/12 text-primary is-on' : 'text-content-sec'"
         @click="filter = f.key"
       >
-        <span v-if="f.dot" class="w-1.5 h-1.5 rounded-full" :class="f.dot" />
-        <span>{{ f.label }}</span>
-        <span class="font-mono text-[9.5px] opacity-70">{{ f.n }}</span>
+        <span class="shrink-0">{{ f.label }}</span>
+        <span class="tb-seg-n">{{ f.n }}</span>
+        <span class="tb-seg-bar" aria-hidden="true" />
       </button>
     </div>
 
@@ -1010,12 +1035,12 @@ watch(() => dispatching.value, (v) => { if (!v) connectSse() })
                     <button
                       v-if="errLong(t)"
                       class="tb-err-toggle"
-                      @click="toggleErr(t)"
-                    >{{ errOpen(t) ? '收起堆栈' : '展开堆栈' }}</button>
+                      @click="toggleErr(t.id)"
+                    >{{ errOpen(t.id) ? '收起堆栈' : '展开堆栈' }}</button>
                   </div>
                   <pre
                     class="tb-err-text"
-                    :class="errOpen(t) ? 'is-open' : 'is-clamped'"
+                    :class="errOpen(t.id) ? 'is-open' : 'is-clamped'"
                   >{{ errOf(t) }}</pre>
                 </div>
               </div>
@@ -1128,12 +1153,23 @@ watch(() => dispatching.value, (v) => { if (!v) connectSse() })
                   </div>
                 </div>
 
-                <!-- 报错详情也用醒目框 -->
+                <!-- 报错详情也用醒目框：默认一行摘要，长堆栈才给「展开堆栈」 -->
                 <div v-if="openErrText" class="tb-err">
                   <span class="tb-err-bar" aria-hidden="true" />
                   <div class="tb-err-body">
-                    <div class="tb-err-head"><span class="tb-err-title">✕ 错误详情</span></div>
-                    <pre class="tb-err-text is-open">{{ openErrText }}</pre>
+                    <div class="tb-err-head">
+                      <span class="tb-err-title">✕ 错误详情</span>
+                      <button
+                        v-if="errOverflow(openErrText)"
+                        class="tb-err-toggle"
+                        :aria-expanded="errOpen('detail') ? 'true' : 'false'"
+                        @click="toggleErr('detail')"
+                      >{{ errOpen('detail') ? '收起堆栈' : '展开堆栈' }}</button>
+                    </div>
+                    <pre
+                      class="tb-err-text"
+                      :class="errOpen('detail') ? 'is-open' : 'is-clamped'"
+                    >{{ openErrText }}</pre>
                   </div>
                 </div>
 
@@ -1337,9 +1373,82 @@ watch(() => dispatching.value, (v) => { if (!v) connectSse() })
 }
 
 /* ══════════════════════════════════════════════════════════════
+   状态栏分段控件（Segmented Tabs）：全部 / 排队 / 运行 / 失败 / 完成
+     · 一条胶囊底槽，每项内部自带「底部 2px 强调条」
+     · 强调条绝对定位（不占行高、不触发重排），动效只用
+       transform: scaleX() + opacity（DESIGN-v2 §3：只准动 transform/opacity），
+       transform-origin: left center 让未选中→选中的生长方向稳定在左侧
+     · 按压反馈走 transform: scale()，不动 width/margin/top
+   ══════════════════════════════════════════════════════════════ */
+.tb-seg {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--r-md);
+  background: rgb(var(--bg-rgb) / 0.55);
+  border: 1px solid rgb(var(--divider-rgb));
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+.tb-seg::-webkit-scrollbar {
+  display: none;
+}
+.tb-seg-item {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 5px 6px 7px;
+  border-radius: var(--r-sm);
+  font-size: 10.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  /* 只过渡颜色与 transform，不涉及任何布局属性 */
+  transition: color 160ms ease, background-color 160ms ease, transform 160ms ease;
+}
+.tb-seg-item:active {
+  transform: scale(0.96);
+}
+.tb-seg-item.is-on {
+  font-weight: 600;
+}
+/* 数量角标：极小灰字（如「运行 3」的那个 3），选中时随主色微亮，不抢标签 */
+.tb-seg-n {
+  flex: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 9px;
+  line-height: 1;
+  opacity: 0.55;
+}
+/* 底部 2px 强调条：默认 scaleX(0) + opacity 0，选中才展开 */
+.tb-seg-bar {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 1px;
+  height: 2px;
+  border-radius: 9999px;
+  background: rgb(var(--primary-rgb));
+  transform: scaleX(0);
+  transform-origin: left center;
+  opacity: 0;
+  transition: transform 220ms cubic-bezier(.22, 1, .36, 1), opacity 180ms ease;
+}
+.tb-seg-item.is-on .tb-seg-bar {
+  transform: scaleX(1);
+  opacity: 1;
+}
+
+/* ══════════════════════════════════════════════════════════════
    报错醒目框（DESIGN-v2 §5③ 硬性要求）
      bg-danger-soft + border-danger/40 + 左侧 3px 竖条
-   长堆栈默认折叠（.is-clamped 用 -webkit-line-clamp 收成 3 行），
+   长堆栈默认折叠（.is-clamped 用 -webkit-line-clamp 收成 1 行摘要，
+   保证报错不占满整个卡片行高），
    展开后限高内滚 —— 只切换 class，不做 height/width 动画。
    ══════════════════════════════════════════════════════════════ */
 .tb-err {
@@ -1394,7 +1503,7 @@ watch(() => dispatching.value, (v) => { if (!v) connectSse() })
 }
 .tb-err-text.is-clamped {
   display: -webkit-box;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 1;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }

@@ -15,14 +15,47 @@
 //   · 图表容器必须有明确高度，否则 echarts 渲染成 0 高
 // ══════════════════════════════════════════════════════════════════
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import * as echarts from 'echarts/core'
-import { BarChart, PieChart } from 'echarts/charts'
-import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
-import { CanvasRenderer } from 'echarts/renderers'
-// store.js 可用则用：错误统一进全局日志
+// 注意：这里**没有**静态 import echarts。
+// ══════════════════════════════════════════════════════════════
+// 为什么必须动态导入（code-split）
+// ══════════════════════════════════════════════════════════════
+// 原先静态 `import * as echarts from 'echarts/core'` 会把图表库全部打进首屏包，
+// 实测主包从 266K 涨到 **789K**（构建也告警 chunk > 600kB）。手机 WebView 上
+// 这是实打实的首屏负担。
+//
+// 现改为按需 `await import(...)`：首屏只加载业务代码，图表库被 Vite 切成
+// 独立 chunk，**只有当用户真的进入驾驶舱时才异步拉取**。
+// 因为驾驶舱是默认页，首次进入仍会加载它，但：
+//   ① 首屏渲染不再被 520KB 解析阻塞（并行拉取，先出骨架与指标卡）
+//   ② 其它页面（任务/卡片/大纲/星图）从此完全不背这个包
+// 用 Promise 缓存保证并发调用只加载一次。
 import { pushLog } from '../../store.js'
 
-echarts.use([BarChart, PieChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
+let _ec = null
+let _ecPromise = null
+function ensureEcharts() {
+  if (_ec) return Promise.resolve(_ec)
+  if (!_ecPromise) {
+    _ecPromise = Promise.all([
+      import('echarts/core'),
+      import('echarts/charts'),
+      import('echarts/components'),
+      import('echarts/renderers'),
+    ]).then(([core, charts, comps, renderers]) => {
+      core.use([
+        charts.BarChart,
+        charts.PieChart,
+        comps.GridComponent,
+        comps.TooltipComponent,
+        comps.LegendComponent,
+        renderers.CanvasRenderer,
+      ])
+      _ec = core
+      return core
+    })
+  }
+  return _ecPromise
+}
 
 // ── 内部 id 一律不外显（用户只认任务名）──
 const ID_RE = /\bwt-[0-9a-zA-Z-]{2,}\b/g
@@ -363,9 +396,16 @@ function resizeCharts() {
 
 onMounted(async () => {
   await load()
-  if (barEl.value) barChart = echarts.init(barEl.value)
-  if (pieEl.value) pieChart = echarts.init(pieEl.value)
-  renderCharts()
+  // 动态拉取图表库（首屏不背它）；失败也不能让整页挂掉 —— 指标卡与任务列表
+  // 是纯 DOM，不依赖 echarts，照常可用。
+  try {
+    const ec = await ensureEcharts()
+    if (barEl.value) barChart = ec.init(barEl.value)
+    if (pieEl.value) pieChart = ec.init(pieEl.value)
+    renderCharts()
+  } catch (e) {
+    pushLog(`图表库加载失败（指标卡与列表不受影响）：${e && e.message ? e.message : e}`, 'warn')
+  }
 
   // 容器尺寸变化 → 重绘（移动端旋转 / 侧栏展收）
   if (typeof ResizeObserver !== 'undefined') {

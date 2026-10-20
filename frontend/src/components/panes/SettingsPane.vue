@@ -18,6 +18,12 @@
 //    带**前端校验**（BaseURL 必须 http(s):// 开头；名称、模型名非空），
 //    保存成功后刷新列表。
 //
+// 4. 【拉取可用模型】——「模型名」输入框旁的按钮：调 GET /api/config/models，
+//    把后端可用模型列进下拉，选中即写入「模型名」字段。
+//    响应结构未知 → **多字段容错**（models/data/items/数组本身；
+//    每项取 id/name/model；详见 extractModels）。拿不到只 toast，不抛异常。
+//    ⚠ 全流程绝不 console / 绝不把 api_key 写进任何日志。
+//
 // ══════════════════════════════════════════════════════════
 // 后端端点现状（已核对 crates/ne-agent/src/governance/model_config.rs）
 // ══════════════════════════════════════════════════════════
@@ -28,6 +34,7 @@
 //                               provider 名不存在 = **新建**；存在 = 更新。
 //                               api_key 传空串/省略 = 保留原值（保护真 key）。
 //   PUT  /api/config/model   → 同 POST。
+//   GET  /api/config/models  → 可用模型清单（后端已实现；结构未知，前端容错）。
 //
 //   ⚠ 缺：**没有删除端点**（DELETE 不存在）。
 //     列表卡片里的「删除」会明确提示「后端未支持」，不假装成功。
@@ -55,6 +62,11 @@ const list = ref([]) // [{ name, base_url, models, api_key_set, api_key_mask }]
 const form = ref(null)
 const formErr = ref({})
 
+// 【拉取可用模型】状态
+const pulling = ref(false) // 申请中：禁用按钮 + 文案「拉取中…」
+const pulledModels = ref([]) // 拉取到的候选模型名（去重后）
+const pullErr = ref('') // 失败原因（短提示，非致命）
+
 // ══════════════════════════════════════════ 工具
 /** 从后端返回的 provider 里取一行安全数据（不含任何明文 key） */
 function toRow(p) {
@@ -80,6 +92,75 @@ function isHttpUrl(s) {
   return /^https?:\/\/.+/i.test(String(s || '').trim())
 }
 
+// ══════════════════════════════════════════ 拉取可用模型
+// 响应结构未知 → 依次尝试 json.models → json.data → json.items → 数组本身，
+// 每项取 typeof x==='string' ? x : (x.id || x.name || x.model || '')。
+// 拿不到返回 []，调用方 toast 提示；本函数不抛异常（解析层纯函数）。
+function extractModels(json) {
+  if (json == null) return []
+  let raw = null
+  if (Array.isArray(json)) raw = json
+  else if (json && Array.isArray(json.models)) raw = json.models
+  else if (json && Array.isArray(json.data)) raw = json.data
+  else if (json && Array.isArray(json.items)) raw = json.items
+  if (!Array.isArray(raw)) return []
+  const out = []
+  for (const x of raw) {
+    const name =
+      typeof x === 'string' ? x : (x && (x.id || x.name || x.model)) || ''
+    const s = String(name || '').trim()
+    if (s && !out.includes(s)) out.push(s)
+  }
+  return out
+}
+
+async function pullModels() {
+  if (pulling.value) return
+  pulling.value = true
+  pullErr.value = ''
+  try {
+    // ⚠ 同源相对路径；请求/响应里都不含 api_key，绝不 console。
+    const r = await fetch('/api/config/models', {
+      headers: { Accept: 'application/json' },
+    })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    const json = await r.json()
+    const models = extractModels(json)
+    if (!models.length) {
+      pullErr.value = '未取到可用模型'
+      pulledModels.value = []
+      toast('未取到可用模型，请检查后端 /api/config/models', true)
+      return
+    }
+    pulledModels.value = models
+    // 表单里模型名还空着 → 自动填第一个，省一步操作
+    if (form.value && !String(form.value.model || '').trim()) {
+      form.value.model = models[0]
+    }
+    toast(`已拉取 ${models.length} 个可用模型`)
+  } catch (e) {
+    pullErr.value = '拉取失败'
+    pulledModels.value = []
+    toast(`拉取可用模型失败：${e && e.message ? e.message : e}`, true)
+  } finally {
+    pulling.value = false
+  }
+}
+
+// 下拉选中 → 写入「模型名」。表单是**单值**字段（提交只发 model 单串），
+// 因此这里做**单选**（选中即替换，不拼接、不加分隔符）。
+function onPickModel(e) {
+  const v = e && e.target ? String(e.target.value || '') : ''
+  if (!v || !form.value) return
+  form.value.model = v
+  // 清掉该字段的校验错误，选完不必再手改
+  if (formErr.value && formErr.value.model) {
+    formErr.value = { ...formErr.value, model: '' }
+  }
+  // 复位为占位项，方便连续换选
+  e.target.value = ''
+}
+
 // ══════════════════════════════════════════ 读
 async function reload() {
   loading.value = true
@@ -102,12 +183,16 @@ async function reload() {
 // ══════════════════════════════════════════ 表单
 async function openAdd() {
   formErr.value = {}
+  pulledModels.value = []
+  pullErr.value = ''
   form.value = { mode: 'add', name: '', base_url: '', api_key: '', model: '' }
   await nextTick()
 }
 
 function openEdit(row) {
   formErr.value = {}
+  pulledModels.value = []
+  pullErr.value = ''
   form.value = {
     mode: 'edit',
     name: row.name,
@@ -120,6 +205,8 @@ function openEdit(row) {
 function closeForm() {
   form.value = null
   formErr.value = {}
+  pulledModels.value = []
+  pullErr.value = ''
 }
 
 function validate() {
@@ -364,15 +451,47 @@ onMounted(reload)
                   : '本地网关留空即可；仅存后端，不回显明文'"
               />
 
-              <!-- 模型名 -->
-              <BaseInput
-                v-model="form.model"
-                label="模型名"
-                placeholder="deepseek-v4.1-flash"
-                required
-                :error="!!formErr.model"
-                :msg="formErr.model || '后端实际调用的 model id'"
-              />
+              <!-- 模型名 + 【拉取可用模型】（按钮紧挨输入框） -->
+              <div class="flex items-end gap-2">
+                <div class="flex-1 min-w-0">
+                  <BaseInput
+                    v-model="form.model"
+                    label="模型名"
+                    placeholder="deepseek-v4.1-flash"
+                    required
+                    :error="!!formErr.model"
+                    :msg="formErr.model || '后端实际调用的 model id'"
+                  />
+                </div>
+                <BaseButton
+                  variant="soft"
+                  size="sm"
+                  class="shrink-0"
+                  :loading="pulling"
+                  :disabled="pulling"
+                  title="从后端 /api/config/models 拉取可用模型"
+                  @click="pullModels"
+                >
+                  {{ pulling ? '拉取中…' : '拉取可用模型' }}
+                </BaseButton>
+              </div>
+
+              <!-- 拉取结果：下拉单选，选中即写入上面的「模型名」
+                   （表单为单值字段，故单选替换，不拼接分隔符） -->
+              <div v-if="pulledModels.length" class="flex items-center gap-2">
+                <span class="shrink-0 text-[10px] text-content-sec">可选模型</span>
+                <select
+                  class="flex-1 min-w-0 h-8 rounded-md border border-line-divider
+                         bg-surface-card-2 px-2 text-[11.5px] font-mono text-content
+                         outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                  aria-label="选择可用模型（写入模型名）"
+                  @change="onPickModel"
+                >
+                  <option value="">共 {{ pulledModels.length }} 个 · 点击选择</option>
+                  <option v-for="m in pulledModels" :key="m" :value="m">{{ m }}</option>
+                </select>
+              </div>
+              <p v-else-if="pullErr" class="text-[10.5px] text-danger">⚠ {{ pullErr }}</p>
 
               <div class="flex gap-2 pt-1">
                 <BaseButton variant="outline-gray" block @click="closeForm">取消</BaseButton>

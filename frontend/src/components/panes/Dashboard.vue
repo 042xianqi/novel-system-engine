@@ -132,6 +132,19 @@ const sysStatus = ref({
   cards: '—',
 })
 
+// 知识库资产（供需缺口）区块：GET /api/system/supply-demand
+//   总数  total | count | assets | total_assets
+//   覆盖率 coverage | coverage_pct | ratio（0~1 小数 → ×100 带 %）
+//   stale stale | stale_list | gaps
+//   字段名未知 → 多字段容错；字段缺失一律「—」，绝不出 undefined。
+const asset = ref({
+  total: '—',
+  coverage: '—',
+  coverageTone: 'text-content-sec',
+  stale: [], // 最多 5 条 + '…'
+  staleTotal: 0,
+})
+
 const metrics = computed(() => [
   {
     label: '总卡数',
@@ -189,6 +202,41 @@ function fmtBytes(n) {
   const mb = kb / 1024
   if (mb < 1024) return `${mb.toFixed(1)} MB`
   return `${(mb / 1024).toFixed(2)} GB`
+}
+
+// ── 多字段容错工具（知识库资产用）──
+// 取第一个「可解析为有限数字」的字段；都没有 → null（调用方显示「—」）
+function firstNum(...vals) {
+  for (const v of vals) {
+    if (v == null || v === '') continue
+    const n = Number(v)
+    if (Number.isFinite(n)) return n
+  }
+  return null
+}
+// 覆盖率归一：0~1 小数 → ×100；已是百分数原样返回
+function normPct(v) {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return null
+  return n >= 0 && n <= 1 ? n * 100 : n
+}
+// 百分数文本：整数不带小数，其余保留 1 位；非法 → 「—」
+function fmtPct(n) {
+  if (n == null || !Number.isFinite(Number(n))) return '—'
+  const r = Math.round(Number(n) * 10) / 10
+  return `${Number.isInteger(r) ? r : r.toFixed(1)}%`
+}
+// stale 项：字符串原样（去内部 id）；对象取常见字段；取不到 → ''
+function staleText(x) {
+  if (x == null) return ''
+  if (typeof x === 'string') return stripId(x)
+  if (typeof x === 'number') return String(x)
+  if (typeof x === 'object') {
+    return stripId(
+      x.name || x.title || x.label || x.path || x.key || x.id || x.category || ''
+    )
+  }
+  return ''
 }
 
 // ── 主题色：全部读 CSS 变量（皮肤切换零组件改动）──
@@ -269,13 +317,14 @@ function paletteFor(n) {
 async function load() {
   loading.value = true
   err.value = ''
-  const [statsR, catsR, graphR, actR, listR, sysR] = await Promise.allSettled([
+  const [statsR, catsR, graphR, actR, listR, sysR, sdR] = await Promise.allSettled([
     getJSON('/api/stats'),
     getJSON('/api/library/categories'),
     getJSON('/api/graph/entity'),
     getJSON('/api/tasks/active'),
     getJSON('/api/tasks/list'),
     getJSON('/api/system/status'),
+    getJSON('/api/system/supply-demand'),
   ])
   const bad = []
 
@@ -381,8 +430,10 @@ async function load() {
   // ③.5 系统状态区块 —— 全部复用上面已取到的数据，不新增请求
   const TONE_OK = 'text-success'
   const TONE_BAD = 'text-danger'
+  const TONE_WARN = 'text-warning'
   const TONE_NA = 'text-content-sec'
   const s = sysStatus.value
+  const a = asset.value
   // LLM 授权锁 + 执行器存活：同源于 /api/tasks/active
   if (actR.status === 'fulfilled' && actR.value && typeof actR.value === 'object') {
     const a = actR.value
@@ -409,6 +460,35 @@ async function load() {
     if (Number.isFinite(tot)) {
       s.cards = String(tot)
     }
+  }
+
+  // ③.6 知识库资产（供需缺口）—— GET /api/system/supply-demand
+  //   字段名未知 → 多字段容错；拿不到一律「—」，绝不出 undefined。
+  if (sdR.status === 'fulfilled' && sdR.value && typeof sdR.value === 'object') {
+    const d = sdR.value
+    // 总数：total | count | assets | total_assets
+    const total = firstNum(d.total, d.count, d.assets, d.total_assets)
+    if (total != null) a.total = String(total)
+    // 覆盖率：coverage | coverage_pct | ratio（0~1 小数 → ×100）
+    const pct = normPct(firstNum(d.coverage, d.coverage_pct, d.ratio))
+    if (pct != null) {
+      a.coverage = fmtPct(pct)
+      a.coverageTone = pct >= 100 ? TONE_OK : TONE_WARN
+    }
+    // stale：stale | stale_list | gaps（最多 5 条 + '…'）
+    const rawStale = Array.isArray(d.stale)
+      ? d.stale
+      : Array.isArray(d.stale_list)
+        ? d.stale_list
+        : Array.isArray(d.gaps)
+          ? d.gaps
+          : []
+    const items = rawStale.map(staleText).filter(Boolean)
+    a.stale = items.slice(0, 5)
+    if (items.length > 5) a.stale.push('…')
+    a.staleTotal = items.length
+  } else {
+    bad.push('知识库资产')
   }
   void TONE_NA
 
@@ -666,6 +746,23 @@ onBeforeUnmount(() => {
           <div class="text-[11px] text-content-sec truncate">库卡数</div>
           <div class="mt-1 text-[16px] leading-none font-semibold truncate tabular-nums text-content">
             {{ sysStatus.cards }}
+          </div>
+        </div>
+
+        <!-- ③.6 知识库资产（供需缺口）—— GET /api/system/supply-demand
+             文案固定格式：「知识库资产：<N> 条，覆盖率：<P>%」
+             覆盖率 100% → text-success；< 100% → text-warning；取不到 → — -->
+        <div class="glass card-cyber rounded-[var(--r-md)] px-3 py-2.5 min-w-0 col-span-2 md:col-span-4">
+          <div class="text-[11px] text-content-sec truncate">知识库资产</div>
+          <div class="mt-1 text-[16px] leading-none font-semibold tabular-nums text-content">
+            知识库资产：{{ asset.total }} 条，覆盖率：<span :class="asset.coverageTone">{{ asset.coverage }}</span>
+          </div>
+          <div
+            v-if="asset.stale.length"
+            class="mt-1.5 text-[10.5px] text-content-sec leading-relaxed break-all"
+          >
+            <span class="text-warning">缺口 {{ asset.staleTotal }} 项：</span>
+            <span>{{ asset.stale.join(' · ') }}</span>
           </div>
         </div>
       </div>
